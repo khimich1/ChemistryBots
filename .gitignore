@@ -1,34 +1,22 @@
-# --- Python ---
+# python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
-*.pyd
-*.pdb
-*.pkl
-*.log
 
-# --- Виртуальное окружение ---
-.venv/
-env/
+# venv
 venv/
+.venv/
 
-# --- IDE и редакторы ---
-.vscode/
-.idea/
+# secrets & config
+.env
+.env.*
 
-# --- Операционная система ---
-.DS_Store
-Thumbs.db
-
-# --- Файлы данных ---
+# sqlite
 *.db
 *.sqlite
 *.sqlite3
+*.db-journal
 
-# --- Конфиги с секретами ---
-.env
-
-# --- PDF и временные файлы ---
-*.pdf
-*.tmp
-*.bak
+# IDE
+.vscode/
+.idea/
