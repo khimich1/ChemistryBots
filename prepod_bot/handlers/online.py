@@ -7,6 +7,7 @@ from services.students import (
     get_online_students, get_current_task,
     get_session_activity, get_question_details
 )
+from handlers import menu  # главное меню
 
 router = Router()
 practice_started_at = {}
@@ -39,7 +40,8 @@ async def start_practice(m: types.Message):
 @router.message(lambda m: m.text == "⏹ Закончить практику")
 async def stop_practice(m: types.Message):
     practice_started_at.pop(m.from_user.id, None)
-    await m.answer("Практика завершена.", reply_markup=_practice_kb(m.from_user.id))
+    await m.answer("Практика завершена.")
+    await menu.start_menu(m)  # возврат в главное меню
 
 
 @router.callback_query(lambda c: c.data == "online_refresh")
@@ -49,7 +51,7 @@ async def refresh_online(cb: types.CallbackQuery):
 
 
 async def show_online_now(message: types.Message):
-    students = get_online_students(timeout_minutes=ONLINE_WINDOW_MINUTES)
+    students = get_online_students(timeout_minutes=ONLINE_WINDOW_MINUTES, with_names=True)
     if not students:
         await message.answer("Никого онлайн.", reply_markup=_practice_kb(message.from_user.id))
         return
@@ -58,36 +60,25 @@ async def show_online_now(message: types.Message):
     lines = ["<b>Ученики онлайн:</b>\n"]
 
     for s in students:
-        uid = s["user_id"]
+        name = f"@{s['username']}" if s['username'] else (s['full_name'] or f"ID {s['user_id']}")
 
-        # Получаем имя или ID
-        try:
-            user = await message.bot.get_chat(uid)
-            name = f"@{user.username}" if user.username else f"{user.first_name or ''} {user.last_name or ''}".strip()
-        except Exception:
-            name = f"ID {uid}"
-
-        current = get_current_task(uid)
+        current = get_current_task(s["user_id"])
         lines.append(f"👨‍🎓 <b>{name}</b>")
 
         if current:
-            test_type, q_id, started_at = current
+            _, q_id, _ = current
             q = get_question_details(q_id) or {}
-            question_text = q.get('question', '')
-            options_text = q.get('options', '')
-            correct_answer = q.get('correct_answer', '')
-
             lines.append(
-                f"📋 <b>Вопрос:</b> {question_text}\n\n"
-                f"Варианты ответа:\n{options_text}\n\n"
-                f"✅ <b>Правильный:</b> {correct_answer}\n"
+                f"📋 <b>Вопрос:</b> {q.get('question','')}\n\n"
+                f"Варианты ответа:\n{q.get('options','')}\n\n"
+                f"✅ <b>Правильный:</b> {q.get('correct_answer','')}\n"
                 f"⏳ Выполняет сейчас"
             )
         else:
             lines.append("— нет активного вопроса")
 
         if since_ts:
-            lines.append(f"/history_{uid}")
+            lines.append(f"/history_{s['user_id']}")
         lines.append("")
 
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=_refresh_kb())
@@ -107,35 +98,24 @@ async def show_history(m: types.Message):
         await m.answer("Неверная команда истории.")
         return
 
-    try:
-        user = await m.bot.get_chat(uid)
-        name = f"@{user.username}" if user.username else f"{user.first_name or ''} {user.last_name or ''}".strip()
-    except Exception:
-        name = f"ID {uid}"
-
-    events = get_session_activity(uid, since_ts)
+    events = get_session_activity(uid, since_ts, with_names=True)
     if not events:
         await m.answer("История пуста.")
         return
 
-    out = [f"<b>История ученика {name}</b>\nс {since_ts}\n"]
+    student_name = f"@{events[0]['username']}" if events[0]['username'] else (events[0]['full_name'] or f"ID {uid}")
+    out = [f"<b>История ученика {student_name}</b>\nс {since_ts}\n"]
 
-    for (test_type, q_id, started_at, answered_at, user_answer, is_correct) in events:
-        q = get_question_details(q_id) or {}
-
-        # Выбор эмодзи статуса
-        if answered_at:
-            status_emoji = "✅" if is_correct else "❌"
-        else:
-            status_emoji = "⏳"
-
+    for e in events:
+        q = get_question_details(e["question_id"]) or {}
+        status_emoji = "✅" if e["is_correct"] else "❌" if e["answered_at"] else "⏳"
         out.append(
             f"{status_emoji} <b>Вопрос:</b> {q.get('question','')}\n\n"
             f"Варианты ответа:\n{q.get('options','')}\n\n"
-            f"Ответ ученика: <b>{user_answer or '—'}</b>\n"
+            f"Ответ ученика: <b>{e['user_answer'] or '—'}</b>\n"
             f"Правильный: <b>{q.get('correct_answer','')}</b>\n"
-            f"Начал: {started_at}\n"
-            f"Ответил: {answered_at or '—'}\n"
+            f"Начал: {e['started_at']}\n"
+            f"Ответил: {e['answered_at'] or '—'}\n"
             "— — —"
         )
 

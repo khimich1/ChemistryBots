@@ -1,0 +1,9 @@
+.env
+*.db
+*.sqlite
+*.pyc
+__pycache__/
+*.log
+*.ttf
+credentials.json
+scripts/
