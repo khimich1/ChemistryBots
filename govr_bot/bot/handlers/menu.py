@@ -1,8 +1,7 @@
 from aiogram import Router, types
-from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-)
-from bot.utils import LEARNING_TOPICS, user_learning_state
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+
+from bot.utils import user_learning_state
 from bot.services.spreadsheet import fetch_user_records
 from bot.services.pdf_generator import make_report
 
@@ -10,82 +9,80 @@ from bot.services.pdf_generator import make_report
 
 router = Router()
 
-# Главное меню
-main_kb = types.ReplyKeyboardMarkup(
+# ==== Главное меню (обновлено) ====
+main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [
-            types.KeyboardButton(text="🌱 Курс по органике"),
-            types.KeyboardButton(text="📝 Тесты")
+            KeyboardButton(text="📚 Теория по химии"),
+            KeyboardButton(text="📝 Тесты"),
         ],
         [
-            types.KeyboardButton(text="🧪 Устный зачет"),
-            types.KeyboardButton(text="📈 Получить отчёт"),
+            KeyboardButton(text="🧪 Устный зачет"),
+            KeyboardButton(text="📈 Получить отчёт"),
         ],
         [
- #           types.KeyboardButton(text="▶️ Продолжить"),
-            types.KeyboardButton(text="ℹ️ Как работает бот")
-            
-        ]
+            KeyboardButton(text="ℹ️ Как работает бот"),
+        ],
     ],
     resize_keyboard=True
-)   # <-- Скобка!
-
-
-@router.message(lambda m: m.text == "/start" or m.text == "Меню")
-async def cmd_start(m: types.Message):
-    await m.answer(
-        "👋 Добро пожаловать! Я помогу тебе разобраться в органической химии.\n\n"
-        "• 🌱 Курс по органике — изучи весь курс по органической химии по главам.\n"
-        "• ▶️ Продолжить — возобновить курс.\n"
-        "• 📊 Получить отчёт — PDF с прогрессом.\n"
-        "• 🧪 Устный зачет — усный зачет по всем темам с проверкой ИИ.\n"
-        "• 📝 Тесты — пройти готовые тесты.",
-        reply_markup=main_kb
 )
 
-@router.message(lambda m: m.text == "🌱 Курс по органике")
-async def on_learning_start(m: types.Message):
-    # Показываем список глав курса как inline-кнопки
-    buttons = [
-        [InlineKeyboardButton(text=topic, callback_data=f"learn_topic_{i}")]
-        for i, topic in enumerate(LEARNING_TOPICS)
-    ]
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+# ==== /start и возврат в меню ====
+@router.message(lambda m: m.text == "/start" or m.text == "Меню" or m.text == "⬅️ В меню")
+async def cmd_start(m: types.Message):
     await m.answer(
-        "🌱 Добро пожаловать на курс по органической химии!\n\n"
-        "Здесь ты можешь проходить главы, изучать теорию и выполнять задания.\n"
-        "Чтобы начать — выбери тему из списка ниже.",
-        reply_markup=kb
+        "👋 Привет! Я помогу тебе разобраться в химии.\n\n"
+        "• 📚 Теория по химии — изучай главы по разделам (Начала, Элементы, Органика)\n"
+        "• 🧪 Устный зачет — отвечай голосом, ИИ проверит и подскажет\n"
+        "• 📝 Тесты — тренируйся и работай над ошибками\n"
+        "• 📈 Получить отчёт — PDF с твоим прогрессом",
+        reply_markup=main_kb
     )
 
+# ==== Подменю «Теория по химии» ====
+@router.message(lambda m: m.text == "📚 Теория по химии")
+async def theory_menu(m: types.Message):
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📖 Начала химии")],
+            [KeyboardButton(text="⚗️ Химия элементов")],
+            [KeyboardButton(text="🧬 Органическая химия")],
+            [KeyboardButton(text="⬅️ В меню")],
+        ],
+        resize_keyboard=True
+    )
+    await m.answer("Выбери раздел теории:", reply_markup=kb)
+
+# ==== Отчёт (PDF) ====
 @router.message(lambda m: m.text == "📈 Получить отчёт")
 async def get_report(m: types.Message):
     records = fetch_user_records(m.from_user.id)
     if not records:
-        return await m.answer("Ты ещё не сдал ни одной темы.")
+        await m.answer("Пока нет данных для отчёта — пройди темы или тесты.")
+        return
     pdf_path = make_report(m.from_user.id, m.from_user.full_name, records)
     await m.answer_document(FSInputFile(pdf_path), caption="Вот твой PDF-отчёт!")
 
+# ==== Справка ====
 @router.message(lambda m: m.text == "ℹ️ Как работает бот")
 async def how_bot_works(m: types.Message):
     await m.answer(
-        "ℹ️ Я — учебный бот по органической химии:\n"
-        "1. Выбирай темы или проходи курс по главам\n"
-        "2. Отвечай на вопросы (текстом или голосом)\n"
-        "3. Получай обратную связь и рекомендации\n"
-        "4. Выполняй тесты, следи за прогрессом!\n"
-        "Можно возвращаться в меню через кнопку Меню."
+        "ℹ️ Как пользоваться ботом:\n"
+        "1) Зайди в «📚 Теория по химии», выбери раздел и главу\n"
+        "2) Читай порции теории, задавай вопросы («❓ Есть вопрос»)\n"
+        "3) Проходи «📝 Тесты», а затем «Работа над ошибками»\n"
+        "4) Забирай «📈 Отчёт» с прогрессом\n\n"
+        "Вернуться в это меню можно кнопкой «⬅️ В меню».",
+        reply_markup=main_kb
     )
 
+# ==== (опционально) Возобновление курса, если где-то используется ====
 @router.message(lambda m: m.text == "▶️ Продолжить")
 async def resume_course(m: types.Message):
-    # Проверяем, есть ли сохранённое состояние курса для пользователя
     state = user_learning_state.get(m.from_user.id)
     if not state:
-        await m.answer("Ты ещё не начинал курс. Выбери 'Курс по органике' для старта.", reply_markup=main_kb)
+        await m.answer("Ты ещё не начинал обучение. Открой «📚 Теория по химии» и выбери раздел.", reply_markup=main_kb)
         return
     # Если состояние есть — показываем следующий chunk
-    from bot.handlers.topics import send_next_chunk  # импорт функции показа следующей порции
+    from bot.handlers.topics import send_next_chunk
     await send_next_chunk(m.from_user.id, m.bot)
-
-# Можно добавить любые дополнительные обработчики кнопок и сообщений
