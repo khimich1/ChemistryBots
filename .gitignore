@@ -27,8 +27,27 @@ Thumbs.db
 
 # --- Конфиги с секретами ---
 .env
+.env.*
+*.secret
+credentials.json
+
+# --- Скрипты и локальные запускалки (не публиковать) ---
+*.sh
+*.bat
+*.cmd
+run_*.sh
 
 # --- PDF и временные файлы ---
 *.pdf
 *.tmp
 *.bak
+*.log
+logs/
+
+# --- Кэши/артефакты ---
+dist/
+build/
+*.egg-info/
+
+# --- Jupyter/Notebooks кеш ---
+.ipynb_checkpoints/
