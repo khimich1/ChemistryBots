@@ -1,22 +1,53 @@
-# python
+# --- Python ---
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
+*.pyd
+*.pdb
+*.pkl
+*.log
 
-# venv
-venv/
+# --- Виртуальное окружение ---
 .venv/
+env/
+venv/
 
-# secrets & config
-.env
-.env.*
+# --- IDE и редакторы ---
+.vscode/
+.idea/
 
-# sqlite
+# --- Операционная система ---
+.DS_Store
+Thumbs.db
+
+# --- Файлы данных ---
 *.db
 *.sqlite
 *.sqlite3
-*.db-journal
 
-# IDE
-.vscode/
-.idea/
+# --- Конфиги с секретами ---
+.env
+.env.*
+*.secret
+credentials.json
+
+# --- Скрипты и локальные запускалки (не публиковать) ---
+*.sh
+*.bat
+*.cmd
+run_*.sh
+
+# --- PDF и временные файлы ---
+*.pdf
+*.tmp
+*.bak
+*.log
+logs/
+
+# --- Кэши/артефакты ---
+dist/
+build/
+*.egg-info/
+
+# --- Jupyter/Notebooks кеш ---
+.ipynb_checkpoints/
