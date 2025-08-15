@@ -4,6 +4,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
+    BufferedInputFile,
 )
 from aiogram.enums import ParseMode
 
@@ -19,6 +20,7 @@ from bot.utils import (
     ELEMENT_CHEM_TOPICS,
     get_prepared_chunks_count,
     get_prepared_lecture,
+    get_audio_from_db,
 )
 from bot.handlers.menu import main_kb
 from bot.services.gpt_service import answer_student_question
@@ -155,19 +157,30 @@ async def send_next_chunk(user_id: int, bot):
     header = f"Глава {chap_num}/{chap_total}, порция {idx+1}/{total}\n\n"
     formatted = latex_to_codeblock(raw)
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="◀️ Назад", callback_data="learn_back"),
-                InlineKeyboardButton(text="👍 Понятно", callback_data="learn_ok"),
-            ],
-            [
-                InlineKeyboardButton(text="❓ Есть вопрос", callback_data="learn_ask"),
-                InlineKeyboardButton(text="■ Стоп", callback_data="learn_stop"),
-                InlineKeyboardButton(text="🏠 К главам", callback_data="learn_to_chapters"),
-            ],
-        ]
-    )
+    # Проверяем наличие аудио для этого фрагмента
+    audio_data = get_audio_from_db(topic, idx)
+    has_audio = audio_data is not None
+
+    # Создаем клавиатуру с кнопкой аудио если есть аудио
+    keyboard_buttons = [
+        [
+            InlineKeyboardButton(text="◀️ Назад", callback_data="learn_back"),
+            InlineKeyboardButton(text="Далее", callback_data="learn_ok"),
+        ],
+        [
+            InlineKeyboardButton(text="❓ Есть вопрос", callback_data="learn_ask"),
+            InlineKeyboardButton(text="■ Стоп", callback_data="learn_stop"),
+            InlineKeyboardButton(text="🏠 К главам", callback_data="learn_to_chapters"),
+        ],
+    ]
+    
+    # Добавляем кнопку аудио если есть аудио
+    if has_audio:
+        keyboard_buttons.insert(1, [
+            InlineKeyboardButton(text="🔊 Слушать аудио", callback_data="learn_audio")
+        ])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
     await bot.send_message(
         user_id,
@@ -195,6 +208,40 @@ async def learn_back(cb: types.CallbackQuery, bot):
 async def learn_stop(cb: types.CallbackQuery):
     user_learning_state.pop(cb.from_user.id, None)
     await cb.message.answer("Обучение остановлено.", reply_markup=main_kb)
+
+@router.callback_query(lambda c: c.data == "learn_audio")
+async def learn_audio(cb: types.CallbackQuery, bot):
+    """Обработчик кнопки аудио - отправляет аудиофайл пользователю"""
+    st = user_learning_state.get(cb.from_user.id)
+    if not st:
+        await cb.answer("Ошибка: состояние обучения не найдено")
+        return
+    
+    topic = st["topic"]
+    idx = st["index"]
+    
+    # Получаем аудио из базы данных
+    audio_data = get_audio_from_db(topic, idx)
+    if not audio_data:
+        await cb.answer("Аудио для этого фрагмента не найдено")
+        return
+    
+    audio_blob, audio_format, duration_ms = audio_data
+    
+    try:
+        # Отправляем аудио как голосовое сообщение
+        await bot.send_voice(
+            chat_id=cb.from_user.id,
+            voice=BufferedInputFile(
+                audio_blob, 
+                filename=f"{topic}_chunk_{idx}.{audio_format}"
+            ),
+            caption=f"🔊 Аудио к фрагменту «{topic}» (часть {idx+1})"
+        )
+        await cb.answer("Аудио отправлено!")
+        
+    except Exception as e:
+        await cb.answer(f"Ошибка отправки аудио: {str(e)}")
 
 @router.callback_query(lambda c: c.data == "learn_to_chapters")
 async def learn_to_chapters(cb: types.CallbackQuery):
