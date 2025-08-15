@@ -37,38 +37,8 @@ CLR_GREY_LIGHT = "#e9eef2"
 _THIS_DIR     = os.path.dirname(__file__)                    # bot/services
 _PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", ".."))
 FONTS_DIR     = os.path.join(_PROJECT_ROOT, "Fonts")
-# важно: путь к базе ответов берём из .env (DB_ANSWERS). Если не задан — fallback в shared/test_answers.db
-DB_ANSWERS    = os.getenv("DB_ANSWERS") or os.path.join(_PROJECT_ROOT, "shared", "test_answers.db")
-
-# путь к базе с заданиями тестов (для определения количества вариантов и типов тестов)
-# можно переопределить через .env переменной TESTS_DB
-TESTS_DB      = os.getenv("TESTS_DB") or os.path.join(_PROJECT_ROOT, "bot", "tests1.db")
-
-def _detect_questions_per_test() -> int:
-    """Определяем количество вариантов (вопросов на тип теста) по базе tests1.db.
-    Берём максимум COUNT(*) по каждому `type` из таблицы `tests`. Если БД недоступна — 19.
-    """
-    try:
-        with sqlite3.connect(TESTS_DB) as conn:
-            c = conn.cursor()
-            c.execute("SELECT type, COUNT(*) AS cnt FROM tests GROUP BY type")
-            counts = [int(row[1]) for row in c.fetchall() if row[0] not in (None, "")]
-            if counts:
-                return max(counts)
-    except Exception:
-        pass
-    return 19
-
-def _detect_num_test_types() -> int:
-    """Определяем количество уникальных типов тестов (обычно 28) по базе tests1.db."""
-    try:
-        with sqlite3.connect(TESTS_DB) as conn:
-            c = conn.cursor()
-            c.execute("SELECT COUNT(DISTINCT type) FROM tests WHERE type IS NOT NULL AND type != ''")
-            row = c.fetchone()
-            return int(row[0] or 0) or 28
-    except Exception:
-        return 28
+# важно: shared/test_answers.db лежит в корне проекта рядом с папкой bot
+DB_ANSWERS    = os.path.join(_PROJECT_ROOT, "shared", "test_answers.db")
 LOGO_PATH     = os.path.join(FONTS_DIR, "Logo_Low.png")      # путь к логотипу (если есть)
 
 # ───────── Шрифты ─────────

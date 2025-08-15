@@ -1,5 +1,3 @@
-# bot/utils.py
-
 import os
 import json
 import re
@@ -31,7 +29,6 @@ for topic in LEARNING_TOPICS:
 # ====== Состояния пользователей ======
 user_learning_state: dict[int, dict[str, Any]] = {}
 user_topics: dict[int, str] = {}
-
 
 def clean_html(text: str) -> str:
     """
@@ -110,8 +107,72 @@ def get_prepared_lecture(topic, idx):
     Возвращает текст лекции, либо None если такого нет.
     """
     import sqlite3
-    with sqlite3.connect("prepared_lectures.db") as conn:
+    import os
+    db_path = os.path.join(os.path.dirname(__file__), "prepared_lectures.db")
+    with sqlite3.connect(db_path) as conn:
         c = conn.cursor()
         c.execute("SELECT lecture FROM prepared_lectures WHERE topic=? AND chunk_idx=?", (topic, idx))
         row = c.fetchone()
         return row[0] if row else None
+
+# ====== Новые разделы курса ======
+BEGIN_CHEM_TOPICS = [
+    "Строение атома",
+    "Периодический закон",
+    "Химическая связь",
+    "Формула вещества",
+    "Оксиды",
+    "Основания и амфотерные гидроксиды",
+    "Кислоты",
+    "Соли"
+]
+
+ELEMENT_CHEM_TOPICS = [
+    "ОВР",
+    "Водород",
+    "Галогены",
+    "Кислород",
+    "Сера",
+    "Азот и фосфор",
+    "Углерод и кремний",
+    "Хром, марганец и алюминий",
+    "Железо, медь, серебро, цинк"
+]
+
+
+def get_prepared_chunks_count(topic: str) -> int:
+    """
+    Возвращает количество подготовленных лекционных порций по теме из prepared_lectures.db.
+    Берём max(chunk_idx) + 1. Если записей нет — 0.
+    """
+    import sqlite3
+    import os
+    db_path = os.path.join(os.path.dirname(__file__), "prepared_lectures.db")
+    with sqlite3.connect(db_path) as conn:
+        c = conn.cursor()
+        c.execute("SELECT MAX(chunk_idx) FROM prepared_lectures WHERE topic=?", (topic,))
+        row = c.fetchone()
+        if row and row[0] is not None:
+            return int(row[0]) + 1
+        return 0
+
+def get_audio_from_db(topic: str, chunk_idx: int) -> tuple[bytes, str, int] | None:
+    """
+    Получает аудио из базы данных prepared_lectures.db.
+    Возвращает (audio_blob, audio_format, duration_ms) или None если аудио нет.
+    """
+    import sqlite3
+    import os
+    db_path = os.path.join(os.path.dirname(__file__), "prepared_lectures.db")
+    with sqlite3.connect(db_path) as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT tts_audio, tts_audio_format, duration_ms 
+            FROM prepared_lectures 
+            WHERE topic=? AND chunk_idx=? AND tts_audio IS NOT NULL AND tts_audio != ''
+        """, (topic, chunk_idx))
+        row = c.fetchone()
+        if row:
+            audio_blob, audio_format, duration_ms = row
+            return audio_blob, audio_format or 'ogg', duration_ms or 0
+        return None

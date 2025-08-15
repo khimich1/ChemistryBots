@@ -1,271 +1,356 @@
-import os
-import sqlite3
 from aiogram import Router, types
 from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    BufferedInputFile,
 )
 from aiogram.enums import ParseMode
-from bot.handlers.menu import main_kb
+
 from bot.utils import (
-    ALL_TOPICS, clean_html, user_topics, LEARNING_TOPICS,
-    user_learning_state, TEXTBOOK_CONTENT, latex_to_codeblock
+    ALL_TOPICS,  # не используется напрямую, но оставим для расширений
+    clean_html,  # не используется здесь, но может пригодиться
+    user_topics, # не используется здесь, но может пригодиться
+    LEARNING_TOPICS,
+    user_learning_state,
+    TEXTBOOK_CONTENT,
+    latex_to_codeblock,
+    BEGIN_CHEM_TOPICS,
+    ELEMENT_CHEM_TOPICS,
+    get_prepared_chunks_count,
+    get_prepared_lecture,
+    get_audio_from_db,
 )
-from bot.services.gpt_service import (
-    classify_topic, analyze_answer, transcribe_audio,
-    teach_material, answer_student_question
-)
-from bot.services.spreadsheet import save_answer
+from bot.handlers.menu import main_kb
+from bot.services.gpt_service import answer_student_question
 
 router = Router()
 
-# --- ДОБАВЛЕНА ФУНКЦИЯ ДЛЯ БЫСТРОГО ПОЛУЧЕНИЯ ЛЕКЦИИ ИЗ БАЗЫ ---
-def get_prepared_lecture(topic, idx):
-    """
-    Получает готовую лекцию из базы по теме и номеру chunk'а.
-    Возвращает текст лекции, либо None если не найдено.
-    """
-    with sqlite3.connect("prepared_lectures.db") as conn:
-        c = conn.cursor()
-        c.execute("SELECT lecture FROM prepared_lectures WHERE topic=? AND chunk_idx=?", (topic, idx))
-        row = c.fetchone()
-        return row[0] if row else None
+# ================== Разделы «Теории по химии» ==================
 
-# --- Клавиатуры для обычных тем ---
-topics_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [
-            KeyboardButton(text=ALL_TOPICS[i]),
-            KeyboardButton(text=ALL_TOPICS[i+1] if i+1 < len(ALL_TOPICS) else "")
-        ]
-        for i in range(0, len(ALL_TOPICS), 2)
-    ] + [[KeyboardButton(text="⬅️ В меню")]],
-    resize_keyboard=True,
-    one_time_keyboard=True
-)
+# 1) Начала химии — список глав
+@router.message(lambda m: m.text == "📖 Начала химии")
+async def begin_chem(m: types.Message):
+    buttons = [
+        [InlineKeyboardButton(text=topic, callback_data=f"begin_topic_{i}")]
+        for i, topic in enumerate(BEGIN_CHEM_TOPICS)
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await m.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
 
-after_topic_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="⬅️ К темам"), KeyboardButton(text="⬅️ В меню")]
-    ],
-    resize_keyboard=True
-)
+# Выбор главы «Начала химии»
+@router.callback_query(lambda c: c.data.startswith("begin_topic_"))
+async def begin_topic_chosen(cb: types.CallbackQuery, bot):
+    try:
+        idx = int(cb.data.split("begin_topic_")[-1])
+        topic = BEGIN_CHEM_TOPICS[idx]
+    except Exception:
+        await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
+        return
+    user_learning_state[cb.from_user.id] = {"topic": topic, "index": 0, "awaiting_question": False}
+    await send_next_chunk(cb.from_user.id, bot)
 
-choose_chapter_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="⬅️ В меню")]],
-    resize_keyboard=True
-)
+# 2) Химия элементов — СПИСОК ГЛАВ (полноценный)
+@router.message(lambda m: m.text == "⚗️ Химия элементов")
+async def element_chem(m: types.Message):
+    buttons = [
+        [InlineKeyboardButton(text=topic, callback_data=f"element_topic_{i}")]
+        for i, topic in enumerate(ELEMENT_CHEM_TOPICS)
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await m.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
 
-# === 1. Обычные темы ===
-@router.message(lambda m: m.text == "🧪 Устный зачет")
-async def show_topics(m: types.Message):
-    await m.answer("Выберите тему по органической химии:", reply_markup=topics_kb)
+# Выбор главы «Химия элементов»
+@router.callback_query(lambda c: c.data.startswith("element_topic_"))
+async def element_topic_chosen(cb: types.CallbackQuery, bot):
+    try:
+        idx = int(cb.data.split("element_topic_")[-1])
+        topic = ELEMENT_CHEM_TOPICS[idx]
+    except Exception:
+        await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
+        return
+    user_learning_state[cb.from_user.id] = {"topic": topic, "index": 0, "awaiting_question": False}
+    await send_next_chunk(cb.from_user.id, bot)
 
-@router.message(lambda m: m.text in ALL_TOPICS)
-async def ask_questions(m: types.Message):
-    user_topics[m.from_user.id] = m.text
-    questions = (
-        f"1. Общая характеристика класса {m.text}\n"
-        f"2. Способы получения {m.text}\n"
-        f"3. Химические свойства {m.text}"
-    )
-    await m.answer(questions, reply_markup=after_topic_kb)
-    await m.answer("Запишите голосовой ответ на эти вопросы:")
-
-@router.message(lambda m: m.text == "⬅️ К темам")
-async def back_to_topics(m: types.Message):
-    await m.answer("Выберите тему по органической химии:", reply_markup=topics_kb)
-
-@router.message(lambda m: m.text == "⬅️ В меню")
-async def back_to_menu(m: types.Message):
-    await m.answer("Главное меню:", reply_markup=main_kb)
-
-# === 2. Курс по органике ===
-
-@router.message(lambda m: m.text == "🌱 Курс по органике")
-async def on_learning_start(m: types.Message):
+# 3) Органическая химия — список глав
+@router.message(lambda m: m.text == "🧬 Органическая химия")
+async def organic_chem(m: types.Message):
     buttons = [
         [InlineKeyboardButton(text=topic, callback_data=f"learn_topic_{i}")]
         for i, topic in enumerate(LEARNING_TOPICS)
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await m.answer(
-        "Выберите главу для курса по органике:",
-        reply_markup=kb
-    )
-    await m.answer(
-        "Можешь в любой момент вернуться в меню:",
-        reply_markup=choose_chapter_kb
-    )
+    await m.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=kb)
 
+# Выбор главы «Органическая химия»
 @router.callback_query(lambda c: c.data.startswith("learn_topic_"))
-async def on_topic_chosen(cb: types.CallbackQuery, bot):
-    idx = int(cb.data.split("learn_topic_")[-1])
-    topic = LEARNING_TOPICS[idx]
+async def learn_topic_chosen(cb: types.CallbackQuery, bot):
+    try:
+        idx = int(cb.data.split("learn_topic_")[-1])
+        topic = LEARNING_TOPICS[idx]
+    except Exception:
+        await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
+        return
     user_learning_state[cb.from_user.id] = {"topic": topic, "index": 0, "awaiting_question": False}
     await send_next_chunk(cb.from_user.id, bot)
 
-# --- ГЛАВНОЕ ИЗМЕНЕНИЕ ---
+# ================== Универсальный показ следующего chunk ==================
 async def send_next_chunk(user_id: int, bot):
-    """
-    Показывает следующий chunk теории пользователю.
-    Теперь лекция берётся из базы (а не генерируется каждый раз через GPT)!
-    """
     st = user_learning_state.get(user_id)
     if not st:
         return
+
     topic = st["topic"]
     idx = st["index"]
-    chunks = TEXTBOOK_CONTENT.get(topic, [])
-    total = len(chunks)
-    chap_num = LEARNING_TOPICS.index(topic) + 1
-    chap_total = len(LEARNING_TOPICS)
-    if idx >= total:
+
+    # Определяем список глав для корректной нумерации
+    if topic in LEARNING_TOPICS:
+        chapter_list = LEARNING_TOPICS
+    elif topic in BEGIN_CHEM_TOPICS:
+        chapter_list = BEGIN_CHEM_TOPICS
+    elif topic in ELEMENT_CHEM_TOPICS:
+        chapter_list = ELEMENT_CHEM_TOPICS
+    else:
+        chapter_list = [topic]
+
+    chap_num = chapter_list.index(topic) + 1 if topic in chapter_list else 1
+    chap_total = len(chapter_list)
+
+    # Доступные порции теории: JSON и/или БД
+    chunks_json = TEXTBOOK_CONTENT.get(topic, [])
+    total_from_json = len(chunks_json)
+    total_from_db = get_prepared_chunks_count(topic)
+    total = total_from_json if total_from_json > 0 else total_from_db
+
+    if total == 0:
         await bot.send_message(
             user_id,
-            f"Глава {topic} пройдена! 🎉\nВозвращаю меню.",
-            reply_markup=main_kb
+            f"По теме «{topic}» пока нет подготовленной лекции.",
+            reply_markup=main_kb,
         )
         user_learning_state.pop(user_id, None)
         return
 
-    header = f"Глава {chap_num}/{chap_total}, порция {idx+1}/{total}\n\n"
-
-    # --- БЫЛО ---
-    # raw = await teach_material(chunks[idx])
-    # --- СТАЛО ---
-    raw = get_prepared_lecture(topic, idx)
-    if not raw:
-        await bot.send_message(user_id, "Лекция пока не подготовлена. Обратитесь к администратору.")
+    if idx >= total:
+        await bot.send_message(
+            user_id,
+            f"Глава «{topic}» пройдена! 🎉",
+            reply_markup=main_kb,
+        )
+        user_learning_state.pop(user_id, None)
         return
 
+    # Берём лекцию из БД (приоритет) или из JSON
+    raw = get_prepared_lecture(topic, idx)
+    if not raw and total_from_json:
+        raw = chunks_json[idx] if idx < len(chunks_json) else None
+
+    if not raw:
+        await bot.send_message(
+            user_id,
+            "Лекция пока не подготовлена. Сообщи администратору.",
+            reply_markup=main_kb,
+        )
+        return
+
+    header = f"Глава {chap_num}/{chap_total}, порция {idx+1}/{total}\n\n"
     formatted = latex_to_codeblock(raw)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+
+    # Проверяем наличие аудио для этого фрагмента
+    audio_data = get_audio_from_db(topic, idx)
+    has_audio = audio_data is not None
+
+    # Создаем клавиатуру с кнопкой аудио если есть аудио
+    keyboard_buttons = [
         [
             InlineKeyboardButton(text="◀️ Назад", callback_data="learn_back"),
-            InlineKeyboardButton(text="👍 Понятно", callback_data="learn_ok")
+            InlineKeyboardButton(text="Далее", callback_data="learn_ok"),
         ],
         [
             InlineKeyboardButton(text="❓ Есть вопрос", callback_data="learn_ask"),
             InlineKeyboardButton(text="■ Стоп", callback_data="learn_stop"),
-            InlineKeyboardButton(text="🏠 К главам", callback_data="learn_to_chapters")
-        ]
-    ])
+            InlineKeyboardButton(text="🏠 К главам", callback_data="learn_to_chapters"),
+        ],
+    ]
+    
+    # Добавляем кнопку аудио если есть аудио
+    if has_audio:
+        keyboard_buttons.insert(1, [
+            InlineKeyboardButton(text="🔊 Слушать аудио", callback_data="learn_audio")
+        ])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
     await bot.send_message(
         user_id,
         header + formatted,
         reply_markup=kb,
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.MARKDOWN,
     )
 
+# ================== Навигация ==================
 @router.callback_query(lambda c: c.data == "learn_ok")
-async def on_learning_ok(cb: types.CallbackQuery, bot):
+async def learn_ok(cb: types.CallbackQuery, bot):
     st = user_learning_state.get(cb.from_user.id)
-    if not st:
-        return
-    st["index"] += 1
+    if st:
+        st["index"] += 1
     await send_next_chunk(cb.from_user.id, bot)
 
 @router.callback_query(lambda c: c.data == "learn_back")
-async def on_learning_back(cb: types.CallbackQuery, bot):
+async def learn_back(cb: types.CallbackQuery, bot):
     st = user_learning_state.get(cb.from_user.id)
-    if not st:
-        return
-    if st["index"] == 0:
-        await cb.answer("Вы на первой порции.", show_alert=True)
-    else:
+    if st and st["index"] > 0:
         st["index"] -= 1
-        await send_next_chunk(cb.from_user.id, bot)
-
-@router.callback_query(lambda c: c.data == "learn_ask")
-async def on_learning_ask(cb: types.CallbackQuery, bot):
-    st = user_learning_state.get(cb.from_user.id)
-    if not st:
-        return
-    st["awaiting_question"] = True
-    await bot.send_message(cb.from_user.id, "Задайте ваш вопрос по этому материалу:", reply_markup=ReplyKeyboardRemove())
+    await send_next_chunk(cb.from_user.id, bot)
 
 @router.callback_query(lambda c: c.data == "learn_stop")
-async def on_learning_stop(cb: types.CallbackQuery, bot):
+async def learn_stop(cb: types.CallbackQuery):
     user_learning_state.pop(cb.from_user.id, None)
-    await bot.send_message(
-        cb.from_user.id,
-        "Курс остановлен. Чтобы возобновить, нажми ▶️ Продолжить или выбери 🌱 Курс по органике.",
-        reply_markup=main_kb
-    )
+    await cb.message.answer("Обучение остановлено.", reply_markup=main_kb)
+
+@router.callback_query(lambda c: c.data == "learn_audio")
+async def learn_audio(cb: types.CallbackQuery, bot):
+    """Обработчик кнопки аудио - отправляет аудиофайл пользователю"""
+    st = user_learning_state.get(cb.from_user.id)
+    if not st:
+        await cb.answer("Ошибка: состояние обучения не найдено")
+        return
+    
+    topic = st["topic"]
+    idx = st["index"]
+    
+    # Получаем аудио из базы данных
+    audio_data = get_audio_from_db(topic, idx)
+    if not audio_data:
+        await cb.answer("Аудио для этого фрагмента не найдено")
+        return
+    
+    audio_blob, audio_format, duration_ms = audio_data
+    
+    try:
+        # Отправляем аудио как голосовое сообщение
+        await bot.send_voice(
+            chat_id=cb.from_user.id,
+            voice=BufferedInputFile(
+                audio_blob, 
+                filename=f"{topic}_chunk_{idx}.{audio_format}"
+            ),
+            caption=f"🔊 Аудио к фрагменту «{topic}» (часть {idx+1})"
+        )
+        await cb.answer("Аудио отправлено!")
+        
+    except Exception as e:
+        await cb.answer(f"Ошибка отправки аудио: {str(e)}")
 
 @router.callback_query(lambda c: c.data == "learn_to_chapters")
-async def to_chapters(cb: types.CallbackQuery, bot):
-    buttons = [
-        [InlineKeyboardButton(text=topic, callback_data=f"learn_topic_{i}")]
-        for i, topic in enumerate(LEARNING_TOPICS)
-    ]
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+async def learn_to_chapters(cb: types.CallbackQuery):
+    st = user_learning_state.get(cb.from_user.id)
+    topic = st["topic"] if st else None
     user_learning_state.pop(cb.from_user.id, None)
-    await bot.send_message(cb.from_user.id, "Выберите главу для курса по органике:", reply_markup=kb)
-    await bot.send_message(cb.from_user.id, "Можешь в любой момент вернуться в меню:", reply_markup=choose_chapter_kb)
 
+    if topic in BEGIN_CHEM_TOPICS:
+        buttons = [
+            [InlineKeyboardButton(text=t, callback_data=f"begin_topic_{i}")]
+            for i, t in enumerate(BEGIN_CHEM_TOPICS)
+        ]
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await cb.message.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
 
-# === Работа с голосом и текстом для любого режима ===
-@router.message(lambda m: m.voice is not None)
-async def on_voice(m: types.Message, bot):
-    file = await bot.get_file(m.voice.file_id)
-    path = f"audio_{m.from_user.id}.ogg"
-    await bot.download_file(file.file_path, path)
-    try:
-        txt = await transcribe_audio(path)
-        st = user_learning_state.get(m.from_user.id)
-        if st and st.get("awaiting_question"):
-            answer = await answer_student_question(st["topic"], txt.strip())
-            st["awaiting_question"] = False
-            st["index"] += 1
-            await m.answer(answer)
-            await send_next_chunk(m.from_user.id, bot)
-        else:
-            await process_answer(m, txt.strip())
-    finally:
-        os.remove(path)
+    elif topic in ELEMENT_CHEM_TOPICS:
+        buttons = [
+            [InlineKeyboardButton(text=t, callback_data=f"element_topic_{i}")]
+            for i, t in enumerate(ELEMENT_CHEM_TOPICS)
+        ]
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await cb.message.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
 
-@router.message(lambda m: m.text and not m.text.startswith("/"))
-async def on_text(m: types.Message, bot):
-    st = user_learning_state.get(m.from_user.id)
-    if st and st.get("awaiting_question"):
-        await on_student_question(m, bot)
     else:
-        await process_answer(m, m.text.strip())
+        buttons = [
+            [InlineKeyboardButton(text=t, callback_data=f"learn_topic_{i}")]
+            for i, t in enumerate(LEARNING_TOPICS)
+        ]
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await cb.message.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=kb)
 
-async def process_answer(m: types.Message, transcript: str):
-    uid = m.from_user.id
-    topic = user_topics.pop(uid, None) or await classify_topic(transcript)
-    ctx = "\n\n".join(TEXTBOOK_CONTENT.get(topic, [])[:3])
-    feedback = await analyze_answer(transcript, topic, ctx)
-    clean = clean_html(feedback)
-    save_answer(uid, m.from_user.full_name, topic, transcript, clean)
-    from bot.handlers.menu import main_kb
+# ================== ПОИСК ГЛАВ ==================
+awaiting_topic_search: set[int] = set()
+
+@router.message(lambda m: m.text == "🔎 Поиск главы")
+async def search_topic_start(m: types.Message):
+    awaiting_topic_search.add(m.from_user.id)
+    await m.answer("🔎 Введи часть названия главы (например: «кислоты», «алканы», «связь», «ОВР»).")
+
+@router.message(lambda m: m.from_user.id in awaiting_topic_search)
+async def search_topic_query(m: types.Message):
+    # снимаем ожидание
+    awaiting_topic_search.discard(m.from_user.id)
+    q = (m.text or "").strip().lower()
+    if not q:
+        await m.answer("Пустой запрос. Нажми «🔎 Поиск главы» и попробуй ещё раз.")
+        return
+
+    begin_matches = [(i, t) for i, t in enumerate(BEGIN_CHEM_TOPICS) if q in t.lower()]
+    elem_matches  = [(i, t) for i, t in enumerate(ELEMENT_CHEM_TOPICS) if q in t.lower()]
+    org_matches   = [(i, t) for i, t in enumerate(LEARNING_TOPICS)    if q in t.lower()]
+
+    if not begin_matches and not org_matches and not elem_matches:
+        await m.answer("Ничего не нашлось. Попробуй другое слово и нажми «🔎 Поиск главы».")
+        return
+
+    buttons: list[list[InlineKeyboardButton]] = []
+    if begin_matches:
+        buttons.append([InlineKeyboardButton(text="— Начала химии —", callback_data="noop")])
+        buttons += [[InlineKeyboardButton(text=t, callback_data=f"begin_topic_{i}")] for i, t in begin_matches[:25]]
+
+    if elem_matches:
+        buttons.append([InlineKeyboardButton(text="— Химия элементов —", callback_data="noop")])
+        buttons += [[InlineKeyboardButton(text=t, callback_data=f"element_topic_{i}")] for i, t in elem_matches[:25]]
+
+    if org_matches:
+        buttons.append([InlineKeyboardButton(text="— Органическая химия —", callback_data="noop")])
+        buttons += [[InlineKeyboardButton(text=t, callback_data=f"learn_topic_{i}")] for i, t in org_matches[:25]]
+
+    buttons.append([InlineKeyboardButton(text="⬅️ К разделам теории", callback_data="search_back_theory")])
+
     await m.answer(
-        f"📘 Тема: <b>{topic}</b>\n"
-        f"📝 Ответ: {transcript}\n\n"
-        f"💬 Комментарий:\n{clean}",
-        reply_markup=main_kb
+        "Нашёл вот что — выбери главу:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )
 
-@router.message(lambda m: m.text and m.from_user.id in user_learning_state and user_learning_state[m.from_user.id].get("awaiting_question"))
-async def on_student_question(m: types.Message, bot):
-    st = user_learning_state[m.from_user.id]
-    topic = st["topic"]
-    answer = await answer_student_question(topic, m.text.strip())
-    st["awaiting_question"] = False
-    st["index"] += 1
-    await m.answer(answer)
-    await send_next_chunk(m.from_user.id, bot)
+@router.callback_query(lambda c: c.data == "search_back_theory")
+async def search_back_theory(cb: types.CallbackQuery):
+    rows = [
+        [KeyboardButton(text="📖 Начала химии")],
+        [KeyboardButton(text="⚗️ Химия элементов")],
+        [KeyboardButton(text="🧬 Органическая химия")],
+        [KeyboardButton(text="🔎 Поиск главы")],
+        [KeyboardButton(text="⬅️ В меню")],
+    ]
+    kb = ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    await cb.message.answer("Выбери раздел теории:", reply_markup=kb)
+    await cb.answer()
 
-@router.message(lambda m: m.text == "▶️ Продолжить")
-async def resume_course(m: types.Message):
-    # Проверяем, есть ли сохранённое состояние курса для пользователя
-    state = user_learning_state.get(m.from_user.id)
-    if not state:
-        await m.answer("Ты ещё не начинал курс. Выбери 'Курс по органике' для старта.", reply_markup=main_kb)
+@router.callback_query(lambda c: c.data == "noop")
+async def noop(cb: types.CallbackQuery):
+    # декоративный разделитель
+    await cb.answer()
+
+# ================== Вопрос по теории ==================
+@router.callback_query(lambda c: c.data == "learn_ask")
+async def learn_ask(cb: types.CallbackQuery):
+    st = user_learning_state.get(cb.from_user.id)
+    if st:
+        st["awaiting_question"] = True
+    await cb.message.answer("Напиши свой вопрос по этой главе:")
+
+@router.message()
+async def catch_user_question(m: types.Message):
+    st = user_learning_state.get(m.from_user.id)
+    if not st or not st.get("awaiting_question"):
         return
-    # Если состояние есть — показываем следующий chunk
-    from bot.handlers.topics import send_next_chunk  # импорт функции показа следующей порции
-    await send_next_chunk(m.from_user.id, m.bot)
+    st["awaiting_question"] = False
+    topic = st["topic"]
+    # Ответ формирует реальная функция из gpt_service.py
+    answer = await answer_student_question(topic, m.text)
+    await m.answer(answer)
