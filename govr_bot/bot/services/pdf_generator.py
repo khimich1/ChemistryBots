@@ -34,15 +34,16 @@ CLR_BG_FADE    = "#fdebbd"   # светлая подложка (fallback)
 CLR_GREY_LIGHT = "#e9eef2"
 
 # ──────── Пути проекта ────────
-_THIS_DIR     = os.path.dirname(__file__)                    # bot/services
-_PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", ".."))
-FONTS_DIR     = os.path.join(_PROJECT_ROOT, "Fonts")
-# важно: путь к базе ответов берём из .env (DB_ANSWERS). Если не задан — fallback в shared/test_answers.db
+_THIS_DIR     = os.path.dirname(__file__)                    # govr_bot/bot/services
+# Корнем проекта считаем папку ChemistryBots, на один уровень выше govr_bot
+_PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
+FONTS_DIR     = os.path.join(_PROJECT_ROOT, "govr_bot", "Fonts")
+# важно: путь к базе ответов берём из .env (DB_ANSWERS). Если не задан — fallback в shared/test_answers.db (корень)
 DB_ANSWERS    = os.getenv("DB_ANSWERS") or os.path.join(_PROJECT_ROOT, "shared", "test_answers.db")
 
 # путь к базе с заданиями тестов (для определения количества вариантов и типов тестов)
 # можно переопределить через .env переменной TESTS_DB
-TESTS_DB      = os.getenv("TESTS_DB") or os.path.join(_PROJECT_ROOT, "bot", "tests1.db")
+TESTS_DB      = os.getenv("TESTS_DB") or os.path.join(_PROJECT_ROOT, "govr_bot", "bot", "tests1.db")
 
 def _detect_questions_per_test() -> int:
     """Определяем количество вариантов (вопросов на тип теста) по базе tests1.db.

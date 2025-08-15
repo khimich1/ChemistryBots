@@ -1,7 +1,11 @@
+import os
 import sqlite3
 from datetime import datetime
 
-DB_FILE = "../shared/test_answers.db"
+# Единая БД ответов в корне проекта: ChemistryBots/shared/test_answers.db
+_THIS_DIR = os.path.dirname(__file__)  # govr_bot/bot/services
+_PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
+DB_FILE = os.getenv("DB_ANSWERS") or os.path.join(_PROJECT_ROOT, "shared", "test_answers.db")
   # Имя файла с базой данных
 
 # 1. Создаём таблицу ответов (вызывается один раз при запуске)
