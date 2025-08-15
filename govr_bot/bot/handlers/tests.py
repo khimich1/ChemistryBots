@@ -12,7 +12,8 @@ from bot.services.answer_db import (
     get_mistake_questions,
     set_answer_correct,
     log_question_started,
-    log_question_answered
+    log_question_answered,
+    get_user_full_name
 )
 from bot.services.test_sql import get_all_tests_types, get_questions_by_type, get_question_by_id
 
@@ -227,7 +228,8 @@ async def check_test_answer(m: types.Message):
         q["question"],
         m.text,
         q.get("correct_answer", ""),
-        is_correct
+        is_correct,
+        full_name=get_user_full_name(m.from_user.id)
     )
 
     if is_correct:

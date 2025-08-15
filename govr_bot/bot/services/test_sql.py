@@ -1,7 +1,16 @@
+import os
 import sqlite3
+from dotenv import load_dotenv
 
-# Абсолютный путь к базе данных
-DB_FILE = r"C:\Users\Роман\Desktop\govr_bot\bot\tests1.db"
+# Загружаем .env и корректно определяем путь к базе с тестами
+load_dotenv()
+
+# База с вопросами тестов (таблица `tests`).
+# 1) Если задано в .env (TESTS_DB_PATH) — используем его
+# 2) Иначе берём дефолт: ChemistryBots/shared/tests1.db
+_THIS_DIR = os.path.dirname(__file__)                             # govr_bot/bot/services
+_PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
+DB_FILE = os.getenv("TESTS_DB_PATH") or os.path.join(_PROJECT_ROOT, "shared", "tests1.db")
 
 def get_all_tests_types():
     """

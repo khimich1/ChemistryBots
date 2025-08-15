@@ -34,12 +34,20 @@ CLR_BG_FADE    = "#fdebbd"   # светлая подложка (fallback)
 CLR_GREY_LIGHT = "#e9eef2"
 
 # ──────── Пути проекта ────────
-_THIS_DIR     = os.path.dirname(__file__)                    # bot/services
-_PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", ".."))
-FONTS_DIR     = os.path.join(_PROJECT_ROOT, "Fonts")
-# важно: shared/test_answers.db лежит в корне проекта рядом с папкой bot
-DB_ANSWERS    = os.path.join(_PROJECT_ROOT, "shared", "test_answers.db")
-LOGO_PATH     = os.path.join(FONTS_DIR, "Logo_Low.png")      # путь к логотипу (если есть)
+_THIS_DIR      = os.path.dirname(__file__)                    # bot/services
+# root govr_bot (для ресурсов бота: Fonts и т.п.)
+_BOT_ROOT      = os.path.normpath(os.path.join(_THIS_DIR, "..", ".."))
+# корень всего репозитория ChemistryBots (для shared/*.db)
+_REPO_ROOT     = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
+
+FONTS_DIR      = os.path.join(_BOT_ROOT, "Fonts")
+LOGO_PATH      = os.path.join(FONTS_DIR, "Logo_Low.png")      # путь к логотипу (если есть)
+
+# БД ответов (test_answers.db) хранится в общем каталоге shared
+DB_ANSWERS     = os.path.join(_REPO_ROOT, "shared", "test_answers.db")
+
+# БД вопросов тестов (tests1.db) — можно переопределить через .env
+DB_TESTS       = os.getenv("TESTS_DB_PATH") or os.path.join(_REPO_ROOT, "shared", "tests1.db")
 
 # ───────── Шрифты ─────────
 def _register_fonts():
@@ -464,7 +472,9 @@ def make_report(user_id: int, fullname: str, records: List[dict], filename: str 
     # ── ШАПКА
     story.append(TopTitle("Отчет по обучению"))
     story.append(Spacer(1, 8))
-    story.append(Paragraph(f"Имя: <b>{fullname or '—'}</b>", styles["Info"]))
+    # Имя берём из БД (user_profiles → test_answers), а переданный fullname используем как fallback
+    resolved_fullname = _get_full_name_for_report(user_id, fallback_fullname=fullname)
+    story.append(Paragraph(f"Имя: <b>{resolved_fullname or '—'}</b>", styles["Info"]))
     story.append(Paragraph(f"Дата отчёта: <b>{datetime.now().strftime('%d.%m.%Y')}</b>", styles["Info"]))
     story.append(Spacer(1, 14))
 
@@ -541,4 +551,67 @@ def make_report(user_id: int, fullname: str, records: List[dict], filename: str 
 
     return filename
 
+
+def _get_full_name_for_report(user_id: int, *, fallback_fullname: str | None = None) -> str | None:
+    """Достаём ФИО ученика из БД: сначала из user_profiles, потом из последних ответов.
+    Если ничего нет — возвращаем fallback_fullname.
+    """
+    try:
+        with sqlite3.connect(DB_ANSWERS) as conn:
+            c = conn.cursor()
+            # 1) user_profiles
+            c.execute(
+                "SELECT COALESCE(NULLIF(TRIM(full_name), ''), NULL) FROM user_profiles WHERE user_id=?",
+                (user_id,)
+            )
+            row = c.fetchone()
+            if row and row[0]:
+                return row[0]
+            # 2) test_answers (последний ответ с непустым full_name)
+            c.execute(
+                """
+                SELECT full_name
+                FROM test_answers
+                WHERE user_id=? AND TRIM(COALESCE(full_name, ''))!=''
+                ORDER BY answer_time DESC, id DESC
+                LIMIT 1
+                """,
+                (user_id,)
+            )
+            row = c.fetchone()
+            if row and row[0]:
+                return row[0]
+    except Exception:
+        pass
+    return (fallback_fullname or "").strip() or None
+
+def _detect_questions_per_test() -> int:
+    """
+    Максимальное количество вопросов на один тип теста по базе tests1.db.
+    Если база/таблица недоступны — вернём 19 (стандарт ЕГЭ по химии).
+    """
+    try:
+        with sqlite3.connect(DB_TESTS) as conn:
+            c = conn.cursor()
+            c.execute("SELECT MAX(cnt) FROM (SELECT type, COUNT(*) AS cnt FROM tests GROUP BY type)")
+            row = c.fetchone()
+            val = int(row[0]) if row and row[0] is not None else None
+            return val or 19
+    except Exception:
+        return 19
+
+
+def _detect_num_test_types() -> int:
+    """
+    Количество уникальных типов тестов по базе tests1.db.
+    Если база/таблица недоступны — вернём 28.
+    """
+    try:
+        with sqlite3.connect(DB_TESTS) as conn:
+            c = conn.cursor()
+            c.execute("SELECT COUNT(DISTINCT type) FROM tests")
+            row = c.fetchone()
+            return int(row[0] or 28)
+    except Exception:
+        return 28
 

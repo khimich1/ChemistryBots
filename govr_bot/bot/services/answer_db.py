@@ -10,13 +10,21 @@ DB_FILE = os.getenv("DB_ANSWERS") or os.path.join(_PROJECT_ROOT, "shared", "test
 
 # 1. Создаём таблицу ответов (вызывается один раз при запуске)
 def init_db():
+    """
+    Инициализация/миграции БД:
+      - test_answers (добавляем столбец full_name при необходимости)
+      - user_profiles (храним ФИО, чтобы не спрашивать каждый раз)
+      - test_activity
+    """
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
+        # Основная таблица ответов
         c.execute('''
             CREATE TABLE IF NOT EXISTS test_answers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 username TEXT,
+                full_name TEXT,
                 answer_time TEXT,
                 test_type INTEGER,
                 question_id INTEGER,
@@ -26,21 +34,42 @@ def init_db():
                 is_correct INTEGER
             )
         ''')
+        # Если таблица уже существовала без full_name — добавим
+        c.execute("PRAGMA table_info(test_answers)")
+        cols = {row[1] for row in c.fetchall()}
+        if "full_name" not in cols:
+            c.execute("ALTER TABLE test_answers ADD COLUMN full_name TEXT")
+        # Профили пользователей: user_id -> username, full_name
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                created_at TEXT
+            )
+        ''')
         conn.commit()
     # --- Инициализация таблицы активности вопросов ---
     init_activity_table()
 
 # 2. Запись одного ответа в таблицу test_answers
-def save_test_answer(user_id, username, test_type, question_id, question_text, user_answer, correct_answer, is_correct):
+def save_test_answer(user_id, username, test_type, question_id, question_text, user_answer, correct_answer, is_correct, *, full_name: str | None = None):
+    """
+    Сохраняем ответ. Поле full_name берём из аргумента или, если не передано,
+    пробуем подтянуть из user_profiles.
+    """
+    if full_name is None:
+        full_name = get_user_full_name(user_id)
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
         c.execute('''
             INSERT INTO test_answers
-            (user_id, username, answer_time, test_type, question_id, question_text, user_answer, correct_answer, is_correct)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (user_id, username, full_name, answer_time, test_type, question_id, question_text, user_answer, correct_answer, is_correct)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id,
             username,
+            full_name,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             test_type,
             question_id,
@@ -166,6 +195,35 @@ def init_activity_table():
                 is_correct INTEGER
             )
         ''')
+        conn.commit()
+
+# ========================
+#   ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ
+# ========================
+
+def get_user_full_name(user_id: int) -> str | None:
+    """Возвращает сохранённое ФИО пользователя (если есть)."""
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute("SELECT COALESCE(NULLIF(TRIM(full_name), ''), NULL) FROM user_profiles WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        return row[0] if row else None
+
+
+def set_user_full_name(user_id: int, username: str | None, full_name: str) -> None:
+    """Сохраняет/обновляет ФИО пользователя в таблице user_profiles."""
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO user_profiles (user_id, username, full_name, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, full_name=excluded.full_name
+        ''', (
+            user_id,
+            username,
+            full_name,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ))
         conn.commit()
 
 def log_question_started(user_id, test_type, question_id):
