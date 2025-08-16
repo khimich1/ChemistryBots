@@ -121,6 +121,14 @@ def _generate_report_pdf(user_id: int, fallback_name: str | None = None) -> str:
 	return (res.stdout.strip() or out_path)
 
 
+def _safe_unlink(path: str) -> None:
+	try:
+		if path and os.path.exists(path):
+			os.remove(path)
+	except Exception:
+		pass
+
+
 @router.message(F.text.in_({"📊 Отчёт об успеваемости", "💳 Оплата занятий"}))
 async def stubs(message: Message, state: FSMContext):
 	if message.text == "📊 Отчёт об успеваемости":
@@ -136,7 +144,10 @@ async def stubs(message: Message, state: FSMContext):
 			await message.answer("Не нашёл такого ученика в базе ответов. Убедитесь, что он проходил тесты.")
 			return
 		pdf_path = _generate_report_pdf(student_id, fallback_name=child_nick)
-		await message.answer_document(FSInputFile(pdf_path), caption=f"Отчёт для {child_nick}")
+		try:
+			await message.answer_document(FSInputFile(pdf_path), caption=f"Отчёт для {child_nick}")
+		finally:
+			_safe_unlink(pdf_path)
 	else:
 		await message.answer("Оплата занятий: скоро будет доступна.")
 
@@ -151,7 +162,10 @@ async def child_nick_for_report(message: Message, state: FSMContext):
 		await message.answer("Не нашёл такого ученика в базе ответов. Убедитесь, что он проходил тесты.")
 		return
 	pdf_path = _generate_report_pdf(student_id, fallback_name=child_nick)
-	await message.answer_document(FSInputFile(pdf_path), caption=f"Отчёт для {child_nick}")
+	try:
+		await message.answer_document(FSInputFile(pdf_path), caption=f"Отчёт для {child_nick}")
+	finally:
+		_safe_unlink(pdf_path)
 
 
 @router.message(F.text == "🤖 Доступ к GPT")

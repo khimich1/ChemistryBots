@@ -1,3 +1,4 @@
+import os
 from aiogram import Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -80,6 +81,12 @@ async def student_progress(cb: types.CallbackQuery):
         await cb.message.answer_document(document=types.FSInputFile(path), caption=f"Отчёт по ученику ID {user_id}")
     except Exception as e:
         await cb.message.answer(f"Не удалось отправить отчёт: {e}")
+    finally:
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
     await cb.answer()
 
 

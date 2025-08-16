@@ -69,6 +69,19 @@ if ! grep -qE '^BOT_TOKEN=[^#[:space:]]' .env || grep -q 'BOT_TOKEN=PUT_YOUR_TOK
   exit 1
 fi
 
+# Остановим предыдущие запуски, чтобы избежать TelegramConflictError
+echo "[run] Stopping previous bot instances (if any)..."
+pkill -f 'prepod_bot/main.py' >/dev/null 2>&1 || true
+
+# Удалим вебхук на всякий случай (если когда-то включали)
+if command -v curl >/dev/null 2>&1; then
+  BOT_TOKEN_VAL=$(grep '^BOT_TOKEN=' .env | head -1 | cut -d= -f2- | sed "s/^['\"]//; s/['\"]$//")
+  if [ -n "$BOT_TOKEN_VAL" ] && [ "$BOT_TOKEN_VAL" != "PUT_YOUR_TOKEN_HERE" ]; then
+    echo "[run] Deleting Telegram webhook..."
+    curl -s "https://api.telegram.org/bot${BOT_TOKEN_VAL}/deleteWebhook" >/dev/null || true
+  fi
+fi
+
 # Убедимся, что файлы БД существуют в shared (создадим пустые, если нет)
 SHARED_DIR="/home/username/Рабочий стол/my py/ChemistryBots/shared"
 mkdir -p "$SHARED_DIR"
