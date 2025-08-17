@@ -31,7 +31,7 @@ async def main():
     dp.include_router(menu_router)
 
     await set_bot_commands(bot)
-    print("Parent bot started!")
+    logging.info("Parent bot started!")
     await dp.start_polling(bot)
 
 

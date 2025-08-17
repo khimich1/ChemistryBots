@@ -211,3 +211,174 @@ def get_question_position(user_id: int, test_type: int, question_id: int) -> Tup
     if ids and question_id in ids:
         pos = ids.index(int(question_id)) + 1
     return pos, total
+
+
+def _latest_identity_row(conn: sqlite3.Connection, user_id: int) -> Optional[tuple]:
+    """
+    Возвращает кортеж (full_name, username) из последнего ответа пользователя.
+    Пустые строки приводим к NULL на уровне SQL.
+    """
+    return _safe_fetchone(
+        conn,
+        """
+        SELECT
+            NULLIF(TRIM(full_name), '') AS full_name,
+            NULLIF(TRIM(username), '')  AS username
+        FROM test_answers
+        WHERE user_id = ?
+        ORDER BY
+          CASE WHEN TRIM(COALESCE(answer_time, '')) <> '' THEN answer_time ELSE NULL END DESC,
+          id DESC
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+
+
+def get_all_students() -> List[Dict[str, Any]]:
+    """
+    Собирает список всех уникальных учеников из БД `test_answers.db`.
+    Правило имени: full_name → username → str(user_id).
+    Возвращает список словарей: {user_id, full_name, username, label}.
+    """
+    results: List[Dict[str, Any]] = []
+    with sqlite3.connect(DB_PATH) as conn:
+        # Собираем всех из ответов и профилей
+        ids_set: set[int] = set()
+        for (uid,) in _safe_fetchall(conn, "SELECT DISTINCT user_id FROM test_answers"):
+            try:
+                ids_set.add(int(uid))
+            except Exception:
+                pass
+        for (uid,) in _safe_fetchall(conn, "SELECT user_id FROM user_profiles"):
+            try:
+                ids_set.add(int(uid))
+            except Exception:
+                pass
+
+        for user_id in sorted(ids_set):
+            # Пропускаем скрытых
+            if _is_hidden(conn, user_id):
+                continue
+            # Имя: user_profiles → последний ответ
+            full_name, username = get_identity(conn, user_id)
+            if not (full_name or username):
+                row = _latest_identity_row(conn, user_id) or (None, None)
+                full_name, username = row
+            label = (full_name or username or f"ID {user_id}")
+            results.append({
+                "user_id": user_id,
+                "full_name": full_name,
+                "username": username,
+                "label": label,
+            })
+    # Сортируем по label для стабильности отображения
+    results.sort(key=lambda s: str(s.get("label") or ""))
+    return results
+
+
+def _ensure_user_profiles(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            full_name TEXT,
+            created_at TEXT,
+            hide_reason TEXT
+        )
+        """
+    )
+    # Миграция: добавляем столбец hide_reason, если его нет
+    cur.execute("PRAGMA table_info(user_profiles)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "hide_reason" not in cols:
+        cur.execute("ALTER TABLE user_profiles ADD COLUMN hide_reason TEXT")
+    conn.commit()
+
+
+def get_identity(conn: sqlite3.Connection, user_id: int) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Возвращает (full_name, username) с приоритетом user_profiles → test_answers.
+    """
+    _ensure_user_profiles(conn)
+    row = _safe_fetchone(
+        conn,
+        "SELECT NULLIF(TRIM(full_name), ''), NULLIF(TRIM(username), '') FROM user_profiles WHERE user_id=?",
+        (user_id,),
+    )
+    if row and (row[0] or row[1]):
+        return row[0], row[1]
+    latest = _latest_identity_row(conn, user_id) or (None, None)
+    return latest[0], latest[1]
+
+
+def update_user_profile(user_id: int, *, username: Optional[str] = None, full_name: Optional[str] = None) -> None:
+    """
+    Обновляет профиль пользователя в user_profiles. Если записи нет — создаёт.
+    Пустые строки трактуются как NULL (очистка поля).
+    """
+    username = (username or "").strip()
+    full_name = (full_name or "").strip()
+    username_val = username if username else None
+    full_name_val = full_name if full_name else None
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_user_profiles(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM user_profiles WHERE user_id=?", (user_id,))
+        exists = cur.fetchone() is not None
+        if exists:
+            if username is not None:
+                cur.execute("UPDATE user_profiles SET username=? WHERE user_id=?", (username_val, user_id))
+            if full_name is not None:
+                cur.execute("UPDATE user_profiles SET full_name=? WHERE user_id=?", (full_name_val, user_id))
+        else:
+            cur.execute(
+                """
+                INSERT INTO user_profiles (user_id, username, full_name, created_at)
+                VALUES (?, ?, ?, datetime('now','localtime'))
+                """,
+                (user_id, username_val, full_name_val),
+            )
+        conn.commit()
+
+
+def _is_hidden(conn: sqlite3.Connection, user_id: int) -> bool:
+    _ensure_user_profiles(conn)
+    row = _safe_fetchone(
+        conn,
+        "SELECT NULLIF(TRIM(hide_reason), '') FROM user_profiles WHERE user_id=?",
+        (user_id,),
+    )
+    return bool(row and row[0])
+
+
+def clear_hide_reason_all() -> int:
+    """Очищает поле hide_reason у всех пользователей. Возвращает число изменённых строк."""
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_user_profiles(conn)
+        cur = conn.cursor()
+        cur.execute("UPDATE user_profiles SET hide_reason=NULL WHERE TRIM(COALESCE(hide_reason, '')) <> ''")
+        conn.commit()
+        return cur.rowcount or 0
+
+
+def set_hide_reason(user_id: int, reason: Optional[str]) -> None:
+    """Устанавливает причину скрытия (или очищает при reason=None)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_user_profiles(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM user_profiles WHERE user_id=?", (user_id,))
+        exists = cur.fetchone() is not None
+        if exists:
+            cur.execute("UPDATE user_profiles SET hide_reason=? WHERE user_id=?", (reason, user_id))
+        else:
+            cur.execute(
+                """
+                INSERT INTO user_profiles (user_id, hide_reason, created_at)
+                VALUES (?, ?, datetime('now','localtime'))
+                """,
+                (user_id, reason),
+            )
+        conn.commit()

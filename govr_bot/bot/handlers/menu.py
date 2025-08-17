@@ -1,14 +1,20 @@
 from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 
 from bot.utils import user_learning_state
 from bot.services.spreadsheet import fetch_user_records
+from bot.services.answer_db import get_user_full_name, set_user_full_name
 from bot.services.pdf_generator import make_report
 
 # если main_kb используется в других файлах — импортируй там: from bot.handlers.menu import main_kb
 
 router = Router()
+class ProfileStates(StatesGroup):
+    waiting_full_name = State()
+
 
 # ==== Главное меню (обновлено) ====
 main_kb = ReplyKeyboardMarkup(
@@ -30,13 +36,37 @@ main_kb = ReplyKeyboardMarkup(
 
 # ==== /start и возврат в меню ====
 @router.message(lambda m: m.text == "/start" or m.text == "Меню" or m.text == "⬅️ В меню")
-async def cmd_start(m: types.Message):
+async def cmd_start(m: types.Message, state: FSMContext):
+    full_name = get_user_full_name(m.from_user.id)
+    if not full_name:
+        await state.set_state(ProfileStates.waiting_full_name)
+        await m.answer(
+            "Пожалуйста, напиши своё имя и фамилию в одном сообщении (например: Иван Петров).\n"
+            "Это нужно для отчётов и статистики.")
+        return
+
     await m.answer(
         "👋 Привет! Я помогу тебе разобраться в химии.\n\n"
         "• 📚 Теория по химии — изучай главы по разделам (Начала, Элементы, Органика)\n"
         "• 🧪 Устный зачет — отвечай голосом, ИИ проверит и подскажет\n"
         "• 📝 Тесты — тренируйся и работай над ошибками\n"
         "• 📈 Получить отчёт — PDF с твоим прогрессом",
+        reply_markup=main_kb
+    )
+
+@router.message(ProfileStates.waiting_full_name)
+async def set_full_name(m: types.Message, state: FSMContext):
+    text = (m.text or "").strip()
+    # Простая валидация: хотя бы два слова
+    parts = [p for p in text.replace("  ", " ").split(" ") if p]
+    if len(parts) < 2:
+        await m.answer("Похоже, это не имя и фамилия. Напиши, пожалуйста, имя и фамилию, например: Мария Иванова")
+        return
+    full_name = " ".join(parts[:3])  # на всякий — первые 2-3 слова
+    set_user_full_name(m.from_user.id, getattr(m.from_user, "username", None), full_name)
+    await state.clear()
+    await m.answer(
+        "Спасибо! Сохранил твоё имя. Ниже — главное меню.",
         reply_markup=main_kb
     )
 
