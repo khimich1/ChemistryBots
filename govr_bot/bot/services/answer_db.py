@@ -27,6 +27,32 @@ def init_db():
             )
         ''')
         conn.commit()
+        # --- Таблица ответов на задания из теории ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS theory_task_answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                topic TEXT,
+                chunk_idx INTEGER,
+                question_index INTEGER,
+                question_text TEXT,
+                answer_text TEXT,
+                answer_type TEXT,
+                voice_file_id TEXT,
+                is_correct INTEGER,
+                feedback TEXT,
+                created_at TEXT
+            )
+        ''')
+        conn.commit()
+        # Гарантируем наличие новых столбцов при обновлении
+        cols = {row[1] for row in c.execute("PRAGMA table_info(theory_task_answers)")}
+        if "is_correct" not in cols:
+            c.execute("ALTER TABLE theory_task_answers ADD COLUMN is_correct INTEGER")
+        if "feedback" not in cols:
+            c.execute("ALTER TABLE theory_task_answers ADD COLUMN feedback TEXT")
+        conn.commit()
     # --- Инициализация таблицы активности вопросов ---
     init_activity_table()
 
@@ -206,3 +232,69 @@ def log_question_answered(user_id, question_id, user_answer, is_correct):
             question_id
         ))
         conn.commit()
+
+# ========================
+#   СОХРАНЕНИЕ ОТВЕТОВ ПО ТЕОРИИ
+# ========================
+
+def save_theory_task_answer(
+    user_id: int,
+    username: str,
+    topic: str,
+    chunk_idx: int,
+    question_index: int,
+    question_text: str,
+    answer_text: str,
+    answer_type: str,
+    voice_file_id: str | None = None,
+    is_correct: bool | None = None,
+    feedback: str | None = None,
+):
+    """Сохраняет ответ ученика на вопрос из раздела теории.
+
+    answer_type: "text" или "voice"
+    voice_file_id: file_id голосового (если есть)
+    """
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO theory_task_answers
+               (user_id, username, topic, chunk_idx, question_index, question_text, answer_text, answer_type, voice_file_id, is_correct, feedback, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (
+                user_id,
+                username,
+                topic,
+                int(chunk_idx),
+                int(question_index),
+                question_text,
+                answer_text or "",
+                answer_type,
+                voice_file_id,
+                int(is_correct) if is_correct is not None else None,
+                feedback or "",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        conn.commit()
+
+
+def get_theory_stats(user_id: int, topic: str) -> tuple[int, int]:
+    """Возвращает (correct, total) по ответам ученика в теории для указанной темы.
+    Учитываются только ответы, где is_correct не NULL.
+    """
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT 
+                SUM(CASE WHEN is_correct=1 THEN 1 ELSE 0 END) AS correct_cnt,
+                COUNT(*) AS total_cnt
+            FROM theory_task_answers
+            WHERE user_id=? AND topic=? AND is_correct IS NOT NULL
+            """,
+            (user_id, topic),
+        )
+        row = c.fetchone() or (0, 0)
+        correct, total = row[0] or 0, row[1] or 0
+        return int(correct), int(total)

@@ -7,6 +7,7 @@ from aiogram.types import (
     BufferedInputFile,
 )
 from aiogram.enums import ParseMode
+import random
 
 from bot.utils import (
     ALL_TOPICS,  # не используется напрямую, но оставим для расширений
@@ -21,21 +22,62 @@ from bot.utils import (
     get_prepared_chunks_count,
     get_prepared_lecture,
     get_audio_from_db,
+    get_qa_questions,
+    get_qa_answers,
 )
 from bot.handlers.menu import main_kb
 from bot.services.gpt_service import answer_student_question
+from bot.services.gpt_service import transcribe_audio, grade_theory_answer
+from bot.services.answer_db import save_theory_task_answer, get_theory_stats
+import httpx
+import difflib
 
 router = Router()
 
 # ================== Разделы «Теории по химии» ==================
 
+# Узкий фильтр: сообщение считается ответом на задание, только если
+# у пользователя есть назначенный вопрос для текущего фрагмента
+def _has_assigned_task(m: types.Message) -> bool:
+    st = user_learning_state.get(m.from_user.id)
+    if not st:
+        return False
+    assigned = st.get("assigned_tasks", {})
+    key = f"{st.get('topic')}:{st.get('index')}"
+    return key in assigned and not st.get("awaiting_question")
+
+# Цветная точка прогресса рядом с названием темы
+def _topic_progress_dot(user_id: int, topic: str) -> str:
+    try:
+        import math
+        correct, _ = get_theory_stats(user_id, topic)
+        # Сколько всего порций по теме
+        chunks_json = TEXTBOOK_CONTENT.get(topic, [])
+        total_from_json = len(chunks_json)
+        total_from_db = get_prepared_chunks_count(topic)
+        total = total_from_json if total_from_json > 0 else total_from_db
+        if total <= 0 or correct <= 0:
+            return ""  # без индикатора при отсутствии прогресса
+        t_satisf = max(1, math.ceil(0.3 * total))
+        t_good   = max(1, math.floor(0.5 * total) + 1)
+        t_excell = max(1, math.floor(0.7 * total) + 1)
+        if correct >= t_excell:
+            return "🟩"   # отлично — зелёный
+        if correct >= t_good:
+            return "🟨"   # хорошо — жёлтый
+        if correct >= t_satisf:
+            return "🟥"   # удовлетворительно — красный
+        return ""        # <30% — без индикатора
+    except Exception:
+        return "⬛"
+
 # 1) Начала химии — список глав
 @router.message(lambda m: m.text == "📖 Начала химии")
 async def begin_chem(m: types.Message):
-    buttons = [
-        [InlineKeyboardButton(text=topic, callback_data=f"begin_topic_{i}")]
-        for i, topic in enumerate(BEGIN_CHEM_TOPICS)
-    ]
+    buttons = []
+    for i, topic in enumerate(BEGIN_CHEM_TOPICS):
+        dot = _topic_progress_dot(m.from_user.id, topic)
+        buttons.append([InlineKeyboardButton(text=f"{dot} {topic}", callback_data=f"begin_topic_{i}")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await m.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
 
@@ -54,10 +96,10 @@ async def begin_topic_chosen(cb: types.CallbackQuery, bot):
 # 2) Химия элементов — СПИСОК ГЛАВ (полноценный)
 @router.message(lambda m: m.text == "⚗️ Химия элементов")
 async def element_chem(m: types.Message):
-    buttons = [
-        [InlineKeyboardButton(text=topic, callback_data=f"element_topic_{i}")]
-        for i, topic in enumerate(ELEMENT_CHEM_TOPICS)
-    ]
+    buttons = []
+    for i, topic in enumerate(ELEMENT_CHEM_TOPICS):
+        dot = _topic_progress_dot(m.from_user.id, topic)
+        buttons.append([InlineKeyboardButton(text=f"{dot} {topic}", callback_data=f"element_topic_{i}")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await m.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
 
@@ -76,10 +118,10 @@ async def element_topic_chosen(cb: types.CallbackQuery, bot):
 # 3) Органическая химия — список глав
 @router.message(lambda m: m.text == "🧬 Органическая химия")
 async def organic_chem(m: types.Message):
-    buttons = [
-        [InlineKeyboardButton(text=topic, callback_data=f"learn_topic_{i}")]
-        for i, topic in enumerate(LEARNING_TOPICS)
-    ]
+    buttons = []
+    for i, topic in enumerate(LEARNING_TOPICS):
+        dot = _topic_progress_dot(m.from_user.id, topic)
+        buttons.append([InlineKeyboardButton(text=f"{dot} {topic}", callback_data=f"learn_topic_{i}")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await m.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=kb)
 
@@ -160,6 +202,8 @@ async def send_next_chunk(user_id: int, bot):
     # Проверяем наличие аудио для этого фрагмента
     audio_data = get_audio_from_db(topic, idx)
     has_audio = audio_data is not None
+    # Запомним в состоянии, чтобы уметь корректно редактировать клавиатуру позже
+    st["has_audio"] = has_audio
 
     # Создаем клавиатуру с кнопкой аудио если есть аудио
     keyboard_buttons = [
@@ -167,8 +211,9 @@ async def send_next_chunk(user_id: int, bot):
             InlineKeyboardButton(text="◀️ Назад", callback_data="learn_back"),
             InlineKeyboardButton(text="Далее", callback_data="learn_ok"),
         ],
+        [InlineKeyboardButton(text="📝 Задание", callback_data="learn_task")],
         [
-            InlineKeyboardButton(text="❓ Есть вопрос", callback_data="learn_ask"),
+            InlineKeyboardButton(text="❓ Спросить ИИ", callback_data="learn_ask"),
             InlineKeyboardButton(text="■ Стоп", callback_data="learn_stop"),
             InlineKeyboardButton(text="🏠 К главам", callback_data="learn_to_chapters"),
         ],
@@ -176,7 +221,7 @@ async def send_next_chunk(user_id: int, bot):
     
     # Добавляем кнопку аудио если есть аудио
     if has_audio:
-        keyboard_buttons.insert(1, [
+        keyboard_buttons.insert(2, [
             InlineKeyboardButton(text="🔊 Слушать аудио", callback_data="learn_audio")
         ])
 
@@ -242,6 +287,307 @@ async def learn_audio(cb: types.CallbackQuery, bot):
         
     except Exception as e:
         await cb.answer(f"Ошибка отправки аудио: {str(e)}")
+
+@router.callback_query(lambda c: c.data == "learn_task")
+async def learn_task(cb: types.CallbackQuery):
+    """Отправляет вопросы из prepared_lectures.qa_questions по текущему фрагменту."""
+    st = user_learning_state.get(cb.from_user.id)
+    if not st:
+        await cb.answer("Нет активной главы")
+        return
+
+    topic = st["topic"]
+    idx = st["index"]
+    questions = get_qa_questions(topic, idx)
+    if not questions:
+        await cb.message.answer("Пока нет задания для этого фрагмента.")
+        await cb.answer()
+        return
+
+    # Показываем только ОДИН вопрос из набора. Стараемся распределять по пользователям.
+    assigned = st.setdefault("assigned_tasks", {})  # key: "topic:idx" -> q_index
+    key = f"{topic}:{idx}"
+    if key in assigned:
+        q_index = assigned[key]
+    else:
+        q_index = random.randrange(len(questions))
+        assigned[key] = q_index
+
+    question_text = questions[q_index]
+    # Добавим кнопку: показать образец (на всякий) — но саму кнопку выводим только после неверного ответа.
+    text = (
+        "📝 Задание по теме\n"
+        f"«{topic}», часть {idx+1}\n\n"
+        f"Вопрос №{q_index+1}: {question_text}\n\nНапиши ответ текстом или отправь голосовое."
+    )
+    await cb.message.answer(text)
+    # После показа задания скрываем кнопку «Спросить ИИ» до следующего вопроса
+    try:
+        st = user_learning_state.get(cb.from_user.id) or {}
+        has_audio = bool(st.get("has_audio"))
+        keyboard_buttons = [
+            [
+                InlineKeyboardButton(text="◀️ Назад", callback_data="learn_back"),
+                InlineKeyboardButton(text="Далее", callback_data="learn_ok"),
+            ],
+            [InlineKeyboardButton(text="📝 Задание", callback_data="learn_task")],
+        ]
+        if has_audio:
+            keyboard_buttons.append([InlineKeyboardButton(text="🔊 Слушать аудио", callback_data="learn_audio")])
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="■ Стоп", callback_data="learn_stop"),
+            InlineKeyboardButton(text="🏠 К главам", callback_data="learn_to_chapters"),
+        ])
+        await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
+    except Exception:
+        pass
+    await cb.answer()
+
+@router.callback_query(lambda c: c.data == "learn_task_next")
+async def learn_task_next(cb: types.CallbackQuery):
+    """Выдаёт другой (случайный, неравный предыдущему) вопрос по текущему фрагменту."""
+    st = user_learning_state.get(cb.from_user.id)
+    if not st:
+        await cb.answer("Нет активной главы")
+        return
+    topic = st["topic"]
+    idx = st["index"]
+    questions = get_qa_questions(topic, idx)
+    if len(questions) < 2:
+        await cb.answer("Другого вопроса нет")
+        return
+    assigned = st.setdefault("assigned_tasks", {})
+    key = f"{topic}:{idx}"
+    prev = assigned.get(key, None)
+
+    # 1) Попробуем исключить те, на которые уже был верный ответ
+    try:
+        from bot.services.answer_db import get_theory_stats  # для импорта побочно не тянем
+    except Exception:
+        get_theory_stats = None
+
+    # В таблице у нас нет поштучной истории индексов, поэтому храним в состоянии последние верные индексы
+    solved_key = f"solved:{topic}:{idx}"
+    solved: set[int] = st.setdefault(solved_key, set())  # тип: set индексов вопросов по этому фрагменту
+
+    # если предыдущий ответ был верным, добавим prev в solved (это делается в обработчике ответа; на всякий случай дубль)
+    if st.get("last_answer_correct") and prev is not None:
+        solved.add(prev)
+
+    # список доступных индексов: все минус prev и минус уже решённые
+    choices = [i for i in range(len(questions)) if i != prev and i not in solved]
+    if not choices:
+        # если всё решено — вернём любой, отличный от prev
+        choices = [i for i in range(len(questions)) if i != prev]
+        if not choices:
+            choices = list(range(len(questions)))
+    new_idx = random.choice(choices)
+    assigned[key] = new_idx
+
+    question_text = questions[new_idx]
+    text = (
+        "📝 Задание по теме\n"
+        f"«{topic}», часть {idx+1}\n\n"
+        f"Вопрос №{new_idx+1}: {question_text}\n\nНапиши ответ сообщением."
+    )
+    await cb.message.answer(text)
+    await cb.answer("Готово")
+
+# ====== Приём текста/голоса как ответа на задание ======
+@router.message(lambda m: _has_assigned_task(m))
+async def catch_task_answer(m: types.Message):
+    st = user_learning_state.get(m.from_user.id)
+    if not st:
+        return
+    # проверяем: есть ли назначенный вопрос для текущего фрагмента
+    topic = st.get("topic")
+    idx = st.get("index")
+    assigned = st.get("assigned_tasks", {})
+    key = f"{topic}:{idx}"
+    if key not in assigned:
+        return  # пользователь не запрашивал вопрос
+
+    q_index = assigned[key]
+    questions = get_qa_questions(topic, idx)
+    if not questions or q_index >= len(questions):
+        return
+    question_text = questions[q_index]
+
+    # Определяем тип ответа и извлекаем текст
+    answer_text = None
+    answer_type = None
+    voice_file_id = None
+
+    if m.text is not None and m.text.strip():
+        answer_type = "text"
+        answer_text = m.text.strip()
+    elif getattr(m, "voice", None):
+        answer_type = "voice"
+        voice_file_id = m.voice.file_id
+        try:
+            # Скачиваем файл и транскрибируем
+            file = await m.bot.get_file(m.voice.file_id)
+            file_path = file.file_path
+            # Telegram URL для скачивания
+            url = f"https://api.telegram.org/file/bot{m.bot.token}/{file_path}"
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                # Кросс-платформенный временный файл
+                import tempfile, os
+                fd, tmp_path = tempfile.mkstemp(suffix=".ogg")
+                os.close(fd)
+                with open(tmp_path, "wb") as f:
+                    f.write(resp.content)
+            answer_text = await transcribe_audio(tmp_path)
+        except Exception:
+            answer_text = ""
+    else:
+        return  # не текст и не voice — игнорируем
+
+    # Сообщим пользователю, что идёт обработка ответа
+    loading_msg = await m.answer("⏳ Обрабатываю ответ... подожди немного.")
+
+    # 1) Базовая проверка (строковое совпадение/похожесть)
+    answers = get_qa_answers(topic, idx)
+    expected = answers[q_index] if q_index < len(answers) else ""
+    def _norm(s: str) -> str:
+        return " ".join((s or "").lower().strip().split())
+    norm_user = _norm(answer_text)
+    norm_exp = _norm(expected)
+    ratio = difflib.SequenceMatcher(None, norm_user, norm_exp).ratio() if norm_exp else 0.0
+    simple_correct = bool(norm_exp and (ratio >= 0.8 or norm_exp in norm_user or norm_user in norm_exp))
+    if simple_correct:
+        is_correct = True
+        feedback = "Молодец! ✅ Ответ верный."
+        # отметим вопрос как решённый, чтобы кнопка "Ещё вопрос" не предлагала его снова
+        try:
+            solved_key = f"solved:{topic}:{idx}"
+            st.setdefault(solved_key, set()).add(q_index)
+            st["last_answer_correct"] = True
+        except Exception:
+            st["last_answer_correct"] = True
+    else:
+        # 2) Если базовая не сработала — просим LLM внимательно проверить
+        try:
+            is_correct, llm_feedback = await grade_theory_answer(
+                topic=topic,
+                question_text=question_text,
+                student_answer=answer_text or "",
+                expected_answer=expected or "",
+            )
+        finally:
+            try:
+                await loading_msg.delete()
+            except Exception:
+                pass
+        feedback = llm_feedback
+        st["last_answer_correct"] = bool(is_correct)
+
+    # Статистика по теме
+    correct_before, total_before = get_theory_stats(m.from_user.id, topic)
+
+    save_theory_task_answer(
+        user_id=m.from_user.id,
+        username=m.from_user.username or m.from_user.full_name or "",
+        topic=topic,
+        chunk_idx=idx,
+        question_index=q_index,
+        question_text=question_text,
+        answer_text=answer_text or "",
+        answer_type=answer_type or "text",
+        voice_file_id=voice_file_id,
+        is_correct=is_correct,
+        feedback=feedback,
+    )
+
+    # Итоговая статистика, оценка и кнопки
+    import math
+    correct_after, _ = get_theory_stats(m.from_user.id, topic)
+    # Общее число порций в теме
+    chunks_json = TEXTBOOK_CONTENT.get(topic, [])
+    total_from_json = len(chunks_json)
+    total_from_db = get_prepared_chunks_count(topic)
+    total_portions = total_from_json if total_from_json > 0 else total_from_db
+
+    # Пороговые значения
+    t_satisf = max(1, math.ceil(0.3 * total_portions))        # 30% и выше — удовлетворительно
+    t_good   = max(1, math.floor(0.5 * total_portions) + 1)   # >50%
+    t_excell = max(1, math.floor(0.7 * total_portions) + 1)   # >70%
+
+    if correct_after >= t_excell:
+        grade = "отлично"
+        emoji = "🏆"
+        next_label = ""
+        to_next = 0
+    elif correct_after >= t_good:
+        grade = "хорошо"
+        emoji = "💪"
+        next_label = "отлично"
+        to_next = max(0, t_excell - correct_after)
+    elif correct_after >= t_satisf:
+        grade = "удовлетворительно"
+        emoji = "🙂"
+        next_label = "хорошо"
+        to_next = max(0, t_good - correct_after)
+    else:
+        grade = "неудовлетворительно!"
+        emoji = "📚"
+        next_label = "удовлетворительно"
+        to_next = max(0, t_satisf - correct_after)
+
+    # Текст похвалы/подсказки
+    if is_correct:
+        head = "Молодец! ✅ Ответ верный."
+    else:
+        head = "Не совсем верно. Попробуй ещё раз: нажми «🔁 Другой вопрос»."
+
+    # Строка статуса с эмодзи и мотивацией
+    base = f"Верно: {correct_after} из {total_portions}.\nТекущая оценка: {grade} {emoji}."
+    if to_next > 0 and next_label:
+        motivation = f" До оценки «{next_label}» осталось {to_next}. 🚀 Возьми ещё вопрос!"
+    else:
+        motivation = " Отличный прогресс! 🌟" if grade == "отлично" else " Хороший темп! ✨"
+    stat_line = base + motivation
+
+    full_msg = f"{head}\n\n{stat_line}"
+    if not is_correct and expected:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(text="💡 Показать образец ответа", callback_data="show_sample_answer"),
+                InlineKeyboardButton(text="🔁 Другой вопрос", callback_data="learn_task_next"),
+            ]]
+        )
+        await m.answer(full_msg, reply_markup=kb)
+    else:
+        # При верном ответе показываем две кнопки: Ещё вопрос (в этом разделе) и К следующему разделу (следующий кусок)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(text="🔄 Ещё вопрос", callback_data="learn_task_next"),
+                InlineKeyboardButton(text="➡️ К следующему разделу", callback_data="learn_ok"),
+            ]]
+        )
+        await m.answer(full_msg, reply_markup=kb)
+
+@router.callback_query(lambda c: c.data == "show_sample_answer")
+async def show_sample_answer(cb: types.CallbackQuery):
+    st = user_learning_state.get(cb.from_user.id)
+    if not st:
+        await cb.answer()
+        return
+    topic = st["topic"]
+    idx = st["index"]
+    assigned = st.get("assigned_tasks", {})
+    key = f"{topic}:{idx}"
+    q_index = assigned.get(key)
+    answers = get_qa_answers(topic, idx)
+    if q_index is None or not answers or q_index >= len(answers):
+        await cb.message.answer("Образец ответа недоступен.")
+    else:
+        await cb.message.answer(f"Образец ответа: {answers[q_index]}")
+    await cb.answer()
+
+# Кнопка показа ответа удалена по пожеланию
 
 @router.callback_query(lambda c: c.data == "learn_to_chapters")
 async def learn_to_chapters(cb: types.CallbackQuery):
@@ -344,7 +690,7 @@ async def learn_ask(cb: types.CallbackQuery):
         st["awaiting_question"] = True
     await cb.message.answer("Напиши свой вопрос по этой главе:")
 
-@router.message()
+@router.message(lambda m: bool(user_learning_state.get(m.from_user.id, {}).get("awaiting_question")))
 async def catch_user_question(m: types.Message):
     st = user_learning_state.get(m.from_user.id)
     if not st or not st.get("awaiting_question"):

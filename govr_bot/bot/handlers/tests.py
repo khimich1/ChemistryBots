@@ -208,7 +208,12 @@ async def show_hint(cb: CallbackQuery):
 # =========================
 # 9. Проверка ответа пользователя на вопрос (обычный режим)
 # =========================
-@router.message(lambda m: m.from_user.id in user_test_state and "q_ids" in user_test_state[m.from_user.id])
+@router.message(lambda m: (
+    m.from_user.id in user_test_state
+    and "q_ids" in user_test_state[m.from_user.id]
+    and isinstance(getattr(m, "text", None), str)
+    and any(ch.isdigit() for ch in m.text)
+))
 async def check_test_answer(m: types.Message):
     state = user_test_state.get(m.from_user.id)
     idx = state["idx"]
@@ -307,7 +312,12 @@ async def send_next_mistake_question(user_id, message_obj):
     await message_obj.answer(msg, reply_markup=kb)
 
 # --- Проверка ответа пользователя на ошибочный вопрос ---
-@router.message(lambda m: m.from_user.id in user_test_state and "mistake_q_ids" in user_test_state[m.from_user.id])
+@router.message(lambda m: (
+    m.from_user.id in user_test_state
+    and "mistake_q_ids" in user_test_state[m.from_user.id]
+    and isinstance(getattr(m, "text", None), str)
+    and any(ch.isdigit() for ch in m.text)
+))
 async def check_mistake_answer(m: types.Message):
     state = user_test_state.get(m.from_user.id)
     idx = state["idx"]
