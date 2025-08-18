@@ -10,6 +10,7 @@ from bot.handlers.menu import router as menu_router
 from bot.handlers.topics import router as topics_router
 from bot.handlers.tests import router as tests_router
 from bot.handlers.report import router as report_router
+from bot.handlers.flashcards import router as flashcards_router
 
 # --- Конфиг и токен ---
 from dotenv import load_dotenv
@@ -42,6 +43,7 @@ async def main():
     dp.include_router(tests_router)     # tests ДО topics!
     dp.include_router(topics_router)
     dp.include_router(report_router)
+    dp.include_router(flashcards_router)
 
     # --- Установка команд ---
     await set_bot_commands(bot)

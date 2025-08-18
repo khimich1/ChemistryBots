@@ -28,6 +28,7 @@ main_kb = ReplyKeyboardMarkup(
             KeyboardButton(text="📈 Получить отчёт"),
         ],
         [
+            KeyboardButton(text="🃏 Карточки для запоминания"),
             KeyboardButton(text="ℹ️ Как работает бот"),
         ],
     ],
@@ -35,7 +36,7 @@ main_kb = ReplyKeyboardMarkup(
 )
 
 # ==== /start и возврат в меню ====
-@router.message(lambda m: m.text == "/start" or m.text == "Меню" or m.text == "⬅️ В меню")
+@router.message(lambda m: (m.text or "").lower() in {"/start", "меню"} or ("в главное меню" in (m.text or "").lower()))
 async def cmd_start(m: types.Message, state: FSMContext):
     full_name = get_user_full_name(m.from_user.id)
     if not full_name:
