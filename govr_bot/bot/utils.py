@@ -135,6 +135,81 @@ def get_prepared_lecture(topic, idx):
         return row[0] if row else None
 
 
+def get_qa_questions(topic: str, idx: int) -> list[str]:
+    """
+    Возвращает список вопросов для задания по теме и номеру фрагмента
+    из столбца qa_questions таблицы prepared_lectures.
+
+    Если столбца/данных нет — возвращает пустой список.
+    Поддерживает формат JSON-списка либо простой текст с вопросами построчно/через маркеры.
+    """
+    import sqlite3
+    import json as _json
+
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            # проверим наличие столбца, чтобы не падать на старой БД
+            cols = {row[1] for row in c.execute("PRAGMA table_info(prepared_lectures)")}
+            if "qa_questions" not in cols:
+                return []
+
+            c.execute(
+                "SELECT qa_questions FROM prepared_lectures WHERE topic=? AND chunk_idx=?",
+                (topic, idx),
+            )
+            row = c.fetchone()
+            if not row or not row[0]:
+                return []
+
+            raw = row[0]
+            # Попробуем как JSON
+            try:
+                data = _json.loads(raw)
+                return [str(x).strip() for x in data if str(x).strip()]
+            except Exception:
+                # Фоллбэк: разбить по строкам/маркерам
+                lines = [ln.strip("- *\t ") for ln in str(raw).splitlines() if ln.strip()]
+                return lines
+    except Exception:
+        return []
+
+
+def get_qa_answers(topic: str, idx: int) -> list[str]:
+    """
+    Возвращает список ответов к вопросам для задания по теме/фрагменту
+    из столбца qa_answers таблицы prepared_lectures.
+    Возвращает пустой список, если данных нет. Поддерживает JSON-список или построчный текст.
+    """
+    import sqlite3
+    import json as _json
+
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            cols = {row[1] for row in c.execute("PRAGMA table_info(prepared_lectures)")}
+            if "qa_answers" not in cols:
+                return []
+
+            c.execute(
+                "SELECT qa_answers FROM prepared_lectures WHERE topic=? AND chunk_idx=?",
+                (topic, idx),
+            )
+            row = c.fetchone()
+            if not row or not row[0]:
+                return []
+
+            raw = row[0]
+            try:
+                data = _json.loads(raw)
+                return [str(x).strip() for x in data if str(x).strip()]
+            except Exception:
+                lines = [ln.strip("- *\t ") for ln in str(raw).splitlines() if ln.strip()]
+                return lines
+    except Exception:
+        return []
+
+
 # ====== Новые разделы курса ======
 BEGIN_CHEM_TOPICS = [
     "Строение атома",

@@ -49,6 +49,45 @@ def init_db():
             )
         ''')
         conn.commit()
+        # --- Прогресс по карточкам (что пользователь уже видел) ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS flashcards_seen (
+                user_id INTEGER,
+                category TEXT,
+                card_key TEXT,
+                first_seen_at TEXT,
+                PRIMARY KEY (user_id, category, card_key)
+            )
+        ''')
+        conn.commit()
+        # --- Ошибки практики по карточкам ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS flashcards_errors (
+                user_id INTEGER,
+                category TEXT,
+                card_key TEXT,
+                formula TEXT,
+                expected_variants TEXT,
+                added_at TEXT,
+                PRIMARY KEY (user_id, category, card_key)
+            )
+        ''')
+        conn.commit()
+        # --- Лог ответов практики по карточкам (для аудио/текста) ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS flashcards_practice_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                category TEXT,
+                card_key TEXT,
+                formula TEXT,
+                answer_text TEXT,
+                source TEXT,          -- 'text' | 'voice'
+                is_correct INTEGER,
+                created_at TEXT
+            )
+        ''')
+        conn.commit()
         # --- Таблица ответов на задания из теории ---
         c.execute('''
             CREATE TABLE IF NOT EXISTS theory_task_answers (
@@ -251,6 +290,95 @@ def set_user_full_name(user_id: int, username: str | None, full_name: str) -> No
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         ))
         conn.commit()
+
+# ========================
+#   ПРОГРЕСС ПО КАРТОЧКАМ
+# ========================
+
+def flashcards_mark_seen(user_id: int, category: str, card_key: str) -> None:
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute('''
+            INSERT OR IGNORE INTO flashcards_seen (user_id, category, card_key, first_seen_at)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, category, card_key, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+
+def flashcards_get_seen_set(user_id: int, category: str) -> set[str]:
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute('SELECT card_key FROM flashcards_seen WHERE user_id=? AND category=?', (user_id, category))
+        return {row[0] for row in c.fetchall()}
+
+def flashcards_reset_category(user_id: int, category: str) -> None:
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute('DELETE FROM flashcards_seen WHERE user_id=? AND category=?', (user_id, category))
+        conn.commit()
+
+# ========================
+#   ОШИБКИ ПРАКТИКИ КАРТОЧЕК
+# ========================
+
+def flashcards_add_error(user_id: int, category: str, card_key: str, formula: str, expected_variants: str) -> None:
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute('''
+            INSERT OR REPLACE INTO flashcards_errors (user_id, category, card_key, formula, expected_variants, added_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, category, card_key, formula, expected_variants, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+
+def flashcards_remove_error(user_id: int, category: str, card_key: str) -> None:
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute('DELETE FROM flashcards_errors WHERE user_id=? AND category=? AND card_key=?', (user_id, category, card_key))
+        conn.commit()
+
+def flashcards_list_errors(user_id: int, category: str) -> list[tuple[str, str, str]]:
+    """Возвращает список (card_key, formula, expected_variants)"""
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute('SELECT card_key, formula, expected_variants FROM flashcards_errors WHERE user_id=? AND category=? ORDER BY added_at', (user_id, category))
+        return [(row[0], row[1], row[2]) for row in c.fetchall()]
+
+
+def flashcards_log_answer(user_id: int, category: str, card_key: str | None, formula: str | None, answer_text: str, source: str, is_correct: bool) -> None:
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO flashcards_practice_log (user_id, category, card_key, formula, answer_text, source, is_correct, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, category, card_key or "", formula or "", answer_text or "", source, int(is_correct), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+
+def flashcards_last_transcript(user_id: int) -> tuple[str, str, str, str] | None:
+    """Возвращает последний лог (category, card_key, formula, answer_text) пользователя."""
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute('''
+            SELECT category, card_key, formula, answer_text
+            FROM flashcards_practice_log
+            WHERE user_id=?
+            ORDER BY id DESC
+            LIMIT 1
+        ''', (user_id,))
+        row = c.fetchone()
+        if row:
+            return row[0], row[1], row[2], row[3]
+        return None
+
+def flashcards_count_wrong_voice_attempts(user_id: int, category: str, card_key: str) -> int:
+    """Возвращает количество неверных голосовых попыток по карточке."""
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute(
+            '''SELECT COUNT(*) FROM flashcards_practice_log
+               WHERE user_id=? AND category=? AND card_key=? AND source='voice' AND is_correct=0''',
+            (user_id, category, card_key),
+        )
+        row = c.fetchone()
+        return int(row[0] if row and row[0] is not None else 0)
 
 def log_question_started(user_id, test_type, question_id):
     """

@@ -309,3 +309,41 @@ async def grade_theory_answer(topic: str, question_text: str, student_answer: st
         ok = bool(norm_exp and (ratio >= 0.8 or norm_exp in norm_user))
         fb = "Ответ принят." if ok else f"Проверь ещё раз. Образец: {expected_answer}"
         return ok, fb
+
+
+async def check_trivial_name_by_formula(formula: str, student_answer: str) -> tuple[bool, str]:
+    """
+    Фолбэк‑проверка ответа в режиме практики карточек через LLM.
+    Вопрос: может ли такой текст быть корректным названием вещества с формулой formula?
+
+    Возвращает (is_correct, reasoning).
+    """
+    try:
+        prompt = (
+            "Проверь, может ли данный текст быть корректным русским названием вещества "
+            "по указанной химической формуле. Допускай различия в дефисах и пробелах, "
+            "варианты числительных (четырёх/4‑х/тетра) и орфографию (ё/е). Отвечай строго JSON.\n\n"
+            f"Формула: {formula}\n"
+            f"Ответ: {student_answer}\n\n"
+            "Верни JSON со структурой: {\"is_correct\": true|false, \"reason\": string}."
+        )
+        resp = await client.chat.completions.create(
+            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        import json as _json
+        obj = _json.loads(resp.choices[0].message.content or "{}")
+        ok = bool(obj.get("is_correct", False))
+        reason = str(obj.get("reason", ""))
+        return ok, reason
+    except PermissionDeniedError:
+        _log_llm_issue("check_trivial_name_by_formula", PermissionDeniedError("permission denied (region)"))
+        return False, ""
+    except (APIConnectionError, RateLimitError, APIStatusError) as e:
+        _log_llm_issue("check_trivial_name_by_formula", e)
+        return False, ""
+    except Exception as e:
+        _log_llm_issue("check_trivial_name_by_formula", e)
+        return False, ""

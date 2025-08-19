@@ -24,7 +24,24 @@ print("[LOG] Router add_task registered")
 if __name__ == "__main__":
     import asyncio
     print("[LOG] Перед dp.start_polling(bot)")
+
+    async def _run():
+        # Убираем webhook, чтобы не было конфликта с polling
+        try:
+            info = await bot.get_webhook_info()
+            print(f"[LOG] Webhook BEFORE: {getattr(info, 'url', '')!r}")
+        except Exception as e:
+            print(f"[LOG] get_webhook_info error: {e}")
+
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            print("[LOG] Webhook deleted (drop_pending_updates=True)")
+        except Exception as e:
+            print(f"[LOG] delete_webhook error: {e}")
+
+        await dp.start_polling(bot)
+
     try:
-        asyncio.run(dp.start_polling(bot))
+        asyncio.run(_run())
     except Exception as e:
         print(f"[LOG] Ошибка при запуске polling: {e}")
