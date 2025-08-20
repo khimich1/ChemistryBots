@@ -17,7 +17,7 @@ from bot.services.answer_db import (
     get_user_full_name,
     save_test_debug,
 )
-from bot.services.test_sql import get_all_tests_types, get_questions_by_type, get_question_by_id, mark_question_issue
+from bot.services.test_sql import get_all_tests_types, get_questions_by_type, get_question_by_id, mark_question_issue, copy_question_to_tests_bug
 
 from bot.handlers.menu import main_kb  # Импорт клавиатуры главного меню
 
@@ -269,7 +269,7 @@ async def continue_test(cb: CallbackQuery):
 # =========================
 # 5.1 Жалоба на вопрос
 # =========================
-@router.callback_query(lambda c: c.data.startswith("report_"))
+@router.callback_query(lambda c: c.data and c.data.startswith("report_") and c.data[7:].isdigit())
 async def report_question(cb: CallbackQuery):
     q_id = int(cb.data.split("_")[-1])
     # Пытаемся удалить сообщение-вопрос сразу при нажатии «Пожаловаться»
@@ -315,6 +315,8 @@ async def report_reason(cb: CallbackQuery):
     # Фиксируем и скрываем вопрос глобально
     reason_text = reason_map.get(code)
     mark_question_issue(q_id, reason_text)
+    # Сохраняем текущую версию вопроса в tests_bug для правки в препод-боте
+    copy_question_to_tests_bug(q_id)
     # Логируем в test_debug (status: не решено)
     save_test_debug(q_id, reason_text or "", status="не решено")
     await cb.message.answer("Спасибо! Отметил проблему и убрал вопрос из выдачи до исправления.")
@@ -355,6 +357,7 @@ async def report_custom_text(m: types.Message):
     reason = (m.text or "").strip()
     if q_id is not None:
         mark_question_issue(q_id, reason)
+        copy_question_to_tests_bug(q_id)
         save_test_debug(q_id, reason or "", status="не решено")
         await m.answer("Спасибо за подробности! Вопрос скрыт до исправления.")
     else:

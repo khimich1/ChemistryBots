@@ -72,6 +72,46 @@ def _detect_answer_column(conn: sqlite3.Connection) -> str:
     )
 
 
+def _ensure_tests_bug_table() -> None:
+    """Создаёт таблицу tests_bug в tests1.db с теми же столбцами, что у tests.
+
+    Используем создание по схеме исходной таблицы с нулевой выборкой: CREATE TABLE ... AS SELECT * FROM tests WHERE 0.
+    Повторный вызов безопасен.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            # Если таблица уже есть — выходим
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tests_bug'")
+            if c.fetchone():
+                return
+            # Убедимся, что есть исходная таблица
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tests'")
+            if not c.fetchone():
+                return
+            c.execute("CREATE TABLE tests_bug AS SELECT * FROM tests WHERE 0")
+            conn.commit()
+    except Exception:
+        pass
+
+
+def copy_question_to_tests_bug(q_id: int) -> None:
+    """Копирует строку вопроса из таблицы tests в таблицу tests_bug (UPSERT по id).
+
+    Вызывается при жалобе, чтобы зафиксировать состояние задания для дальнейшей правки в препод-боте.
+    """
+    _ensure_tests_bug_table()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            # Если строки с таким id ещё нет — вставим; если есть — заменим текущей версией
+            c.execute("INSERT OR REPLACE INTO tests_bug SELECT * FROM tests WHERE id=?", (int(q_id),))
+            conn.commit()
+    except Exception:
+        # Безопасно игнорируем любые ошибки копирования, чтобы не ломать пользовательский сценарий
+        pass
+
+
 def get_all_tests_types():
     """
     Получает список уникальных типов тестов (например, 1...28)
