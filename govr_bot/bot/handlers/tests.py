@@ -14,7 +14,8 @@ from bot.services.answer_db import (
     set_answer_correct,
     log_question_started,
     log_question_answered,
-    get_user_full_name
+    get_user_full_name,
+    save_test_debug,
 )
 from bot.services.test_sql import get_all_tests_types, get_questions_by_type, get_question_by_id, mark_question_issue
 
@@ -271,6 +272,14 @@ async def continue_test(cb: CallbackQuery):
 @router.callback_query(lambda c: c.data.startswith("report_"))
 async def report_question(cb: CallbackQuery):
     q_id = int(cb.data.split("_")[-1])
+    # Пытаемся удалить сообщение-вопрос сразу при нажатии «Пожаловаться»
+    try:
+        st = user_test_state.get(cb.from_user.id) or {}
+        last_q_id = st.pop("last_question_msg_id", None)
+        if last_q_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_id)
+    except Exception:
+        pass
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📝 Проблема с заданием", callback_data=f"report_reason_{q_id}_task")],
@@ -304,7 +313,10 @@ async def report_reason(cb: CallbackQuery):
         return
 
     # Фиксируем и скрываем вопрос глобально
-    mark_question_issue(q_id, reason_map.get(code))
+    reason_text = reason_map.get(code)
+    mark_question_issue(q_id, reason_text)
+    # Логируем в test_debug (status: не решено)
+    save_test_debug(q_id, reason_text or "", status="не решено")
     await cb.message.answer("Спасибо! Отметил проблему и убрал вопрос из выдачи до исправления.")
 
     # Продолжаем тест, пропуская этот вопрос
@@ -343,6 +355,7 @@ async def report_custom_text(m: types.Message):
     reason = (m.text or "").strip()
     if q_id is not None:
         mark_question_issue(q_id, reason)
+        save_test_debug(q_id, reason or "", status="не решено")
         await m.answer("Спасибо за подробности! Вопрос скрыт до исправления.")
     else:
         await m.answer("Спасибо! Записал жалобу.")

@@ -15,6 +15,7 @@ def init_db():
       - test_answers (добавляем столбец full_name при необходимости)
       - user_profiles (храним ФИО, чтобы не спрашивать каждый раз)
       - test_activity
+      - test_debug (жалобы на вопросы)
     """
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
@@ -46,6 +47,15 @@ def init_db():
                 username TEXT,
                 full_name TEXT,
                 created_at TEXT
+            )
+        ''')
+        conn.commit()
+        # --- Таблица жалоб по вопросам ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS test_debug (
+                question_id INTEGER PRIMARY KEY,
+                reason TEXT,
+                status TEXT DEFAULT 'не решено'
             )
         ''')
         conn.commit()
@@ -417,6 +427,30 @@ def log_question_answered(user_id, question_id, user_answer, is_correct):
             user_id,
             question_id
         ))
+        conn.commit()
+
+# ========================
+#   ЖАЛОБЫ НА ВОПРОСЫ (test_debug)
+# ========================
+
+def save_test_debug(question_id: int, reason: str, status: str = "не решено") -> None:
+    """Сохраняет/обновляет жалобу по вопросу в таблицу test_debug.
+
+    Поля:
+      - question_id: ID вопроса из таблицы tests
+      - reason: причина жалобы (вариант, выбранный в боте, либо свободный текст)
+      - status: 'решено' | 'не решено' (по умолчанию 'не решено')
+    """
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO test_debug (question_id, reason, status)
+            VALUES (?, ?, ?)
+            ON CONFLICT(question_id) DO UPDATE SET reason=excluded.reason, status=excluded.status
+            ''',
+            (int(question_id), reason or "", status or "не решено"),
+        )
         conn.commit()
 
 # ========================
