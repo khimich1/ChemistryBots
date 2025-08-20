@@ -7,3 +7,4 @@ reportlab==4.0.8
 aiofiles~=23.2.1
 httpx~=0.24.0
 pydub==0.25.1
+Pillow>=10.0.0

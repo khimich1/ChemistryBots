@@ -9,7 +9,7 @@ from bot.services.spreadsheet import fetch_user_records
 from bot.services.answer_db import get_user_full_name, set_user_full_name
 from bot.services.pdf_generator import make_report
 from bot.services.notes_ocr import recognize_notes_from_image
-import httpx
+from io import BytesIO
 
 # если main_kb используется в других файлах — импортируй там: from bot.handlers.menu import main_kb
 
@@ -183,13 +183,11 @@ async def handle_notes_photo(m: types.Message, state: FSMContext):
 
     await m.answer("🔎 Распознаю фото… Подождите пару секунд")
     try:
-        # Берём самое большое превью
+        # Берём самое большое превью и скачиваем через встроенный клиент aiogram (без логгирования URL с токеном)
         file = await m.bot.get_file(m.photo[-1].file_id)
-        url = f"https://api.telegram.org/file/bot{m.bot.token}/{file.file_path}"
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            img_bytes = resp.content
+        buffer = BytesIO()
+        await m.bot.download(file, destination=buffer)
+        img_bytes = buffer.getvalue()
 
         text = await recognize_notes_from_image(img_bytes)
         if not text:
