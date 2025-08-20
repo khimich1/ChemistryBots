@@ -15,7 +15,7 @@ from bot.services.answer_db import (
     log_question_answered,
     get_user_full_name
 )
-from bot.services.test_sql import get_all_tests_types, get_questions_by_type, get_question_by_id
+from bot.services.test_sql import get_all_tests_types, get_questions_by_type, get_question_by_id, mark_question_issue
 
 from bot.handlers.menu import main_kb  # Импорт клавиатуры главного меню
 
@@ -44,7 +44,8 @@ def get_stop_test_kb(q_id):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="💡 Подсказка", callback_data=f"hint_{q_id}")],
-            [InlineKeyboardButton(text="⏹️ Стоп тест", callback_data="stop_test")]
+            [InlineKeyboardButton(text="⏹️ Стоп тест", callback_data="stop_test")],
+            [InlineKeyboardButton(text="❗ Пожаловаться", callback_data=f"report_{q_id}")]
         ]
     )
 
@@ -115,6 +116,101 @@ async def continue_test(cb: CallbackQuery):
     else:
         await cb.message.answer("Не удалось найти сохранённый прогресс. Попробуйте начать заново.")
     await cb.answer()
+
+# =========================
+# 5.1 Жалоба на вопрос
+# =========================
+@router.callback_query(lambda c: c.data.startswith("report_"))
+async def report_question(cb: CallbackQuery):
+    q_id = int(cb.data.split("_")[-1])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Проблема с заданием", callback_data=f"report_reason_{q_id}_task")],
+            [InlineKeyboardButton(text="💡 Проблема с подсказкой", callback_data=f"report_reason_{q_id}_hint")],
+            [InlineKeyboardButton(text="✅ Проблема с ответом", callback_data=f"report_reason_{q_id}_answer")],
+            [InlineKeyboardButton(text="✍️ Свой вариант", callback_data=f"report_reason_{q_id}_custom")],
+        ]
+    )
+    await cb.message.answer("Что именно смутило в этом задании?", reply_markup=kb)
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("report_reason_"))
+async def report_reason(cb: CallbackQuery):
+    parts = cb.data.split("_")
+    # ['report', 'reason', '{q_id}', '{code}']
+    q_id = int(parts[2])
+    code = parts[3]
+    reason_map = {
+        "task": "Проблема с заданием",
+        "hint": "Проблема с подсказкой",
+        "answer": "Проблема с ответом",
+    }
+    if code == "custom":
+        # Просим текст причины в свободной форме
+        st = user_test_state.get(cb.from_user.id) or {}
+        st["awaiting_issue_text"] = {"q_id": q_id}
+        user_test_state[cb.from_user.id] = st
+        await cb.message.answer("Опиши проблему коротко текстом. Этот вопрос мы больше не покажем до исправления.")
+        await cb.answer()
+        return
+
+    # Фиксируем и скрываем вопрос глобально
+    mark_question_issue(q_id, reason_map.get(code))
+    await cb.message.answer("Спасибо! Отметил проблему и убрал вопрос из выдачи до исправления.")
+
+    # Продолжаем тест, пропуская этот вопрос
+    st = user_test_state.get(cb.from_user.id)
+    if not st:
+        await cb.answer()
+        return
+    if "mistake_q_ids" in st:
+        # режим работы над ошибками: удаляем текущий id из списка и показываем следующий
+        try:
+            st["mistake_q_ids"].remove(q_id)
+        except ValueError:
+            pass
+        user_test_state[cb.from_user.id] = st
+        await send_next_mistake_question(cb.from_user.id, cb.message)
+    else:
+        # обычный режим: двигаем индекс
+        st["idx"] = st.get("idx", 0) + 1
+        user_test_state[cb.from_user.id] = st
+        await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
+    await cb.answer()
+
+
+# =========================
+# 5.2 Обработчик текста причины (свой вариант)
+# =========================
+@router.message(lambda m: (
+    m.from_user.id in user_test_state
+    and isinstance(getattr(m, "text", None), str)
+    and user_test_state[m.from_user.id].get("awaiting_issue_text") is not None
+))
+async def report_custom_text(m: types.Message):
+    st = user_test_state.get(m.from_user.id) or {}
+    data = st.pop("awaiting_issue_text", None) or {}
+    q_id = int(data.get("q_id")) if data.get("q_id") is not None else None
+    reason = (m.text or "").strip()
+    if q_id is not None:
+        mark_question_issue(q_id, reason)
+        await m.answer("Спасибо за подробности! Вопрос скрыт до исправления.")
+    else:
+        await m.answer("Спасибо! Записал жалобу.")
+
+    # Продолжаем тест
+    if "mistake_q_ids" in st and q_id is not None:
+        try:
+            st["mistake_q_ids"].remove(q_id)
+        except ValueError:
+            pass
+        user_test_state[m.from_user.id] = st
+        await send_next_mistake_question(m.from_user.id, m)
+    else:
+        st["idx"] = st.get("idx", 0) + 1
+        user_test_state[m.from_user.id] = st
+        await send_next_test_question(m.from_user.id, m)
 
 # --- Начать тест заново ---
 @router.callback_query(lambda c: c.data.startswith("restart_test_"))
