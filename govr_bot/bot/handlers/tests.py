@@ -2,6 +2,7 @@ from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
 import html  # Стандартная библиотека для экранирования HTML
+import re
 
 # --- Импортируем все функции работы с базой ---
 from bot.services.answer_db import (
@@ -22,6 +23,46 @@ from bot.handlers.menu import main_kb  # Импорт клавиатуры гл�
 router = Router()
 user_test_state = {}
 
+# Небольшое форматирование текста задания: переносы строк перед А), Б), В), Г)
+# и выделение заголовков типа "Реагенты:" / "Продукты:" на отдельную строку.
+def _format_question_text(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    s = text.strip()
+
+    # Заголовки на отдельной строке
+    def _hdr(m):
+        return "\n" + m.group(1)
+    s = re.sub(r"\s*(Реагенты:)", _hdr, s)
+    s = re.sub(r"\s*(Продукты:)", _hdr, s)
+    s = re.sub(r"\s*(Продукт:)", _hdr, s)
+    s = re.sub(r"\s*(Продукт реакции:)", _hdr, s)
+    s = re.sub(r"\s*(Продукты электролиза:)", _hdr, s)
+
+    # Переносы перед пунктами А) Б) В) Г) Д) Е) и латинскими A) B) C) D) E)
+    def _letter_bullet(m):
+        return "\n" + m.group(1).lower() + ") "
+    s = re.sub(r"(?<!\n)\s*([АБВГДЕ])\)", _letter_bullet, s)
+    s = re.sub(r"(?<!\n)\s*([A-E])\)", _letter_bullet, s)
+
+    # Убираем лишние множественные пустые строки
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s
+
+# Рендер обычного текста с поддержкой блоков кода в тройных кавычках ```...```
+# Вне блоков — безопасное HTML-экранирование; внутри — <pre>...</pre>
+def _to_html_with_code(text: str) -> str:
+    if not isinstance(text, str) or not text:
+        return ""
+    parts = re.split(r"```([\s\S]*?)```", text)
+    out: list[str] = []
+    for idx, chunk in enumerate(parts):
+        if idx % 2 == 0:
+            out.append(html.escape(chunk))
+        else:
+            out.append("<pre>" + html.escape(chunk.strip()) + "</pre>")
+    return "".join(out)
+
 # =========================
 # 1. Клавиатура для выбора тестов
 # =========================
@@ -40,12 +81,40 @@ def get_tests_types_kb(with_menu=False):
 # =========================
 # 2. Клавиатура для вопроса теста: Подсказка и Стоп тест
 # =========================
-def get_stop_test_kb(q_id):
+def get_stop_test_kb(q_id, hints_left: int | None = None):
+    hint_text = "💡 Подсказка" if hints_left is None else f"💡 Подсказка ({hints_left})"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💡 Подсказка", callback_data=f"hint_{q_id}")],
+            [InlineKeyboardButton(text=hint_text, callback_data=f"hint_{q_id}")],
             [InlineKeyboardButton(text="⏹️ Стоп тест", callback_data="stop_test")]
         ]
+    )
+
+# Клавиатура для подсказки: кнопка «К заданию» удаляет сообщение с подсказкой
+def get_hint_kb(q_id: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ К заданию", callback_data=f"back_to_question_{q_id}")]
+        ]
+    )
+
+# Кнопка «Объяснение» к сообщению с результатом
+def get_result_kb(q_id: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🧠 Объяснение", callback_data=f"explain_{q_id}")],
+                         [InlineKeyboardButton(text="➡️ Далее", callback_data=f"next_q_{q_id}")]]
+    )
+
+# Кнопка «Далее» одиночная (для показа под объяснением)
+def get_next_kb(q_id: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="➡️ Далее", callback_data=f"next_q_{q_id}")]]
+    )
+
+# Клавиатура только с «Объяснение» (после нажатия «Далее» на результате)
+def get_explain_only_kb(q_id: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🧠 Объяснение", callback_data=f"explain_{q_id}")]]
     )
 
 # =========================
@@ -100,6 +169,85 @@ async def start_test(cb: CallbackQuery):
     await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
     await cb.answer()
 
+@router.callback_query(lambda c: c.data.startswith("explain_"))
+async def show_explanation(cb: CallbackQuery):
+    q_id = int(cb.data.split("_")[-1])
+    q = get_question_by_id(q_id)
+    explanation = q.get("explanation", "") or q.get("detailed_explanation", "")
+    if explanation and explanation.strip():
+        await cb.message.answer(
+            _to_html_with_code(f"🧠 Объяснение:\n{explanation}"),
+            parse_mode="HTML",
+            reply_markup=get_next_kb(q_id)
+        )
+    else:
+        await cb.message.answer("Пока нет объяснения к этому заданию.")
+    await cb.answer()
+
+# =========================
+# 11. Переход к следующему вопросу по кнопке «Далее»
+# =========================
+@router.callback_query(lambda c: c.data.startswith("next_q_"))
+async def go_next_question(cb: CallbackQuery):
+    # Если «Далее» нажали под объяснением — удаляем сообщение объяснения.
+    # Если под карточкой результата — оставляем карточку и убираем кнопку «Далее».
+    try:
+        parts = cb.data.split("_")
+        q_id = int(parts[-1]) if parts and parts[-1].isdigit() else None
+        msg_text = (cb.message.text or "").strip()
+        is_explanation = msg_text.startswith("🧠 Объяснение")
+        if is_explanation:
+            try:
+                await cb.message.delete()
+            except Exception:
+                # если не удалилось — хотя бы скрыть клавиатуру
+                try:
+                    await cb.message.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+        else:
+            if q_id:
+                try:
+                    await cb.message.edit_reply_markup(reply_markup=get_explain_only_kb(q_id))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    st = user_test_state.get(cb.from_user.id)
+    if not st:
+        await cb.answer()
+        return
+
+    # Если это обычный тест (есть q_ids)
+    if "q_ids" in st:
+        # Удаляем старый вопрос, чтобы в ленте оставались только результаты
+        try:
+            last_q_id = st.pop("last_question_msg_id", None)
+            if last_q_id:
+                await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_id)
+        except Exception:
+            pass
+        st["idx"] += 1
+        await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
+        await cb.answer()
+        return
+
+    # Если это режим ошибок
+    if "mistake_q_ids" in st:
+        try:
+            last_q_id = st.pop("last_question_msg_id", None)
+            if last_q_id:
+                await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_id)
+        except Exception:
+            pass
+        st["idx"] += 1
+        await send_next_mistake_question(cb.from_user.id, cb.message)
+        await cb.answer()
+        return
+
+    await cb.answer()
+
 # --- Продолжить тест ---
 @router.callback_query(lambda c: c.data.startswith("continue_test_"))
 async def continue_test(cb: CallbackQuery):
@@ -150,14 +298,21 @@ async def send_next_test_question(user_id, message_obj, is_callback=False):
     q = get_question_by_id(q_ids[idx])
     log_question_started(user_id, state["type"], q["id"])  # --- ЛОГИРОВАНИЕ СТАРТА ---
     options = q['options'].split('\n')
+    formatted_q = _format_question_text(q['question'])
     msg = (
         f"Вопрос {idx+1} из {len(q_ids)} (Тест {state['type']})\n\n"
-        f"{q['question']}\n\n" +
+        f"{formatted_q}\n\n" +
         "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) +
         "\n\nВведите номер(а) ответа (например: 2 или 13):"
     )
-    kb = get_stop_test_kb(q['id'])
-    await message_obj.answer(msg, reply_markup=kb)
+    # Подсказки: максимум 10 на 30 вопросов одного теста
+    # Считаем, сколько подсказок уже использовано в текущем тесте
+    used_hints = user_test_state.get(user_id, {}).get("used_hints", {}).get(state["type"], 0)
+    hints_left = max(0, 10 - used_hints)
+    kb = get_stop_test_kb(q['id'], hints_left=hints_left)
+    sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    # Запомним id сообщения-вопроса, чтобы удалить его при переходе «Далее»
+    user_test_state[user_id]["last_question_msg_id"] = sent_q.message_id
 
 # =========================
 # 6. Обработчик: Стоп тест (универсально для обоих режимов)
@@ -199,9 +354,30 @@ async def to_main_menu(cb: CallbackQuery):
 async def show_hint(cb: CallbackQuery):
     q_id = int(cb.data.split("_")[-1])
     q = get_question_by_id(q_id)
+    # Подсказки: проверяем лимит 10 на тест (30 вопросов)
+    st = user_test_state.get(cb.from_user.id)
+    test_type = st.get("type") if st else None
+    used_map = user_test_state.setdefault(cb.from_user.id, {}).setdefault("used_hints", {})
+    used_count = used_map.get(test_type, 0) if test_type is not None else 0
+    if used_count >= 10:
+        await cb.answer("Лимит подсказок на этот тест исчерпан (10/10)", show_alert=True)
+        return
+
     hint = q.get('hint', '')
     if hint and hint.strip():
-        await cb.message.answer(html.escape(f"💡 Подсказка:\n{hint}"), parse_mode="HTML")
+        # Увеличиваем счётчик и обновляем число на кнопке
+        used_map[test_type] = used_count + 1
+        await cb.message.answer(
+            _to_html_with_code(f"💡 Подсказка:\n{hint}"),
+            parse_mode="HTML",
+            reply_markup=get_hint_kb(q_id)
+        )
+        # Обновим клавиатуру у текущего вопроса, чтобы показать оставшиеся подсказки
+        try:
+            left = max(0, 10 - used_map[test_type])
+            await cb.message.edit_reply_markup(reply_markup=get_stop_test_kb(q_id, hints_left=left))
+        except Exception:
+            pass
     else:
         await cb.message.answer("Для этого задания нет подсказки.")
     await cb.answer()
@@ -237,16 +413,19 @@ async def check_test_answer(m: types.Message):
         full_name=get_user_full_name(m.from_user.id)
     )
 
-    if is_correct:
-        resp = "✅ Верно!"
-    else:
-        resp = f"❌ Неверно. Правильный ответ: {correct}"
-    explanation = q.get("explanation", "") or q.get("detailed_explanation", "")
-    if explanation and explanation.strip():
-        resp += f"\n\n{explanation}"
-    await m.answer(html.escape(resp), parse_mode="HTML")
-    user_test_state[m.from_user.id]["idx"] += 1
-    await send_next_test_question(m.from_user.id, m)
+    # Сообщение с результатом + показываем правильный и ответ ученика
+    resp_lines = [
+        "✅ Верно!" if is_correct else "❌ Неверно.",
+        f"Твой ответ: {user_answer if user_answer else m.text.strip()}",
+        f"Правильный ответ: {correct}",
+        "",
+        f"Вопрос {idx+1} из {len(q_ids)}",
+    ]
+    resp = "\n".join(resp_lines)
+    # Отправляем результат и сохраняем message_id, чтобы позже заменить на краткую строку
+    sent = await m.answer(_to_html_with_code(resp), parse_mode="HTML", reply_markup=get_result_kb(q["id"]))
+    user_test_state[m.from_user.id]["last_result_msg_id"] = sent.message_id
+    # Переход к следующему вопросу только после нажатия «Далее»
 
 # ======================================================================
 #       НОВЫЙ ФУНКЦИОНАЛ: РАБОТА НАД ОШИБКАМИ (с кнопками)
@@ -304,14 +483,18 @@ async def send_next_mistake_question(user_id, message_obj):
     q = get_question_by_id(q_id)
     log_question_started(user_id, state["type"], q_id)  # --- ЛОГИРОВАНИЕ СТАРТА ---
     options = q['options'].split('\n')
+    formatted_q = _format_question_text(q['question'])
     msg = (
         f"Ошибка {idx+1} из {len(q_ids)} (Тест {state['type']})\n\n"
-        f"{q['question']}\n\n" +
+        f"{formatted_q}\n\n" +
         "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) +
         "\n\nПовтори попытку: введи номер(а) ответа:"
     )
-    kb = get_stop_test_kb(q_id)
-    await message_obj.answer(msg, reply_markup=kb)
+    used_hints = user_test_state.get(user_id, {}).get("used_hints", {}).get(state["type"], 0)
+    hints_left = max(0, 10 - used_hints)
+    kb = get_stop_test_kb(q_id, hints_left=hints_left)
+    sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    user_test_state[user_id]["last_question_msg_id"] = sent_q.message_id
 
 # --- Проверка ответа пользователя на ошибочный вопрос ---
 @router.message(lambda m: (
@@ -328,15 +511,39 @@ async def check_mistake_answer(m: types.Message):
     q = get_question_by_id(q_id)
     user_answer = ''.join(filter(str.isdigit, m.text))
     correct = ''.join(filter(str.isdigit, str(q.get("correct_answer", ""))))
-    if user_answer == correct:
-        resp = "✅ Теперь верно! Ошибка исправлена."
+    is_correct = (user_answer == correct)
+    if is_correct:
         set_answer_correct(m.from_user.id, q_id)
         log_question_answered(m.from_user.id, q_id, m.text, True)  # --- ЛОГИРОВАНИЕ ОТВЕТА ---
         user_test_state[m.from_user.id]["idx"] += 1
     else:
-        resp = f"❌ Пока неверно. Попробуй ещё раз!"
         log_question_answered(m.from_user.id, q_id, m.text, False)  # --- ЛОГИРОВАНИЕ ОТВЕТА ---
-    await m.answer(resp)
-    await send_next_mistake_question(m.from_user.id, m)
+
+    resp_lines = [
+        "✅ Теперь верно!" if is_correct else "❌ Пока неверно.",
+        f"Твой ответ: {user_answer if user_answer else m.text.strip()}",
+        f"Правильный ответ: {correct}",
+        "",
+        f"Ошибка {idx+1} из {len(q_ids)}",
+    ]
+    resp = "\n".join(resp_lines)
+    sent = await m.answer(resp, reply_markup=get_result_kb(q_id))
+    user_test_state[m.from_user.id]["last_result_msg_id"] = sent.message_id
+    # Переход к следующему вопросу ошибок — только после «Далее»
+
+# =========================
+# 10. Кнопка «К заданию» в подсказке — удаляет подсказку
+# =========================
+@router.callback_query(lambda c: c.data.startswith("back_to_question_"))
+async def back_to_question(cb: CallbackQuery):
+    try:
+        await cb.message.delete()
+    except Exception:
+        # Если не получилось удалить (нет прав или уже удалено) — просто скрываем кнопки
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    await cb.answer()
 
 # --- КОНЕЦ ФАЙЛА ---
