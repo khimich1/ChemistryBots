@@ -6,7 +6,7 @@ from aiogram.fsm.state import StatesGroup, State
 
 from bot.utils import user_learning_state
 from bot.services.spreadsheet import fetch_user_records
-from bot.services.answer_db import get_user_full_name, set_user_full_name
+from bot.services.answer_db import get_user_full_name, set_user_full_name, get_random_motivation_text
 from bot.services.pdf_generator import make_report
 
 # если main_kb используется в других файлах — импортируй там: from bot.handlers.menu import main_kb
@@ -36,7 +36,10 @@ main_kb = ReplyKeyboardMarkup(
 )
 
 # ==== /start и возврат в меню ====
-@router.message(lambda m: (m.text or "").lower() in {"/start", "меню"} or ("в главное меню" in (m.text or "").lower()))
+@router.message(lambda m: (
+    (m.text or "").strip().lower() in {"/start", "/menu", "меню", "в меню", "в главное меню", "⬅️ в меню"}
+    or ("меню" in (m.text or "").lower())
+))
 async def cmd_start(m: types.Message, state: FSMContext):
     full_name = get_user_full_name(m.from_user.id)
     if not full_name:
@@ -45,6 +48,14 @@ async def cmd_start(m: types.Message, state: FSMContext):
             "Пожалуйста, напиши своё имя и фамилию в одном сообщении (например: Иван Петров).\n"
             "Это нужно для отчётов и статистики.")
         return
+
+    # Отправим мотивационное сообщение (если таблица chem_motivation есть в базе)
+    mot = get_random_motivation_text()
+    if mot:
+        try:
+            await m.answer(mot)
+        except Exception:
+            pass
 
     await m.answer(
         "👋 Привет! Я помогу тебе разобраться в химии.\n\n"
@@ -66,13 +77,23 @@ async def set_full_name(m: types.Message, state: FSMContext):
     full_name = " ".join(parts[:3])  # на всякий — первые 2-3 слова
     set_user_full_name(m.from_user.id, getattr(m.from_user, "username", None), full_name)
     await state.clear()
-    await m.answer(
-        "Спасибо! Сохранил твоё имя. Ниже — главное меню.",
-        reply_markup=main_kb
-    )
+    # Возврат в меню с мотивацией
+    mot = get_random_motivation_text()
+    if mot:
+        try:
+            await m.answer(mot)
+        except Exception:
+            pass
+
+    await m.answer("Ниже — главное меню.", reply_markup=main_kb)
 
 # ==== Подменю «Теория по химии» ====
-@router.message(lambda m: m.text == "📚 Теория по химии")
+@router.message(lambda m: (m.text or "").strip().lower() in {
+    "📚 теория по химии",
+    "курс по химии",
+    "курс",
+    "теория",
+})
 async def theory_menu(m: types.Message):
     kb = ReplyKeyboardMarkup(
         keyboard=[

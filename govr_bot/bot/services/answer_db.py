@@ -292,6 +292,27 @@ def set_user_full_name(user_id: int, username: str | None, full_name: str) -> No
         conn.commit()
 
 # ========================
+#   MOTIVATION MESSAGES
+# ========================
+
+def get_random_motivation_text() -> str | None:
+    """Возвращает случайный текст из таблицы chem_motivation внутри основной БД.
+
+    Ожидается таблица `chem_motivation` со столбцом `text` в файле БД
+    `shared/test_answers.db`. Если таблицы нет — возвращает None и не падает.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute("SELECT text FROM chem_motivation ORDER BY RANDOM() LIMIT 1")
+            row = c.fetchone()
+            if row and row[0]:
+                return str(row[0])
+            return None
+    except sqlite3.OperationalError:
+        return None
+
+# ========================
 #   ПРОГРЕСС ПО КАРТОЧКАМ
 # ========================
 

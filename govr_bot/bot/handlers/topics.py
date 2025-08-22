@@ -320,7 +320,23 @@ async def learn_task(cb: types.CallbackQuery):
         f"«{topic}», часть {idx+1}\n\n"
         f"Вопрос №{q_index+1}: {question_text}\n\nНапиши ответ текстом или отправь голосовое."
     )
-    await cb.message.answer(text)
+    # Удалим предыдущий текст задания, если он был
+    try:
+        prev_id = st.get("last_task_msg_id")
+        if prev_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_id)
+    except Exception:
+        pass
+    # Удалим карточку результата, если она была
+    try:
+        res_id = st.get("last_result_msg_id")
+        if res_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=res_id)
+            st.pop("last_result_msg_id", None)
+    except Exception:
+        pass
+    sent = await cb.message.answer(text)
+    st["last_task_msg_id"] = sent.message_id
     # После показа задания скрываем кнопку «Спросить ИИ» до следующего вопроса
     try:
         st = user_learning_state.get(cb.from_user.id) or {}
@@ -390,7 +406,23 @@ async def learn_task_next(cb: types.CallbackQuery):
         f"«{topic}», часть {idx+1}\n\n"
         f"Вопрос №{new_idx+1}: {question_text}\n\nНапиши ответ сообщением."
     )
-    await cb.message.answer(text)
+    # Удалим предыдущий текст задания, если он был
+    try:
+        prev_id = st.get("last_task_msg_id")
+        if prev_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_id)
+    except Exception:
+        pass
+    # Удалим карточку результата, если она была
+    try:
+        res_id = st.get("last_result_msg_id")
+        if res_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=res_id)
+            st.pop("last_result_msg_id", None)
+    except Exception:
+        pass
+    sent = await cb.message.answer(text)
+    st["last_task_msg_id"] = sent.message_id
     await cb.answer("Готово")
 
 # ====== Приём текста/голоса как ответа на задание ======
@@ -467,6 +499,11 @@ async def catch_task_answer(m: types.Message):
             st["last_answer_correct"] = True
         except Exception:
             st["last_answer_correct"] = True
+        # удалим сообщение загрузки, если оно ещё есть
+        try:
+            await loading_msg.delete()
+        except Exception:
+            pass
     else:
         # 2) Если базовая не сработала — просим LLM внимательно проверить
         try:
@@ -558,7 +595,11 @@ async def catch_task_answer(m: types.Message):
                 InlineKeyboardButton(text="🔁 Другой вопрос", callback_data="learn_task_next"),
             ]]
         )
-        await m.answer(full_msg, reply_markup=kb)
+        sent = await m.answer(full_msg, reply_markup=kb)
+        try:
+            st["last_result_msg_id"] = sent.message_id
+        except Exception:
+            pass
     else:
         # При верном ответе показываем две кнопки: Ещё вопрос (в этом разделе) и К следующему разделу (следующий кусок)
         kb = InlineKeyboardMarkup(
@@ -567,7 +608,11 @@ async def catch_task_answer(m: types.Message):
                 InlineKeyboardButton(text="➡️ К следующему разделу", callback_data="learn_ok"),
             ]]
         )
-        await m.answer(full_msg, reply_markup=kb)
+        sent = await m.answer(full_msg, reply_markup=kb)
+        try:
+            st["last_result_msg_id"] = sent.message_id
+        except Exception:
+            pass
 
 @router.callback_query(lambda c: c.data == "show_sample_answer")
 async def show_sample_answer(cb: types.CallbackQuery):
