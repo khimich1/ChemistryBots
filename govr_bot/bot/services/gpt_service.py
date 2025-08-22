@@ -72,8 +72,8 @@ async def classify_topic(transcript: str) -> str:
         topic = resp.choices[0].message.content.strip().capitalize()
         logger.info(f"📚 Тема определена: {topic}")
         return topic
-    except PermissionDeniedError:
-        _log_llm_issue("classify_topic", PermissionDeniedError("permission denied (region)"))
+    except PermissionDeniedError as e:
+        _log_llm_issue("classify_topic", e)
         return ""
     except (APIConnectionError, RateLimitError, APIStatusError) as e:
         _log_llm_issue("classify_topic", e)
@@ -105,8 +105,8 @@ async def analyze_answer(
         feedback = resp.choices[0].message.content.strip()
         logger.info("💬 Ответ ученику с учётом учебника сгенерирован")
         return feedback
-    except PermissionDeniedError:
-        _log_llm_issue("analyze_answer", PermissionDeniedError("permission denied (region)"))
+    except PermissionDeniedError as e:
+        _log_llm_issue("analyze_answer", e)
         return _llm_unavailable_message()
     except (APIConnectionError, RateLimitError, APIStatusError) as e:
         _log_llm_issue("analyze_answer", e)
@@ -202,8 +202,8 @@ async def teach_material(chunk: str) -> str:
         lecture = resp.choices[0].message.content.strip()
         logger.info("🎓 Лекция от преподавателя сгенерирована")
         return lecture
-    except PermissionDeniedError:
-        _log_llm_issue("teach_material", PermissionDeniedError("permission denied (region)"))
+    except PermissionDeniedError as e:
+        _log_llm_issue("teach_material", e)
         return _llm_unavailable_message()
     except (APIConnectionError, RateLimitError, APIStatusError) as e:
         _log_llm_issue("teach_material", e)
@@ -227,8 +227,8 @@ async def answer_student_question(topic: str, question: str) -> str:
         ans = resp.choices[0].message.content.strip()
         logger.info("❓ Вопрос ученика обработан и ответ сгенерирован")
         return ans
-    except PermissionDeniedError:
-        _log_llm_issue("answer_student_question", PermissionDeniedError("permission denied (region)"))
+    except PermissionDeniedError as e:
+        _log_llm_issue("answer_student_question", e)
         return _llm_unavailable_message()
     except (APIConnectionError, RateLimitError, APIStatusError) as e:
         _log_llm_issue("answer_student_question", e)
@@ -290,8 +290,8 @@ async def grade_theory_answer(topic: str, question_text: str, student_answer: st
         if not is_correct and score >= GRADE_THRESHOLD:
             is_correct = True
         return is_correct, reasoning
-    except PermissionDeniedError:
-        _log_llm_issue("grade_theory_answer", PermissionDeniedError("permission denied (region)"))
+    except PermissionDeniedError as e:
+        _log_llm_issue("grade_theory_answer", e)
         # Падать нельзя — используем простой фоллбэк
         pass
     except (APIConnectionError, RateLimitError, APIStatusError) as e:

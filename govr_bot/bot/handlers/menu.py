@@ -8,6 +8,8 @@ from bot.utils import user_learning_state
 from bot.services.spreadsheet import fetch_user_records
 from bot.services.answer_db import get_user_full_name, set_user_full_name, get_random_motivation_text
 from bot.services.pdf_generator import make_report
+from bot.services.notes_ocr import recognize_notes_from_image
+from io import BytesIO
 
 # если main_kb используется в других файлах — импортируй там: from bot.handlers.menu import main_kb
 
@@ -15,6 +17,8 @@ router = Router()
 class ProfileStates(StatesGroup):
     waiting_full_name = State()
 
+class OcrStates(StatesGroup):
+    waiting_photo = State()
 
 # ==== Главное меню (обновлено) ====
 main_kb = ReplyKeyboardMarkup(
@@ -24,7 +28,7 @@ main_kb = ReplyKeyboardMarkup(
             KeyboardButton(text="📝 Тесты"),
         ],
         [
-            KeyboardButton(text="🧪 Устный зачет"),
+            KeyboardButton(text="📸 Распознать конспект"),
             KeyboardButton(text="📈 Получить отчёт"),
         ],
         [
@@ -60,7 +64,7 @@ async def cmd_start(m: types.Message, state: FSMContext):
     await m.answer(
         "👋 Привет! Я помогу тебе разобраться в химии.\n\n"
         "• 📚 Теория по химии — изучай главы по разделам (Начала, Элементы, Органика)\n"
-        "• 🧪 Устный зачет — отвечай голосом, ИИ проверит и подскажет\n"
+        "• 📸 Распознать конспект — пришли фото, верну аккуратный текст\n"
         "• 📝 Тесты — тренируйся и работай над ошибками\n"
         "• 📈 Получить отчёт — PDF с твоим прогрессом",
         reply_markup=main_kb
@@ -124,7 +128,7 @@ async def how_bot_works(m: types.Message):
         "Главное меню:\n"
         "- 📚 Теория по химии — учим главы\n"
         "- 📝 Тесты — тренировка по вариантам\n"
-        "- 🧪 Устный зачет — отвечай голосом\n"
+        "- 📸 Распознать конспект — пришли фото, верну аккуратный текст\n"
         "- 📈 Получить отчёт — PDF с прогрессом\n\n"
         "Теория (раздел «📚 Теория по химии»):\n"
         "1) Выбери: «📖 Начала химии», «⚗️ Химия элементов», «🧬 Органическая химия».\n"
@@ -144,7 +148,7 @@ async def how_bot_works(m: types.Message):
         "Тесты (кнопка «📝 Тесты»):\n"
         "1) Выбери номер теста.\n"
         "2) Отвечай цифрами (например: 2 или 13).\n"
-        "3) Кнопки: «💡 Подсказка», «⏹️ Стоп тест».\n"
+        "3) Кнопки: «💡 Подсказка», «⏹️ Стоп тест», «❗ Пожаловаться».\n"
         "4) Прерванный тест можно продолжить — бот предложит «▶️ Продолжить» или «🔄 Начать заново».\n"
         "5) «💡 Работа над ошибками» — повтор только неверных вопросов.\n\n"
         "Полезные команды:\n"
@@ -173,3 +177,45 @@ async def resume_course(m: types.Message):
     # Если состояние есть — показываем следующий chunk
     from bot.handlers.topics import send_next_chunk
     await send_next_chunk(m.from_user.id, m.bot)
+
+# ==== Распознать конспект ====
+@router.message(lambda m: m.text == "📸 Распознать конспект")
+async def ask_for_notes_photo(m: types.Message, state: FSMContext):
+    await state.set_state(OcrStates.waiting_photo)
+    await m.answer(
+        "📸 Распознать конспект\n\n"
+        "Сделайте фото страницы или пришлите снимок из галереи.\n"
+        "После распознавания пришлю аккуратно оформленный текст.\n\n"
+        "Чтобы выйти — нажмите «⬅️ В меню»."
+    )
+
+
+@router.message(OcrStates.waiting_photo)
+async def handle_notes_photo(m: types.Message, state: FSMContext):
+    # Возможность выйти в меню
+    if (m.text or "").lower().strip() in {"⬅️ в меню", "в меню", "/menu"}:
+        await state.clear()
+        await m.answer("Возвращаю в меню.", reply_markup=main_kb)
+        return
+
+    if not getattr(m, "photo", None):
+        await m.answer("Пожалуйста, пришлите фото конспекта 📷")
+        return
+
+    await m.answer("🔎 Распознаю фото… Подождите пару секунд")
+    try:
+        # Берём самое большое превью и скачиваем через встроенный клиент aiogram (без логгирования URL с токеном)
+        file = await m.bot.get_file(m.photo[-1].file_id)
+        buffer = BytesIO()
+        await m.bot.download(file, destination=buffer)
+        img_bytes = buffer.getvalue()
+
+        text = await recognize_notes_from_image(img_bytes)
+        if not text:
+            await m.answer("Не удалось распознать текст на фото. Попробуйте сделать снимок чётче и без бликов.")
+        else:
+            await m.answer(text)
+    except Exception:
+        await m.answer("Произошла ошибка при распознавании. Попробуйте ещё раз позже.")
+    finally:
+        await state.clear()

@@ -33,11 +33,16 @@ for topic in LEARNING_TOPICS:
 user_learning_state: dict[int, dict[str, Any]] = {}
 user_topics: dict[int, str] = {}
 
-# Путь к базе подготовленных лекций из .env (PREPARED_LECTURES_DB) с дефолтом в shared/
-PROJECT_ROOT = os.path.normpath(os.path.join(BASE_DIR, "..", ".."))
-PREPARED_LECTURES_DB = os.getenv("PREPARED_LECTURES_DB") or os.path.join(
-    PROJECT_ROOT, "shared", "prepared_lectures.db"
-)
+# Путь к базе подготовленных лекций (из .env PREPARED_LECTURES_DB),
+# по умолчанию — репозиторный shared/prepared_lectures.db, а если его нет — локальный bot/prepared_lectures.db
+REPO_ROOT = os.path.normpath(os.path.join(BASE_DIR, "..", "..", ".."))
+_env_db = os.getenv("PREPARED_LECTURES_DB", "").strip()
+if _env_db:
+    PREPARED_LECTURES_DB = _env_db
+else:
+    shared_db = os.path.join(REPO_ROOT, "shared", "prepared_lectures.db")
+    local_db = os.path.join(BASE_DIR, "prepared_lectures.db")
+    PREPARED_LECTURES_DB = shared_db if os.path.exists(shared_db) else local_db
 
 
 def clean_html(text: str) -> str:
@@ -268,3 +273,87 @@ def get_audio_from_db(topic: str, chunk_idx: int) -> tuple[bytes, str, int] | No
             audio_blob, audio_format, duration_ms = row
             return audio_blob, (audio_format or 'ogg'), int(duration_ms or 0)
         return None
+
+
+def _parse_qa_field(raw: str | bytes | None) -> list[str]:
+    """
+    Универсальный парсер поля с вопросами/ответами из БД.
+    Поддерживает форматы:
+      - JSON-массив строк
+      - Обычный текст с разделителями по строкам
+    Возвращает список непустых строк без нумерации типа "1) ", "- ".
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8", errors="ignore")
+        except Exception:
+            raw = raw.decode("utf-8", errors="ignore")
+    text = str(raw).strip()
+    if not text:
+        return []
+    # Сначала пытаемся распарсить как JSON-массив
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, list):
+            items = [str(x).strip() for x in obj]
+        else:
+            items = []
+    except Exception:
+        # Фоллбэк: разбиваем по строкам
+        lines = [ln.strip() for ln in text.splitlines()]
+        items = [ln for ln in lines if ln]
+    # Удаляем ведущую нумерацию/маркеры
+    cleaned: list[str] = []
+    for it in items:
+        it2 = re.sub(r"^\s*(?:\d+[).:-]?\s+|[-••—]\s+)", "", it)
+        cleaned.append(it2.strip())
+    return [s for s in cleaned if s]
+
+
+def get_qa_questions(topic: str, chunk_idx: int) -> list[str]:
+    """
+    Возвращает список вопросов для задания по теме/части из prepared_lectures.db.
+    Если столбца нет или данных нет — пустой список.
+    Ожидаемые столбцы: qa_questions (TEXT, JSON-массив или строки по одной в строке).
+    """
+    import sqlite3
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            try:
+                c.execute(
+                    "SELECT qa_questions FROM prepared_lectures WHERE topic=? AND chunk_idx=?",
+                    (topic, int(chunk_idx)),
+                )
+            except sqlite3.OperationalError:
+                # Нет такого столбца — возвращаем пусто
+                return []
+            row = c.fetchone()
+            return _parse_qa_field(row[0]) if row else []
+    except Exception:
+        return []
+
+
+def get_qa_answers(topic: str, chunk_idx: int) -> list[str]:
+    """
+    Возвращает список образцов ответов для задания по теме/части из prepared_lectures.db.
+    Если столбца нет или данных нет — пустой список.
+    Ожидаемые столбцы: qa_answers (TEXT, JSON-массив или строки по одной в строке).
+    """
+    import sqlite3
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            try:
+                c.execute(
+                    "SELECT qa_answers FROM prepared_lectures WHERE topic=? AND chunk_idx=?",
+                    (topic, int(chunk_idx)),
+                )
+            except sqlite3.OperationalError:
+                return []
+            row = c.fetchone()
+            return _parse_qa_field(row[0]) if row else []
+    except Exception:
+        return []

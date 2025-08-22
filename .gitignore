@@ -1,47 +1,16 @@
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-
-# Virtual environments (anywhere in repo)
-venv/
-**/venv/
-
-# Environment files
-.env
-*.env
-
-# IDE/project settings
-.vscode/
-.idea/
-
-# Logs
-logs/
-**/logs/
-
-# OS junk
-.DS_Store
-Thumbs.db
-
-# Local databases (do not track changes to shared DBs)
-shared/*.db
-
-# Generated artifacts
-*.pdf
-# --- Python ---
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
 *.pdb
 *.pkl
-*.log
 
 # --- Виртуальное окружение ---
 .venv/
-env/
 venv/
+**/venv/
+env/
 
 # --- IDE и редакторы ---
 .vscode/
@@ -51,34 +20,38 @@ venv/
 .DS_Store
 Thumbs.db
 
-# --- Файлы данных ---
-*.db
+# --- Логи ---
+logs/
+**/logs/
+*.log
+
+# --- Базы данных (SQLite) ---
 *.sqlite
 *.sqlite3
+*.db
+*.db-wal
+*.db-shm
 
-# --- Конфиги с секретами ---
+# --- Конфиги с секретами / переменные окружения ---
 .env
 .env.*
+*.env
+**/.env
+**/*.env
 *.secret
 credentials.json
+!.env.example
+!**/.env.example
 
-# --- Скрипты и локальные запускалки (не публиковать) ---
-*.sh
-*.bat
-*.cmd
-run_*.sh
-
-# --- PDF и временные файлы ---
-*.pdf
-*.tmp
-*.bak
-*.log
-logs/
-
-# --- Кэши/артефакты ---
+# --- Сборочные артефакты ---
 dist/
 build/
 *.egg-info/
+
+# --- Документы и временные файлы ---
+*.pdf
+*.tmp
+*.bak
 
 # --- Jupyter/Notebooks кеш ---
 .ipynb_checkpoints/
