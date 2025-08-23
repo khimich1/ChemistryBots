@@ -9,10 +9,11 @@ from typing import Dict, Tuple, List
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Image, Flowable,
-    Table, TableStyle, KeepTogether
+    Table, TableStyle, KeepTogether, PageBreak
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import A4
@@ -104,6 +105,229 @@ def _save_fig_tmp(fig, suffix=".png"):
     plt.close(fig)
     return f.name
 
+def _load_flashcards_stats(user_id: int) -> Tuple[int, int]:
+    """
+    Загружает статистику по карточкам для пользователя из shared/test_answers.db:
+      (total_cards, correct_cards)
+    Если таблица отсутствует — вернём (0, 0).
+    """
+    try:
+        with sqlite3.connect(DB_ANSWERS) as conn:
+            c = conn.cursor()
+            # Общее количество карточек, которые видел пользователь
+            c.execute("""
+                SELECT COUNT(*) as total_cards
+                FROM flashcards_seen
+                WHERE user_id=?
+            """, (user_id,))
+            total_cards = c.fetchone()[0] or 0
+            
+            # Количество правильно решенных карточек
+            c.execute("""
+                SELECT COUNT(*) as correct_cards
+                FROM flashcards_practice_log
+                WHERE user_id=? AND is_correct=1
+            """, (user_id,))
+            correct_cards = c.fetchone()[0] or 0
+            
+            return int(total_cards), int(correct_cards)
+    except sqlite3.OperationalError:
+        # например: no such table: flashcards_seen — просто отдадим пустые данные
+        return 0, 0
+
+def _load_theory_stats_by_topic(user_id: int) -> Dict[str, Tuple[int, int]]:
+    """
+    Загружает статистику по теоретическим ответам по темам:
+      { topic: (correct_answers, total_answers) }
+    """
+    stats: Dict[str, Tuple[int, int]] = {}
+    try:
+        with sqlite3.connect(DB_ANSWERS) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT topic,
+                       SUM(CASE WHEN is_correct=1 THEN 1 ELSE 0 END) AS correct,
+                       COUNT(*) AS total
+                FROM theory_task_answers
+                WHERE user_id=? AND is_correct IS NOT NULL
+                GROUP BY topic
+            """, (user_id,))
+            for topic, correct, total in c.fetchall():
+                stats[topic] = (int(correct or 0), int(total or 0))
+    except sqlite3.OperationalError:
+        pass
+    return stats
+
+def _create_topics_progress_bar(done_topics: List[str], theory_stats: Dict[str, Tuple[int, int]]) -> Flowable:
+    """
+    Создает простую процентную шкалу прогресса по всем темам.
+    Минималистичный дизайн без графиков.
+    """
+    class TopicsProgressBar(Flowable):
+        def __init__(self, done_topics, theory_stats):
+            super().__init__()
+            self.done_topics = done_topics
+            self.theory_stats = theory_stats
+            self.height = 60
+            
+        def wrap(self, availWidth, availHeight):
+            self.availWidth = availWidth
+            return availWidth, self.height
+            
+        def draw(self):
+            c = self.canv
+            w, h = self.availWidth, self.height
+            
+            # Вычисляем общий прогресс
+            total_topics = len(ALL_TOPICS)
+            completed_topics = len(set(self.done_topics))
+            
+            # Вычисляем средний процент по темам с детальной статистикой
+            total_percent = 0
+            topics_with_stats = 0
+            
+            for topic in ALL_TOPICS:
+                if topic in self.theory_stats:
+                    correct, total = self.theory_stats[topic]
+                    if total > 0:
+                        total_percent += (correct / total * 100)
+                        topics_with_stats += 1
+                elif topic in self.done_topics:
+                    total_percent += 100
+                    topics_with_stats += 1
+            
+            # Средний процент
+            avg_percent = total_percent / total_topics if total_topics > 0 else 0
+            
+            c.saveState()
+            
+            # Фон шкалы
+            c.setFillColor(colors.HexColor(CLR_GREY_LIGHT))
+            c.roundRect(0, 20, w, 20, 10, stroke=0, fill=1)
+            
+            # Заполненная часть шкалы
+            fill_width = (w * avg_percent) / 100
+            if fill_width > 0:
+                c.setFillColor(colors.HexColor(CLR_MALACHITE))
+                c.roundRect(0, 20, fill_width, 20, 10, stroke=0, fill=1)
+            
+            # Текст с процентами
+            c.setFillColor(colors.HexColor(CLR_BLUE))
+            c.setFont(BODY_FONT, 12)
+            c.drawCentredString(w/2, 45, f"Общий прогресс по темам: {avg_percent:.1f}%")
+            
+            # Дополнительная информация
+            c.setFont(BODY_FONT, 10)
+            c.drawCentredString(w/2, 5, f"Пройдено тем: {completed_topics}/{total_topics}")
+            
+            c.restoreState()
+    
+    return TopicsProgressBar(done_topics, theory_stats)
+
+def _draw_flashcards_detailed_chart(user_id: int) -> str:
+    """
+    Создает детальную диаграмму прогресса по карточкам.
+    Показывает статистику по категориям карточек.
+    """
+    try:
+        with sqlite3.connect(DB_ANSWERS) as conn:
+            c = conn.cursor()
+            
+            # Статистика по категориям карточек
+            c.execute("""
+                SELECT 
+                    fs.category,
+                    COUNT(DISTINCT fs.card_key) as seen_cards,
+                    COUNT(DISTINCT CASE WHEN fpl.is_correct=1 THEN fpl.card_key END) as correct_cards,
+                    COUNT(fpl.id) as total_attempts
+                FROM flashcards_seen fs
+                LEFT JOIN flashcards_practice_log fpl ON fs.user_id=fpl.user_id 
+                    AND fs.category=fpl.category AND fs.card_key=fpl.card_key
+                WHERE fs.user_id=?
+                GROUP BY fs.category
+                ORDER BY seen_cards DESC
+            """, (user_id,))
+            
+            categories = []
+            seen_counts = []
+            correct_counts = []
+            attempt_counts = []
+            
+            for row in c.fetchall():
+                category, seen, correct, attempts = row
+                # Изменяем названия категорий (проверяем оба регистра)
+                if category.upper() == "INORG":
+                    category = "НЕОРГАНИКА"
+                elif category.upper() == "ORG":
+                    category = "ОРГАНИКА"
+                categories.append(category)
+                seen_counts.append(seen or 0)
+                correct_counts.append(correct or 0)
+                attempt_counts.append(attempts or 0)
+            
+            if not categories:
+                # Если нет данных, создаем пустой график
+                fig, ax = plt.subplots(figsize=(10, 4))
+                ax.text(0.5, 0.5, 'Нет данных по карточкам', 
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=14, color=CLR_BLUE)
+                ax.set_xlim(0, 1)
+                ax.set_ylim(0, 1)
+                ax.axis('off')
+                return _save_fig_tmp(fig)
+            
+            # Создаем график
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+            
+            # График 1: Просмотренные vs правильно решенные карточки
+            x = np.arange(len(categories))
+            width = 0.35
+            
+            bars1 = ax1.bar(x - width/2, seen_counts, width, label='Просмотрено', 
+                           color=CLR_ORANGE, alpha=0.8)
+            bars2 = ax1.bar(x + width/2, correct_counts, width, label='Правильно решено', 
+                           color=CLR_MALACHITE, alpha=0.8)
+            
+            ax1.set_xlabel('Категории карточек', fontsize=12, fontweight='bold', color=CLR_BLUE)
+            ax1.set_ylabel('Количество карточек', fontsize=12, fontweight='bold', color=CLR_BLUE)
+            ax1.set_title('Прогресс по карточкам по категориям', fontsize=14, fontweight='bold', color=CLR_BLUE)
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(categories, rotation=45, ha='right')
+            ax1.legend()
+            ax1.grid(axis='y', alpha=0.3)
+            
+            # График 2: Количество попыток
+            bars3 = ax2.bar(x, attempt_counts, color=CLR_BLUE, alpha=0.7)
+            ax2.set_xlabel('Категории карточек', fontsize=12, fontweight='bold', color=CLR_BLUE)
+            ax2.set_ylabel('Количество попыток', fontsize=12, fontweight='bold', color=CLR_BLUE)
+            ax2.set_title('Количество попыток по категориям', fontsize=14, fontweight='bold', color=CLR_BLUE)
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(categories, rotation=45, ha='right')
+            ax2.grid(axis='y', alpha=0.3)
+            
+            # Добавляем значения на бары
+            for bars in [bars1, bars2, bars3]:
+                for bar in bars:
+                    height = bar.get_height()
+                    ax = bar.axes
+                    ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                           f'{int(height)}', ha='center', va='bottom',
+                           fontsize=10, fontweight='bold')
+            
+            plt.tight_layout()
+            return _save_fig_tmp(fig)
+            
+    except sqlite3.OperationalError:
+        # Если таблицы нет, создаем пустой график
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.text(0.5, 0.5, 'Нет данных по карточкам', 
+               ha='center', va='center', transform=ax.transAxes,
+               fontsize=14, color=CLR_BLUE)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return _save_fig_tmp(fig)
+
 def _extract_done_topics(records: List[dict]) -> List[str]:
     """Возвращает список уникальных КАНОНИЧЕСКИХ тем из записей Google Sheets.
     Нормализуем регистр/пробелы и учитываем только темы из `ALL_TOPICS`.
@@ -126,6 +350,37 @@ def _extract_done_topics(records: List[dict]) -> List[str]:
         lc = canonize(raw)
         if lc in canonical_by_lc:
             result.add(canonical_by_lc[lc])
+    return sorted(result)
+
+
+def _get_done_topics_from_db(user_id: int) -> List[str]:
+    """Возвращает список пройденных тем на основе данных из базы данных.
+    Тема считается пройденной, если есть ответы в theory_task_answers.
+    """
+    def canonize(s: str) -> str:
+        return (s or "").strip().lower().replace("ё", "е")
+
+    canonical_by_lc = {canonize(t): t for t in ALL_TOPICS}
+    result: set[str] = set()
+    
+    try:
+        with sqlite3.connect(DB_ANSWERS) as conn:
+            c = conn.cursor()
+            # Получаем уникальные темы из theory_task_answers
+            c.execute("""
+                SELECT DISTINCT topic
+                FROM theory_task_answers
+                WHERE user_id=? AND topic IS NOT NULL AND TRIM(topic)!=''
+            """, (user_id,))
+            
+            for (topic,) in c.fetchall():
+                if topic:
+                    lc = canonize(topic)
+                    if lc in canonical_by_lc:
+                        result.add(canonical_by_lc[lc])
+    except sqlite3.OperationalError:
+        pass
+    
     return sorted(result)
 
 class SectionTitle(Flowable):
@@ -479,17 +734,20 @@ def make_report(user_id: int, fullname: str, records: List[dict], filename: str 
     story.append(Spacer(1, 14))
 
     # ── Данные
+    # Определяем пройденные темы: сначала из records, потом из БД
     done_topics = _extract_done_topics(records)
+    if not done_topics:  # Если records пустые, берем из БД
+        done_topics = _get_done_topics_from_db(user_id)
+    
     test_stats = _load_test_stats(user_id)
+    theory_stats = _load_theory_stats_by_topic(user_id)
+    flashcards_total, flashcards_correct = _load_flashcards_stats(user_id)
 
-    # ── ДВА БУБЛИКА: Материалы + Тесты в ряд
-    # Учитываем тему один раз: если в таблице несколько записей одной темы — считаем её как пройденную только один раз
-    total_topics = len(ALL_TOPICS) or 1
-    closed_topics = len(set(done_topics))
-    donut_materials_path = _draw_donut(closed_topics, total_topics)
+    # ── ДВА БУБЛИКА: Карточки + Тесты в ряд
+    # Первый бублик: правильно пройденные карточки из общего количества
+    donut_cards_path = _draw_donut(flashcards_correct, flashcards_total)
 
-    # Кол-во тестов берём из базы `tests1.db` (уникальные type),
-    # а количество вопросов на один тип — также из базы (максимум COUNT по type)
+    # Второй бублик: тесты (как было)
     QUESTIONS_PER_TEST = _detect_questions_per_test()
     num_tests = _detect_num_test_types()
     tests_total_q = num_tests * QUESTIONS_PER_TEST
@@ -502,8 +760,8 @@ def make_report(user_id: int, fullname: str, records: List[dict], filename: str 
         fontName=HEADER_FONT, fontSize=11, leading=14,
         textColor=colors.HexColor(CLR_BLUE), alignment=1
     )
-    cell1 = [Image(donut_materials_path, width=200, height=200), Spacer(1, 4), Paragraph("Материалы", cap_style)]
-    cell2 = [Image(donut_tests_path,     width=200, height=200), Spacer(1, 4), Paragraph("Тесты", cap_style)]
+    cell1 = [Image(donut_cards_path, width=200, height=200), Spacer(1, 4), Paragraph("Карточки", cap_style)]
+    cell2 = [Image(donut_tests_path, width=200, height=200), Spacer(1, 4), Paragraph("Тесты", cap_style)]
     t = Table([[cell1, cell2]], colWidths=[260, 260])
     t.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -516,10 +774,14 @@ def make_report(user_id: int, fullname: str, records: List[dict], filename: str 
     story.append(t)
     story.append(Spacer(1, 12))
 
-    # ── Диаграмма: прогресс по темам
+    # ── Диаграмма: прогресс по темам (старый формат + процентная шкала)
     story.append(SectionTitle("Прогресс по темам"))
     topics_path = _draw_topics_chart(done_topics)
     story.append(Image(topics_path, width=420, height=260))
+    story.append(Spacer(1, 10))
+    
+    # Добавляем простую процентную шкалу прогресса по темам
+    story.append(_create_topics_progress_bar(done_topics, theory_stats))
     story.append(Spacer(1, 10))
 
     # ── Диаграмма: прогресс по тестам (KeepTogether — заголовок + график вместе)
@@ -537,13 +799,23 @@ def make_report(user_id: int, fullname: str, records: List[dict], filename: str 
     ]))
     story.append(Spacer(1, 12))
 
+    # ── НОВАЯ СТРАНИЦА: Прогресс по карточкам
+    story.append(PageBreak())  # Принудительный разрыв страницы
+    story.append(SectionTitle("Прогресс по карточкам"))
+    story.append(Spacer(1, 10))
+    
+    # Детальная диаграмма по карточкам
+    flashcards_path = _draw_flashcards_detailed_chart(user_id)
+    story.append(Image(flashcards_path, width=520, height=400))
+    story.append(Spacer(1, 12))
+
     # Комментарии GPT удалены из отчёта
 
     # Сборка PDF
     doc.build(story, onFirstPage=_draw_logo, onLaterPages=_draw_logo)
 
     # Чистим временные картинки
-    for p in (donut_materials_path, donut_tests_path, topics_path, tests_path):
+    for p in (donut_cards_path, donut_tests_path, topics_path, tests_path, flashcards_path):
         try:
             os.remove(p)
         except Exception:

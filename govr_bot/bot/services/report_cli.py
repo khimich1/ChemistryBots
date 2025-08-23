@@ -1,8 +1,14 @@
 import argparse
 import os
+import sys
 from pathlib import Path
 
+# Добавляем путь к модулю в parent_bot
+parent_services_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "parent_bot", "bot", "services")
+sys.path.insert(0, parent_services_path)
+
 from . import pdf_generator as pg
+from filename_generator import get_filename_for_user, get_user_display_name
 
 
 def main():
@@ -15,20 +21,18 @@ def main():
     user_id = int(args.user_id)
     fallback = (args.fallback_name or "").strip() or None
 
-    # Resolve destination path
-    out_path = args.output.strip()
-    if not out_path:
-        out_path = f"report_{user_id}.pdf"
-    out_path = str(Path(out_path).resolve())
+    # Генерируем имя файла с использованием общего модуля
+    if args.output.strip():
+        out_path = str(Path(args.output.strip()).resolve())
+    else:
+        filename = get_filename_for_user(user_id, fallback, None)
+        out_path = str(Path(filename).resolve())
 
-    # Pick full name from DB (or fallback)
-    try:
-        full_name = pg._get_full_name_for_report(user_id, fallback_fullname=fallback)  # noqa: SLF001
-    except Exception:
-        full_name = fallback or "Ученик"
+    # Получаем отображаемое имя пользователя
+    display_name = get_user_display_name(user_id, fallback, None)
 
     # Build PDF using govr generator. Records are optional; pass empty list
-    pg.make_report(user_id, full_name, records=[], filename=out_path)
+    pg.make_report(user_id, display_name, records=[], filename=out_path)
     print(out_path)
 
 
