@@ -1,4 +1,5 @@
 import os
+import sys
 from aiogram import Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -6,6 +7,11 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from services.students import get_all_students, update_user_profile, clear_hide_reason_all, set_hide_reason
 from services.govr_report import make_pdf_report
 from states import EditStudent
+
+# Добавляем путь к модулю в parent_bot
+parent_services_path = os.path.join(os.path.dirname(__file__), "..", "..", "parent_bot", "bot", "services")
+sys.path.insert(0, parent_services_path)
+from filename_generator import get_filename_for_user
 
 router = Router()
 
@@ -73,9 +79,11 @@ async def student_selected(cb: types.CallbackQuery):
 @router.callback_query(lambda c: c.data and c.data.endswith("_progress"))
 async def student_progress(cb: types.CallbackQuery):
     user_id = int(cb.data.split("_", 2)[1])
-    # имя для шапки берём из подписи кнопки / либо пустое
+    
+    # Генерируем имя файла с использованием общего модуля
+    filename = get_filename_for_user(user_id, None, None)
+    
     # Сгенерируем PDF во временный файл
-    filename = f"report_{user_id}.pdf"
     path = make_pdf_report(user_id, fullname=None, filename=filename)
     try:
         await cb.message.answer_document(document=types.FSInputFile(path), caption=f"Отчёт по ученику ID {user_id}")

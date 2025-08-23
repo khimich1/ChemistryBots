@@ -9,6 +9,7 @@ from aiogram.fsm.state import State, StatesGroup
 import os
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 # Пути к общим БД (корень всего репозитория ChemistryBots)
@@ -18,6 +19,9 @@ TEST_ANSWERS_DB = os.path.join(SHARED_DIR, "test_answers.db")
 
 # Директория govr_bot (для запуска генератора отчёта)
 GOVR_BOT_DIR = os.path.join(REPO_ROOT, "govr_bot")
+
+# Импортируем модуль из services
+from bot.services.filename_generator import get_filename_for_user
 
 router = Router()
 
@@ -111,7 +115,11 @@ def _generate_report_pdf(user_id: int, fallback_name: str | None = None) -> str:
 	# Используем интерпретатор из venv govr_bot, чтобы были все зависимости (matplotlib, reportlab)
 	govr_python = os.path.join(GOVR_BOT_DIR, "venv", "bin", "python")
 	python_exe = govr_python if os.path.exists(govr_python) else os.getenv("PYTHON", "python3")
-	out_path = str(Path(os.path.join(SHARED_DIR, f"report_{user_id}.pdf")).resolve())
+	
+	# Генерируем имя файла с использованием общего модуля
+	filename = get_filename_for_user(user_id, fallback_name, None)
+	out_path = str(Path(os.path.join(SHARED_DIR, filename)).resolve())
+	
 	# Запускаем CLI из каталога govr_bot, чтобы работали относительные импорты
 	cmd = [python_exe, "-m", "bot.services.report_cli", "--user-id", str(user_id), "--output", out_path]
 	if fallback_name:
