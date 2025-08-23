@@ -16,6 +16,8 @@ from bot.services.answer_db import (
     log_question_answered,
     get_user_full_name,
     save_test_debug,
+    get_last_results_for_questions,
+    reset_test_results,
 )
 from bot.services.test_sql import get_all_tests_types, get_questions_by_type, get_question_by_id, mark_question_issue, copy_question_to_tests_bug
 
@@ -64,10 +66,22 @@ def _to_html_with_code(text: str) -> str:
             out.append("<pre>" + html.escape(chunk.strip()) + "</pre>")
     return "".join(out)
 
+
+def tests_instruction_text() -> str:
+    """Короткая инструкция по разделу тестов (показываем при входе)."""
+    return (
+        "<b>Как пользоваться тестами</b>\n"
+        "1) Выбери нужный тест.\n"
+        "2) Появится таблица 3×10 с номерами: N✅ — верно, N❌ — неверно, N⬜ — ещё не решал.\n"
+        "3) Нажми номер, чтобы открыть задание. Отвечай цифрами (например: 2 или 13).\n"
+        "4) Кнопки под заданием: 💡 Подсказка, ⏹️ Стоп тест, ❗ Пожаловаться.\n"
+        "5) В таблице есть «🔄 Начать заново» (сброс статусов) и «🧹 Скрыть таблицу»."
+    )
+
 # =========================
 # 1. Клавиатура для выбора тестов
 # =========================
-def get_tests_types_kb(with_menu=False):
+def get_tests_types_kb(with_menu: bool = False, include_back: bool = False):
     types = get_all_tests_types()
     keyboard = [
         [InlineKeyboardButton(text=f"Тест {t}", callback_data=f"choose_test_{t}")]
@@ -75,6 +89,8 @@ def get_tests_types_kb(with_menu=False):
     ]
     # --- Кнопка "Работа над ошибками"
     keyboard.append([InlineKeyboardButton(text="💡 Работа над ошибками", callback_data="work_on_mistakes")])
+    if include_back:
+        keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="tests_go_back")])
     if with_menu:
         keyboard.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -119,12 +135,43 @@ def get_explain_only_kb(q_id: int):
         inline_keyboard=[[InlineKeyboardButton(text="🧠 Объяснение", callback_data=f"explain_{q_id}")]]
     )
 
+def get_test_grid_kb(user_id: int, test_type: int, q_ids: list[int]) -> InlineKeyboardMarkup:
+    """
+    30 кнопок как 3 столбца × 10 строк. Обозначения в подписи:
+      N✓ — последний ответ верный, N✗ — неверный, N· — не решался.
+    """
+    status = get_last_results_for_questions(user_id, test_type, q_ids)
+    def _label(i0: int) -> tuple[str, str]:
+        num = i0 + 1
+        st = status.get(q_ids[i0])
+        mark = "✅" if st == 1 else "❌" if st == 0 else "⬜"
+        return f"{num}{mark}", f"jump_{test_type}_{num}"
+
+    # Три столбца по 10 строк: i, i+10, i+20
+    rows: list[list[InlineKeyboardButton]] = []
+    limit = min(30, len(q_ids))
+    for r in range(10):
+        row: list[InlineKeyboardButton] = []
+        for c in range(3):
+            idx = r + 10 * c
+            if idx < limit:
+                text, cb = _label(idx)
+                row.append(InlineKeyboardButton(text=text, callback_data=cb))
+        if row:
+            rows.append(row)
+    rows.append([
+        InlineKeyboardButton(text="🔄 Начать заново", callback_data=f"restart_test_{test_type}"),
+        InlineKeyboardButton(text="🧹 Скрыть таблицу", callback_data="hide_grid"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 # =========================
 # 3. Показываем меню тестов
 # =========================
 @router.message(lambda m: m.text == "📝 Тесты")
 async def show_tests_types_menu(m: types.Message):
-    await m.answer("Выбери номер теста:", reply_markup=get_tests_types_kb())
+    await m.answer(tests_instruction_text(), parse_mode="HTML")
+    await m.answer("Выбери номер теста:", reply_markup=get_tests_types_kb(with_menu=True, include_back=True))
 
 @router.message(Command("tests"))
 async def show_tests_menu_cmd(m: types.Message):
@@ -141,18 +188,27 @@ async def start_test(cb: CallbackQuery):
         await cb.answer("Ошибка: неверный номер теста.")
         return
 
+    # Удалим предыдущую сетку, если была (при переключении тестов)
+    try:
+        prev = user_test_state.get(cb.from_user.id) or {}
+        prev_grid_id = prev.get("grid_msg_id")
+        if prev_grid_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_grid_id)
+    except Exception:
+        pass
+
     idx, q_ids = load_test_progress(cb.from_user.id, test_type)
     if idx is not None and q_ids:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="▶️ Продолжить", callback_data=f"continue_test_{test_type}")],
-                [InlineKeyboardButton(text="🔄 Начать заново", callback_data=f"restart_test_{test_type}")]
-            ]
-        )
-        await cb.message.answer(
-            f"Вы уже проходили этот тест. Продолжить с вопроса {idx+1} или начать заново?",
-            reply_markup=kb
-        )
+        kb = get_test_grid_kb(cb.from_user.id, test_type, q_ids)
+        sent = await cb.message.answer(f"Тест {test_type}. Выбери номер задания или нажми «Начать заново»:", reply_markup=kb)
+        # Сохраним id сообщения-сетки и прогресс, чтобы потом обновлять цвета
+        st = user_test_state.setdefault(cb.from_user.id, {})
+        st.update({
+            "type": test_type,
+            "idx": idx,
+            "q_ids": q_ids,
+            "grid_msg_id": sent.message_id,
+        })
         await cb.answer()
         return
 
@@ -168,7 +224,10 @@ async def start_test(cb: CallbackQuery):
         "q_ids": [q["id"] for q in questions]
     }
     clear_test_progress(cb.from_user.id, test_type)
-    await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
+    # Показать сетку перед началом и сохранить её id
+    grid_kb = get_test_grid_kb(cb.from_user.id, test_type, user_test_state[cb.from_user.id]["q_ids"])
+    sent_grid = await cb.message.answer(f"Тест {test_type}. Выбери номер задания или нажми «Начать заново»:", reply_markup=grid_kb)
+    user_test_state[cb.from_user.id]["grid_msg_id"] = sent_grid.message_id
     await cb.answer()
 
 @router.callback_query(lambda c: c.data.startswith("explain_"))
@@ -250,20 +309,42 @@ async def go_next_question(cb: CallbackQuery):
 
     await cb.answer()
 
-# --- Продолжить тест ---
-@router.callback_query(lambda c: c.data.startswith("continue_test_"))
-async def continue_test(cb: CallbackQuery):
-    test_type = int(cb.data.split("_")[-1])
-    idx, q_ids = load_test_progress(cb.from_user.id, test_type)
-    if idx is not None and q_ids:
-        user_test_state[cb.from_user.id] = {
-            "type": test_type,
-            "idx": idx,
-            "q_ids": q_ids
-        }
-        await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
-    else:
-        await cb.message.answer("Не удалось найти сохранённый прогресс. Попробуйте начать заново.")
+@router.callback_query(lambda c: c.data.startswith("jump_"))
+async def jump_to_question(cb: CallbackQuery):
+    # Формат: jump_{test_type}_{number}
+    parts = cb.data.split("_")
+    if len(parts) != 3:
+        await cb.answer()
+        return
+    test_type = int(parts[1])
+    number = max(1, int(parts[2]))
+    _idx, q_ids = load_test_progress(cb.from_user.id, test_type)
+    if not q_ids:
+        questions = get_questions_by_type(test_type)
+        if not questions:
+            await cb.message.answer("Нет вопросов для этого теста.")
+            await cb.answer()
+            return
+        q_ids = [q["id"] for q in questions]
+    number = min(number, len(q_ids))
+    # Удаляем предыдущее сообщение-вопрос, если было
+    try:
+        st_prev = user_test_state.get(cb.from_user.id) or {}
+        last_q_msg_id = st_prev.pop("last_question_msg_id", None)
+        if last_q_msg_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_msg_id)
+    except Exception:
+        pass
+
+    prev = user_test_state.get(cb.from_user.id) or {}
+    user_test_state[cb.from_user.id] = {
+        "type": test_type,
+        "idx": number - 1,
+        "q_ids": q_ids,
+        "grid_msg_id": prev.get("grid_msg_id"),
+        "used_hints": prev.get("used_hints", {}),
+    }
+    await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
     await cb.answer()
 
 # =========================
@@ -385,13 +466,34 @@ async def restart_test(cb: CallbackQuery):
         await cb.message.answer("Нет вопросов для этого теста.")
         await cb.answer()
         return
+    # Сброс прогресса и результатов (не отправляем сразу вопрос)
+    clear_test_progress(cb.from_user.id, test_type)
+    reset_test_results(cb.from_user.id, test_type)
+    # Сброс локального счётчика подсказок
+    used_map = user_test_state.setdefault(cb.from_user.id, {}).setdefault("used_hints", {})
+    try:
+        used_map.pop(test_type, None)
+    except Exception:
+        pass
+    prev = user_test_state.get(cb.from_user.id) or {}
     user_test_state[cb.from_user.id] = {
         "type": test_type,
         "idx": 0,
-        "q_ids": [q["id"] for q in questions]
+        "q_ids": [q["id"] for q in questions],
+        "grid_msg_id": prev.get("grid_msg_id"),
+        "used_hints": prev.get("used_hints", {}),
     }
-    clear_test_progress(cb.from_user.id, test_type)
-    await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
+    # Перерисуем таблицу со сброшенными статусами
+    try:
+        grid_id = user_test_state[cb.from_user.id].get("grid_msg_id")
+        kb = get_test_grid_kb(cb.from_user.id, test_type, user_test_state[cb.from_user.id]["q_ids"])
+        if grid_id:
+            await cb.message.bot.edit_message_reply_markup(chat_id=cb.message.chat.id, message_id=grid_id, reply_markup=kb)
+        else:
+            sent = await cb.message.answer(f"Тест {test_type}. Выбери номер задания или нажми «Начать заново»:", reply_markup=kb)
+            user_test_state[cb.from_user.id]["grid_msg_id"] = sent.message_id
+    except Exception:
+        pass
     await cb.answer()
 
 # =========================
@@ -449,6 +551,21 @@ async def stop_test(cb: CallbackQuery):
             "Действие отменено. Выбери тест:",
             reply_markup=get_tests_types_kb(with_menu=True)
         )
+    await cb.answer()
+
+# =========================
+# 6.1 Скрыть таблицу с номерами
+# =========================
+@router.callback_query(lambda c: c.data == "hide_grid")
+async def hide_grid(cb: CallbackQuery):
+    try:
+        st = user_test_state.get(cb.from_user.id) or {}
+        grid_id = st.pop("grid_msg_id", None)
+        if grid_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=grid_id)
+            user_test_state[cb.from_user.id] = st
+    except Exception:
+        pass
     await cb.answer()
 
 # =========================
@@ -537,6 +654,16 @@ async def check_test_answer(m: types.Message):
     # Отправляем результат и сохраняем message_id, чтобы позже заменить на краткую строку
     sent = await m.answer(_to_html_with_code(resp), parse_mode="HTML", reply_markup=get_result_kb(q["id"]))
     user_test_state[m.from_user.id]["last_result_msg_id"] = sent.message_id
+    # Обновим сетку статусов, если она есть
+    try:
+        grid_msg_id = user_test_state.get(m.from_user.id, {}).get("grid_msg_id")
+        if grid_msg_id:
+            test_type = user_test_state[m.from_user.id]["type"]
+            q_ids = user_test_state[m.from_user.id]["q_ids"]
+            kb = get_test_grid_kb(m.from_user.id, test_type, q_ids)
+            await m.bot.edit_message_reply_markup(chat_id=m.chat.id, message_id=grid_msg_id, reply_markup=kb)
+    except Exception:
+        pass
     # Переход к следующему вопросу только после нажатия «Далее»
 
 # ======================================================================
@@ -574,10 +701,12 @@ async def start_mistake_test(cb: CallbackQuery):
         await cb.message.answer("Нет ошибок в этом тесте.")
         await cb.answer()
         return
+    # Убираем дубликаты одного и того же вопроса (могло быть несколько неверных попыток)
+    mistake_q_ids_unique = list(dict.fromkeys([row[1] for row in mistakes]))
     user_test_state[user_id] = {
         "type": test_type,
         "idx": 0,
-        "mistake_q_ids": [row[1] for row in mistakes]
+        "mistake_q_ids": mistake_q_ids_unique
     }
     await send_next_mistake_question(user_id, cb.message)
     await cb.answer()
@@ -630,6 +759,13 @@ async def check_mistake_answer(m: types.Message):
         user_test_state[m.from_user.id]["idx"] += 1
     else:
         log_question_answered(m.from_user.id, q_id, m.text, False)  # --- ЛОГИРОВАНИЕ ОТВЕТА ---
+        # Удаляем текущий id из очереди, чтобы не повторялся подряд; вернём в конец, если ещё неверно
+        try:
+            state["mistake_q_ids"].pop(idx)
+        except Exception:
+            pass
+        state["mistake_q_ids"].append(q_id)
+        # idx не увеличиваем — следующий показ будет новый первый элемент очереди
 
     resp_lines = [
         "✅ Теперь верно!" if is_correct else "❌ Пока неверно.",
@@ -642,6 +778,18 @@ async def check_mistake_answer(m: types.Message):
     sent = await m.answer(resp, reply_markup=get_result_kb(q_id))
     user_test_state[m.from_user.id]["last_result_msg_id"] = sent.message_id
     # Переход к следующему вопросу ошибок — только после «Далее»
+    # Обновим сетку статусов, если она показана в чате
+    try:
+        grid_msg_id = user_test_state.get(m.from_user.id, {}).get("grid_msg_id")
+        if grid_msg_id:
+            test_type = user_test_state[m.from_user.id]["type"]
+            # В режиме ошибок глобального списка q_ids может не быть — пропустим
+            q_ids = user_test_state[m.from_user.id].get("q_ids")
+            if q_ids:
+                kb = get_test_grid_kb(m.from_user.id, test_type, q_ids)
+                await m.bot.edit_message_reply_markup(chat_id=m.chat.id, message_id=grid_msg_id, reply_markup=kb)
+    except Exception:
+        pass
 
 # =========================
 # 10. Кнопка «К заданию» в подсказке — удаляет подсказку

@@ -78,6 +78,8 @@ async def begin_chem(m: types.Message):
     for i, topic in enumerate(BEGIN_CHEM_TOPICS):
         dot = _topic_progress_dot(m.from_user.id, topic)
         buttons.append([InlineKeyboardButton(text=f"{dot} {topic}", callback_data=f"begin_topic_{i}")])
+    # Кнопка в главное меню снизу
+    buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await m.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
 
@@ -100,6 +102,8 @@ async def element_chem(m: types.Message):
     for i, topic in enumerate(ELEMENT_CHEM_TOPICS):
         dot = _topic_progress_dot(m.from_user.id, topic)
         buttons.append([InlineKeyboardButton(text=f"{dot} {topic}", callback_data=f"element_topic_{i}")])
+    # Кнопка в главное меню снизу
+    buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await m.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
 
@@ -122,6 +126,8 @@ async def organic_chem(m: types.Message):
     for i, topic in enumerate(LEARNING_TOPICS):
         dot = _topic_progress_dot(m.from_user.id, topic)
         buttons.append([InlineKeyboardButton(text=f"{dot} {topic}", callback_data=f"learn_topic_{i}")])
+    # Кнопка в главное меню снизу
+    buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await m.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=kb)
 

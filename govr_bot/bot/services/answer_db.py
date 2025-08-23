@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 # Единая БД ответов в корне проекта: ChemistryBots/shared/test_answers.db
 _THIS_DIR = os.path.dirname(__file__)  # govr_bot/bot/services
@@ -56,6 +56,17 @@ def init_db():
                 question_id INTEGER PRIMARY KEY,
                 reason TEXT,
                 status TEXT DEFAULT 'не решено'
+            )
+        ''')
+        conn.commit()
+        # --- Источники (deep-links) пользователей ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS acquisition (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                start_param TEXT,
+                first_seen_at TEXT,
+                subscribed_at TEXT
             )
         ''')
         conn.commit()
@@ -126,6 +137,50 @@ def init_db():
         conn.commit()
     # --- Инициализация таблицы активности вопросов ---
     init_activity_table()
+
+
+# ========================
+#   DEEP-LINK ACQUISITION
+# ========================
+
+def log_start_param(user_id: int, username: str | None, start_param: str | None) -> None:
+    """Сохраняет метку из /start <param>.
+
+    Правила:
+    - если записи нет — создаём с переданной меткой (может быть пустой).
+    - если запись есть и там пустая метка, а новая непустая — обновляем метку.
+    - всегда обновляем username.
+    """
+    start_param = (start_param or "").strip()
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        # 1) Вставим запись при первом контакте
+        c.execute(
+            '''INSERT INTO acquisition (user_id, username, start_param, first_seen_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET username=excluded.username''',
+            (user_id, username, start_param, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        # 2) Если старая метка пустая, а новая непустая — обновим
+        if start_param:
+            c.execute(
+                '''UPDATE acquisition
+                   SET start_param = ?
+                 WHERE user_id = ? AND (TRIM(COALESCE(start_param,'')) = '')''',
+                (start_param, user_id),
+            )
+        conn.commit()
+
+
+def mark_subscribed(user_id: int) -> None:
+    """Отмечает момент подтверждённой подписки пользователя."""
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute(
+            '''UPDATE acquisition SET subscribed_at=? WHERE user_id=?''',
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id),
+        )
+        conn.commit()
 
 # 2. Запись одного ответа в таблицу test_answers
 def save_test_answer(user_id, username, test_type, question_id, question_text, user_answer, correct_answer, is_correct, *, full_name: str | None = None):
@@ -201,6 +256,45 @@ def clear_test_progress(user_id, test_type):
         c = conn.cursor()
         c.execute('DELETE FROM test_progress WHERE user_id=? AND test_type=?', (user_id, test_type))
         conn.commit()
+
+def reset_test_results(user_id: int, test_type: int) -> None:
+    """
+    Полный сброс результатов по тесту для пользователя:
+    - удаляем ответы из test_answers
+    - удаляем логи активности из test_activity
+    """
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM test_answers WHERE user_id=? AND test_type=?", (user_id, test_type))
+        c.execute("DELETE FROM test_activity WHERE user_id=? AND test_type=?", (user_id, test_type))
+        conn.commit()
+
+def get_last_results_for_questions(user_id: int, test_type: int, q_ids: list[int]) -> dict[int, int | None]:
+    """
+    Возвращает отображение question_id -> last_is_correct (1/0/None) для списка q_ids.
+
+    Берём последнее по id запись в таблице test_answers для каждого вопроса.
+    Если ответов не было — ключа может не быть в словаре.
+    """
+    if not q_ids:
+        return {}
+    placeholders = ",".join(["?"] * len(q_ids))
+    params = [user_id, test_type, *[int(q) for q in q_ids]]
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute(
+            f"""
+            SELECT question_id, is_correct, id
+            FROM test_answers
+            WHERE user_id=? AND test_type=? AND question_id IN ({placeholders})
+            ORDER BY id
+            """,
+            params,
+        )
+        result: dict[int, int | None] = {}
+        for q_id, is_correct, _row_id in c.fetchall():
+            result[int(q_id)] = None if is_correct is None else int(is_correct)
+        return result
 
 def init_progress_table():
     """
@@ -321,6 +415,69 @@ def get_random_motivation_text() -> str | None:
             return None
     except sqlite3.OperationalError:
         return None
+
+
+def get_user_activity_stats(user_id: int) -> tuple[int, int]:
+    """
+    Возвращает (streak_days, last7_active_days).
+
+    streak_days — текущая серия активных дней подряд, считая сегодня.
+    last7_active_days — количество дней с активностью за последние 7 дней (включая сегодня).
+
+    Под активностью считаем наличие записей в:
+      - test_answers (answer_time)
+      - theory_task_answers (created_at)
+      - flashcards_practice_log (created_at)
+    """
+    days: set[str] = set()
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        try:
+            for table, col in (
+                ("test_answers", "answer_time"),
+                ("theory_task_answers", "created_at"),
+                ("flashcards_practice_log", "created_at"),
+            ):
+                try:
+                    c.execute(
+                        f"SELECT DISTINCT substr({col},1,10) FROM {table} WHERE user_id=?",
+                        (user_id,),
+                    )
+                    for (d,) in c.fetchall():
+                        if d:
+                            days.add(str(d))
+                except Exception:
+                    # Если таблицы нет — игнорируем
+                    pass
+        except Exception:
+            pass
+
+    # Преобразуем в множество дат
+    have: set[date] = set()
+    for d in days:
+        try:
+            y, m, dd = map(int, d.split("-"))
+            have.add(date(y, m, dd))
+        except Exception:
+            continue
+
+    today = date.today()
+    # streak: текущая серия, начиная с сегодня
+    streak = 0
+    for i in range(0, 400):
+        day = today - timedelta(days=i)
+        if day in have:
+            streak += 1
+        else:
+            break
+
+    # last7: количество активных дней за последние 7
+    last7 = 0
+    for i in range(0, 7):
+        if (today - timedelta(days=i)) in have:
+            last7 += 1
+
+    return streak, last7
 
 # ========================
 #   ПРОГРЕСС ПО КАРТОЧКАМ

@@ -37,6 +37,13 @@ async def main():
     # --- Инициализация бота и диспетчера ---
     bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
     dp = Dispatcher(storage=MemoryStorage())
+    # Подключаем middleware подписки
+    try:
+        from bot.middlewares.subscription_gate import SubscriptionGateMiddleware
+        dp.message.middleware(SubscriptionGateMiddleware(enabled=True))
+        dp.callback_query.middleware(SubscriptionGateMiddleware(enabled=True))
+    except Exception as e:
+        logging.warning(f"Subscription middleware not enabled: {e}")
 
     # --- Подключение роутеров ---
     dp.include_router(menu_router)
