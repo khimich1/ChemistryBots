@@ -8,7 +8,7 @@ from bot.utils import user_learning_state
 from bot.services.spreadsheet import fetch_user_records
 from bot.services.answer_db import get_user_full_name, set_user_full_name
 from bot.services.pdf_generator import make_report
-from bot.services.notes_ocr import recognize_notes_from_image
+from bot.services.task_solver import process_image_for_task_or_conspect, solve_text_task, is_chemistry_task
 from io import BytesIO
 
 # если main_kb используется в других файлах — импортируй там: from bot.handlers.menu import main_kb
@@ -17,7 +17,7 @@ router = Router()
 class ProfileStates(StatesGroup):
     waiting_full_name = State()
 
-class OcrStates(StatesGroup):
+class TaskSolverStates(StatesGroup):
     waiting_photo = State()
 
 # ==== Главное меню (обновлено) ====
@@ -28,7 +28,7 @@ main_kb = ReplyKeyboardMarkup(
             KeyboardButton(text="📝 Тесты"),
         ],
         [
-            KeyboardButton(text="📸 Распознать конспект"),
+            KeyboardButton(text="🔬 Решатор задач"),
             KeyboardButton(text="📈 Получить отчёт"),
         ],
         [
@@ -53,7 +53,7 @@ async def cmd_start(m: types.Message, state: FSMContext):
     await m.answer(
         "👋 Привет! Я помогу тебе разобраться в химии.\n\n"
         "• 📚 Теория по химии — изучай главы по разделам (Начала, Элементы, Органика)\n"
-        "• 📸 Распознать конспект — пришли фото, верну аккуратный текст\n"
+        "• 🔬 Решатор задач — пришли текст или фото задачи\n"
         "• 📝 Тесты — тренируйся и работай над ошибками\n"
         "• 📈 Получить отчёт — PDF с твоим прогрессом",
         reply_markup=main_kb
@@ -107,7 +107,7 @@ async def how_bot_works(m: types.Message):
         "Главное меню:\n"
         "- 📚 Теория по химии — учим главы\n"
         "- 📝 Тесты — тренировка по вариантам\n"
-        "- 📸 Распознать конспект — пришли фото, верну аккуратный текст\n"
+        "- 🔬 Решатор задач — пришли текст или фото задачи\n"
         "- 📈 Получить отчёт — PDF с прогрессом\n\n"
         "Теория (раздел «📚 Теория по химии»):\n"
         "1) Выбери: «📖 Начала химии», «⚗️ Химия элементов», «🧬 Органическая химия».\n"
@@ -157,44 +157,92 @@ async def resume_course(m: types.Message):
     from bot.handlers.topics import send_next_chunk
     await send_next_chunk(m.from_user.id, m.bot)
 
-# ==== Распознать конспект ====
-@router.message(lambda m: m.text == "📸 Распознать конспект")
-async def ask_for_notes_photo(m: types.Message, state: FSMContext):
-    await state.set_state(OcrStates.waiting_photo)
+# ==== Решатор задач ====
+@router.message(lambda m: m.text == "🔬 Решатор задач")
+async def ask_for_task_or_conspect_photo(m: types.Message, state: FSMContext):
+    await state.set_state(TaskSolverStates.waiting_photo)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="⬅️ В меню")]],
+        resize_keyboard=True
+    )
+    
     await m.answer(
-        "📸 Распознать конспект\n\n"
-        "Сделайте фото страницы или пришлите снимок из галереи.\n"
-        "После распознавания пришлю аккуратно оформленный текст.\n\n"
-        "Чтобы выйти — нажмите «⬅️ В меню»."
+        "🔬 Решатор задач\n\n"
+        "Отправьте:\n"
+        "• 📝 Текст химической задачи — получите решение с объяснениями\n"
+        "• 📸 Фото химической задачи — получите решение с объяснениями\n"
+        "• 📸 Фото конспекта — получите аккуратно оформленный текст\n\n"
+        "⚠️ Важно: в заданиях и конспектах категорически нельзя ничего менять или добавлять!\n\n"
+        "Чтобы выйти — нажмите кнопку «⬅️ В меню» внизу.",
+        reply_markup=kb
     )
 
 
-@router.message(OcrStates.waiting_photo)
-async def handle_notes_photo(m: types.Message, state: FSMContext):
+@router.message(TaskSolverStates.waiting_photo)
+async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
     # Возможность выйти в меню
     if (m.text or "").lower().strip() in {"⬅️ в меню", "в меню", "/menu"}:
         await state.clear()
         await m.answer("Возвращаю в меню.", reply_markup=main_kb)
         return
 
-    if not getattr(m, "photo", None):
-        await m.answer("Пожалуйста, пришлите фото конспекта 📷")
+    # Обработка текстового сообщения
+    if m.text:
+        await m.answer("🔎 Анализирую текст… Подождите пару секунд")
+        try:
+            # Проверяем, является ли текст химической задачей
+            is_task = await is_chemistry_task(m.text)
+            
+            if is_task:
+                solution = await solve_text_task(m.text)
+                if solution:
+                    await m.answer("📝 Решение задачи:\n\n" + solution)
+                else:
+                    await m.answer("Не удалось решить задачу. Попробуйте сформулировать её более чётко.")
+            else:
+                await m.answer(
+                    "🔍 Это не похоже на химическую задачу.\n\n"
+                    "Отправьте:\n"
+                    "• 📝 Текст химической задачи — получите решение с объяснениями\n"
+                    "• 📸 Фото химической задачи — получите решение с объяснениями\n"
+                    "• 📸 Фото конспекта — получите аккуратно оформленный текст\n\n"
+                    "⚠️ Важно: в заданиях и конспектах категорически нельзя ничего менять или добавлять!"
+                )
+        except Exception as e:
+            await m.answer("Произошла ошибка при обработке текста. Попробуйте ещё раз позже.")
+        finally:
+            await state.clear()
         return
 
-    await m.answer("🔎 Распознаю фото… Подождите пару секунд")
-    try:
-        # Берём самое большое превью и скачиваем через встроенный клиент aiogram (без логгирования URL с токеном)
-        file = await m.bot.get_file(m.photo[-1].file_id)
-        buffer = BytesIO()
-        await m.bot.download(file, destination=buffer)
-        img_bytes = buffer.getvalue()
+    # Обработка фото
+    if getattr(m, "photo", None):
+        await m.answer("🔎 Анализирую фото… Подождите пару секунд")
+        try:
+            # Берём самое большое превью и скачиваем через встроенный клиент aiogram
+            file = await m.bot.get_file(m.photo[-1].file_id)
+            buffer = BytesIO()
+            await m.bot.download(file, destination=buffer)
+            img_bytes = buffer.getvalue()
 
-        text = await recognize_notes_from_image(img_bytes)
-        if not text:
-            await m.answer("Не удалось распознать текст на фото. Попробуйте сделать снимок чётче и без бликов.")
-        else:
-            await m.answer(text)
-    except Exception:
-        await m.answer("Произошла ошибка при распознавании. Попробуйте ещё раз позже.")
-    finally:
-        await state.clear()
+            content_type, result = await process_image_for_task_or_conspect(img_bytes)
+            
+            if content_type == "НЕ_ОПРЕДЕЛЕНО":
+                await m.answer(result)
+            elif not result:
+                await m.answer("Не удалось обработать фото. Попробуйте сделать снимок чётче и без бликов.")
+            else:
+                # Добавляем заголовок в зависимости от типа контента
+                if content_type == "ЗАДАЧА":
+                    header = "📝 Решение задачи:\n\n"
+                else:  # КОНСПЕКТ
+                    header = "📸 Распознанный конспект:\n\n"
+                
+                await m.answer(header + result)
+        except Exception as e:
+            await m.answer("Произошла ошибка при обработке фото. Попробуйте ещё раз позже.")
+        finally:
+            await state.clear()
+        return
+
+    # Если отправлено что-то другое
+    await m.answer("Пожалуйста, отправьте текст химической задачи или фото задачи/конспекта 📝📷")
