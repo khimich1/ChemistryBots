@@ -1,9 +1,6 @@
 from aiogram import Router, types
 from aiogram.types import FSInputFile
 from aiogram.filters import Command
-
-
-
 from bot.services.spreadsheet import fetch_user_records
 from bot.services.pdf_generator import make_report
 
