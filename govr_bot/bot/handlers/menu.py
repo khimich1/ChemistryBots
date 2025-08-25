@@ -43,6 +43,10 @@ main_kb = ReplyKeyboardMarkup(
             KeyboardButton(text="🃏 Карточки для запоминания"),
             KeyboardButton(text="ℹ️ Как работает бот"),
         ],
+        [
+            KeyboardButton(text="💳 Тарифы и оплата"),
+            KeyboardButton(text="📞 Бесплатное занятие"),
+        ],
     ],
     resize_keyboard=True
 )
@@ -230,9 +234,37 @@ async def tests_go_back(cb: types.CallbackQuery):
     await cb.message.answer("Раздел тестов:", reply_markup=kb)
     await cb.answer()
 
+# Универсальная кнопка «В главное меню» для инлайн-кнопок
+@router.callback_query(lambda c: c.data == "to_main_menu")
+async def to_main_menu_cb(cb: types.CallbackQuery):
+    # Удаляем последнее сообщение и ещё 4 предыдущих (всего до 5)
+    try:
+        base = cb.message.message_id
+        for delta in range(0, 5):
+            try:
+                await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=base - delta)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    await cb.message.answer("Главное меню:", reply_markup=main_kb)
+    await cb.answer()
+
 # ==== Отчёт (PDF) ====
 @router.message(lambda m: m.text == "📈 Получить отчёт")
 async def get_report(m: types.Message):
+    # Лимит 1 PDF/месяц для бесплатного тарифа
+    try:
+        from bot.services.plan import get_user_plan_code, limits_for, consume_monthly
+        plan = get_user_plan_code(m.from_user.id)
+        limit = limits_for(plan)["reports_per_month"]
+        ok, _left = consume_monthly(m.from_user.id, "report", limit)
+        if not ok:
+            await m.answer("В бесплатном тарифе — 1 PDF-отчёт в месяц. Оформи подписку в ‘💳 Тарифы и оплата’.")
+            return
+    except Exception:
+        pass
+
     records = fetch_user_records(m.from_user.id)
     if not records:
         await m.answer("Пока нет данных для отчёта — пройди темы или тесты.")
@@ -316,6 +348,59 @@ async def handle_notes_photo(m: types.Message, state: FSMContext):
     if (m.text or "").lower().strip() in {"⬅️ в меню", "в меню", "/menu"}:
         await state.clear()
         await m.answer("Возвращаю в меню.", reply_markup=main_kb)
+        return
+
+    # Если пользователь нажал любую другую кнопку меню/теории — выйдем из режима распознавания
+    direct = (m.text or "").strip()
+    if direct in {
+        "📚 Теория по химии",
+        "📝 Тесты",
+        "🃏 Карточки для запоминания",
+        "ℹ️ Как работает бот",
+        "📈 Получить отчёт",
+        "💳 Тарифы и оплата",
+        "📖 Начала химии",
+        "⚗️ Химия элементов",
+        "🧬 Органическая химия",
+    }:
+        await state.clear()
+        try:
+            if direct == "📚 Теория по химии":
+                await theory_menu(m)
+                return
+            if direct == "📝 Тесты":
+                await tests_entry_menu(m)
+                return
+            if direct == "📖 Начала химии":
+                from bot.handlers.topics import begin_chem
+                await begin_chem(m)
+                return
+            if direct == "⚗️ Химия элементов":
+                from bot.handlers.topics import element_chem
+                await element_chem(m)
+                return
+            if direct == "🧬 Органическая химия":
+                from bot.handlers.topics import organic_chem
+                await organic_chem(m)
+                return
+            if direct == "💳 Тарифы и оплата":
+                from bot.handlers.billing import tariffs
+                await tariffs(m)
+                return
+            if direct == "🃏 Карточки для запоминания":
+                from bot.handlers.flashcards import open_cards_menu
+                await open_cards_menu(m)
+                return
+            if direct == "📈 Получить отчёт":
+                await get_report(m)
+                return
+            if direct == "ℹ️ Как работает бот":
+                await how_bot_works(m)
+                return
+        except Exception:
+            pass
+        # Если по какой-то причине не перенаправили — просто покажем меню
+        await m.answer("Режим распознавания выключен.", reply_markup=main_kb)
         return
 
     if not getattr(m, "photo", None):

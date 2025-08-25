@@ -48,11 +48,11 @@ def _log_llm_issue(where: str, error: Exception) -> None:
 
 
 # Порог принятия ответа по оценке модели (0..1). Можно переопределить через env LLM_GRADE_THRESHOLD
-GRADE_THRESHOLD: float = 0.7
+GRADE_THRESHOLD: float = 0.85
 try:
-    GRADE_THRESHOLD = float(os.getenv("LLM_GRADE_THRESHOLD", "0.7"))
+    GRADE_THRESHOLD = float(os.getenv("LLM_GRADE_THRESHOLD", "0.85"))
 except Exception:
-    GRADE_THRESHOLD = 0.7
+    GRADE_THRESHOLD = 0.85
 
 
 async def classify_topic(transcript: str) -> str:
@@ -344,6 +344,50 @@ async def check_trivial_name_by_formula(formula: str, student_answer: str) -> tu
     except (APIConnectionError, RateLimitError, APIStatusError) as e:
         _log_llm_issue("check_trivial_name_by_formula", e)
         return False, ""
+
+
+async def generate_chunk_title(topic: str, chunk_text: str) -> str:
+    """Генерирует очень короткое название для фрагмента теории.
+
+    Требования к заголовку:
+      - до 40 символов
+      - по-русски
+      - без кавычек и точки в конце
+      - по смыслу отражает ключевую мысль фрагмента
+    """
+    system = (
+        "Ты помощник-редактор учебника. Сформулируй очень короткий заголовок (до 40 символов) "
+        "для части лекции по химии. Без кавычек и точки в конце."
+    )
+    user = (
+        f"Тема главы: {topic}\n\n"
+        "Текст части:\n" + (chunk_text or "") + "\n\n"
+        "Верни только короткий заголовок, ничего больше."
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+        )
+        title = (resp.choices[0].message.content or "").strip()
+        # Пост-обработка: уберём кавычки и конечную точку, урежем длину
+        title = title.strip('"\'\u00ab\u00bb ').rstrip('.')
+        if len(title) > 40:
+            title = title[:40].rstrip()
+        return title
+    except PermissionDeniedError as e:
+        _log_llm_issue("generate_chunk_title", e)
+        return ""
+    except (APIConnectionError, RateLimitError, APIStatusError) as e:
+        _log_llm_issue("generate_chunk_title", e)
+        return ""
+    except Exception as e:
+        _log_llm_issue("generate_chunk_title", e)
+        return ""
     except Exception as e:
         _log_llm_issue("check_trivial_name_by_formula", e)
         return False, ""

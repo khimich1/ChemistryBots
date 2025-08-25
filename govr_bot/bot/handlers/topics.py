@@ -21,14 +21,19 @@ from bot.utils import (
     ELEMENT_CHEM_TOPICS,
     get_prepared_chunks_count,
     get_prepared_lecture,
+    ensure_chunk_title_column,
+    get_chunk_title,
+    set_chunk_title,
     get_audio_from_db,
     get_qa_questions,
     get_qa_answers,
+    get_total_questions_count_for_topic,
 )
 from bot.handlers.menu import main_kb
 from bot.services.gpt_service import answer_student_question
 from bot.services.gpt_service import transcribe_audio, grade_theory_answer
-from bot.services.answer_db import save_theory_task_answer, get_theory_stats
+from bot.services.gpt_service import generate_chunk_title
+from bot.services.answer_db import save_theory_task_answer, get_theory_stats, get_theory_stats_by_chunk
 import httpx
 import difflib
 
@@ -76,8 +81,7 @@ def _topic_progress_dot(user_id: int, topic: str) -> str:
 async def begin_chem(m: types.Message):
     buttons = []
     for i, topic in enumerate(BEGIN_CHEM_TOPICS):
-        dot = _topic_progress_dot(m.from_user.id, topic)
-        buttons.append([InlineKeyboardButton(text=f"{dot} {topic}", callback_data=f"begin_topic_{i}")])
+        buttons.append([InlineKeyboardButton(text=f"{topic}", callback_data=f"begin_topic_{i}")])
     # Кнопка в главное меню снизу
     buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -92,16 +96,18 @@ async def begin_topic_chosen(cb: types.CallbackQuery, bot):
     except Exception:
         await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
         return
-    user_learning_state[cb.from_user.id] = {"topic": topic, "index": 0, "awaiting_question": False}
-    await send_next_chunk(cb.from_user.id, bot)
+    await _show_topic_parts(cb.message, cb.from_user.id, topic, section_prefix="begin", topic_index=idx)
 
 # 2) Химия элементов — СПИСОК ГЛАВ (полноценный)
 @router.message(lambda m: m.text == "⚗️ Химия элементов")
 async def element_chem(m: types.Message):
+    from bot.services.plan import theory_allowed
+    if not theory_allowed(m.from_user.id, "elements"):
+        await m.answer("Этот раздел доступен на тарифах (‘Химия элементов’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.")
+        return
     buttons = []
     for i, topic in enumerate(ELEMENT_CHEM_TOPICS):
-        dot = _topic_progress_dot(m.from_user.id, topic)
-        buttons.append([InlineKeyboardButton(text=f"{dot} {topic}", callback_data=f"element_topic_{i}")])
+        buttons.append([InlineKeyboardButton(text=f"{topic}", callback_data=f"element_topic_{i}")])
     # Кнопка в главное меню снизу
     buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -116,16 +122,18 @@ async def element_topic_chosen(cb: types.CallbackQuery, bot):
     except Exception:
         await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
         return
-    user_learning_state[cb.from_user.id] = {"topic": topic, "index": 0, "awaiting_question": False}
-    await send_next_chunk(cb.from_user.id, bot)
+    await _show_topic_parts(cb.message, cb.from_user.id, topic, section_prefix="element", topic_index=idx)
 
 # 3) Органическая химия — список глав
 @router.message(lambda m: m.text == "🧬 Органическая химия")
 async def organic_chem(m: types.Message):
+    from bot.services.plan import theory_allowed
+    if not theory_allowed(m.from_user.id, "organic"):
+        await m.answer("Этот раздел доступен на тарифах (‘Органика’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.")
+        return
     buttons = []
     for i, topic in enumerate(LEARNING_TOPICS):
-        dot = _topic_progress_dot(m.from_user.id, topic)
-        buttons.append([InlineKeyboardButton(text=f"{dot} {topic}", callback_data=f"learn_topic_{i}")])
+        buttons.append([InlineKeyboardButton(text=f"{topic}", callback_data=f"learn_topic_{i}")])
     # Кнопка в главное меню снизу
     buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -140,7 +148,110 @@ async def learn_topic_chosen(cb: types.CallbackQuery, bot):
     except Exception:
         await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
         return
-    user_learning_state[cb.from_user.id] = {"topic": topic, "index": 0, "awaiting_question": False}
+    await _show_topic_parts(cb.message, cb.from_user.id, topic, section_prefix="learn", topic_index=idx)
+
+# ================== Список частей выбранной главы ==================
+async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, section_prefix: str, topic_index: int) -> None:
+    """Показывает кнопки частей главы с прогрессом по вопросам: correct/total."""
+    # Сколько частей всего по этой главе
+    total_chunks = get_prepared_chunks_count(topic)
+    if total_chunks <= 0:
+        await msg.answer(f"По теме «{topic}» пока нет подготовленных частей.", reply_markup=main_kb)
+        return
+
+    # Статистика по каждой части: chunk_idx -> (correct, total)
+    stats = get_theory_stats_by_chunk(user_id, topic)
+    # Убедимся, что столбец для заголовков есть
+    ensure_chunk_title_column()
+
+    # Ленивая генерация заголовков для отсутствующих (не более 5 за один показ)
+    missing: list[int] = []
+    for i in range(total_chunks):
+        if not get_chunk_title(topic, i):
+            missing.append(i)
+    to_generate = missing[:5]
+    for i in to_generate:
+        # Берём лекцию для чанка из БД или JSON
+        chunk_text = get_prepared_lecture(topic, i)
+        if not chunk_text:
+            chunk_text = (TEXTBOOK_CONTENT.get(topic, []) or [None])[i] if i < len(TEXTBOOK_CONTENT.get(topic, [])) else None
+        if not chunk_text:
+            continue
+        try:
+            title = await generate_chunk_title(topic, chunk_text)
+        except Exception:
+            title = ""
+        if title:
+            set_chunk_title(topic, i, title)
+
+    # Собираем клавиатуру: по 1 кнопке в строке (чтобы было видно длинные заголовки)
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(total_chunks):
+        correct, total = stats.get(i, (0, 0))
+        if total == 0:
+            # если в таблице ещё нет total — посчитаем напрямую
+            try:
+                from bot.utils import get_qa_questions as _qq
+                total = len(_qq(topic, i))
+            except Exception:
+                total = 0
+        # Заголовок части (если есть), иначе номер
+        title = get_chunk_title(topic, i) or f"Часть {i+1}"
+        # Переносим прогресс на вторую строку, чтобы название было видно целиком
+        # Эмодзи статуса по проценту выполнения: 0 — нет, >0 — 🟨, ≥70% — 🟩
+        if total and correct:
+            ratio = (correct / max(1, total))
+            emoji = "🟩" if ratio >= 0.7 else "🟨"
+        else:
+            emoji = ""
+        prefix = (emoji + " ") if emoji else ""
+        text = f"{i+1}. {title}\n{prefix}{correct} / {total}"
+        cb_data = f"{section_prefix}_part_{topic_index}_{i}"
+        rows.append([InlineKeyboardButton(text=text, callback_data=cb_data)])
+
+    # Кнопка «К главам» и «В главное меню»
+    rows.append([InlineKeyboardButton(text="📚 К главам", callback_data=f"parts_to_chapters_{section_prefix}")])
+    rows.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu_from_parts")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    await msg.answer(f"Глава: «{topic}»\nВыбери часть:", reply_markup=kb)
+
+# Переход к нужной части — Начала химии
+@router.callback_query(lambda c: c.data.startswith("begin_part_"))
+async def begin_part_start(cb: types.CallbackQuery, bot):
+    try:
+        _prefix, _p, t_idx, ch_idx = cb.data.split("_")
+        topic = BEGIN_CHEM_TOPICS[int(t_idx)]
+        part = int(ch_idx)
+    except Exception:
+        await cb.answer()
+        return
+    user_learning_state[cb.from_user.id] = {"topic": topic, "index": part, "awaiting_question": False}
+    await send_next_chunk(cb.from_user.id, bot)
+
+# Переход к нужной части — Химия элементов
+@router.callback_query(lambda c: c.data.startswith("element_part_"))
+async def element_part_start(cb: types.CallbackQuery, bot):
+    try:
+        _prefix, _p, t_idx, ch_idx = cb.data.split("_")
+        topic = ELEMENT_CHEM_TOPICS[int(t_idx)]
+        part = int(ch_idx)
+    except Exception:
+        await cb.answer()
+        return
+    user_learning_state[cb.from_user.id] = {"topic": topic, "index": part, "awaiting_question": False}
+    await send_next_chunk(cb.from_user.id, bot)
+
+# Переход к нужной части — Органическая химия
+@router.callback_query(lambda c: c.data.startswith("learn_part_"))
+async def learn_part_start(cb: types.CallbackQuery, bot):
+    try:
+        _prefix, _p, t_idx, ch_idx = cb.data.split("_")
+        topic = LEARNING_TOPICS[int(t_idx)]
+        part = int(ch_idx)
+    except Exception:
+        await cb.answer()
+        return
+    user_learning_state[cb.from_user.id] = {"topic": topic, "index": part, "awaiting_question": False}
     await send_next_chunk(cb.from_user.id, bot)
 
 # ================== Универсальный показ следующего chunk ==================
@@ -220,7 +331,7 @@ async def send_next_chunk(user_id: int, bot):
         [InlineKeyboardButton(text="📝 Задание", callback_data="learn_task")],
         [
             InlineKeyboardButton(text="❓ Спросить ИИ", callback_data="learn_ask"),
-            InlineKeyboardButton(text="■ Стоп", callback_data="learn_stop"),
+            InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts"),
             InlineKeyboardButton(text="🏠 К главам", callback_data="learn_to_chapters"),
         ],
     ]
@@ -233,12 +344,16 @@ async def send_next_chunk(user_id: int, bot):
 
     kb = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
-    await bot.send_message(
+    sent_msg = await bot.send_message(
         user_id,
         header + formatted,
         reply_markup=kb,
         parse_mode=ParseMode.MARKDOWN,
     )
+    try:
+        st["last_lecture_msg_id"] = sent_msg.message_id
+    except Exception:
+        pass
 
 # ================== Навигация ==================
 @router.callback_query(lambda c: c.data == "learn_ok")
@@ -258,6 +373,12 @@ async def learn_back(cb: types.CallbackQuery, bot):
 @router.callback_query(lambda c: c.data == "learn_stop")
 async def learn_stop(cb: types.CallbackQuery):
     user_learning_state.pop(cb.from_user.id, None)
+    # Убираем старые инлайн-кнопки у сообщения с теорией,
+    # чтобы после «Стоп» нельзя было нажать «К главам» без проверок
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await cb.message.answer("Обучение остановлено.", reply_markup=main_kb)
 
 @router.callback_query(lambda c: c.data == "learn_audio")
@@ -294,6 +415,107 @@ async def learn_audio(cb: types.CallbackQuery, bot):
     except Exception as e:
         await cb.answer(f"Ошибка отправки аудио: {str(e)}")
 
+@router.callback_query(lambda c: c.data == "learn_to_parts")
+async def learn_to_parts(cb: types.CallbackQuery, bot):
+    """Закрывает текущую главу и показывает список частей выбранной темы."""
+    st = user_learning_state.get(cb.from_user.id)
+    if not st:
+        await cb.answer("Нет активной главы")
+        return
+    topic = st.get("topic")
+    # Удалим сообщения главы/заданий/результата, если есть
+    try:
+        msg_id = st.get("last_lecture_msg_id")
+        if msg_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
+    except Exception:
+        pass
+    try:
+        msg_id = st.get("last_task_msg_id")
+        if msg_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
+            st.pop("last_task_msg_id", None)
+    except Exception:
+        pass
+    try:
+        msg_id = st.get("last_result_msg_id")
+        if msg_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
+            st.pop("last_result_msg_id", None)
+    except Exception:
+        pass
+    # Чистим состояние после удаления
+    user_learning_state.pop(cb.from_user.id, None)
+    # Определяем секцию и индекс темы
+    if topic in BEGIN_CHEM_TOPICS:
+        prefix = "begin"
+        t_idx = BEGIN_CHEM_TOPICS.index(topic)
+    elif topic in ELEMENT_CHEM_TOPICS:
+        prefix = "element"
+        t_idx = ELEMENT_CHEM_TOPICS.index(topic)
+    else:
+        prefix = "learn"
+        t_idx = LEARNING_TOPICS.index(topic) if topic in LEARNING_TOPICS else 0
+
+    await _show_topic_parts(cb.message, cb.from_user.id, topic, section_prefix=prefix, topic_index=t_idx)
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("parts_to_chapters_"))
+async def parts_to_chapters(cb: types.CallbackQuery):
+    """Из списка частей перейти назад к списку глав соответствующего раздела."""
+    try:
+        _, section_prefix = cb.data.split("parts_to_chapters_")
+    except Exception:
+        await cb.answer()
+        return
+
+    # Удалим сообщение со списком частей
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    if section_prefix == "begin":
+        buttons = [[InlineKeyboardButton(text=f"{t}", callback_data=f"begin_topic_{i}")]
+                   for i, t in enumerate(BEGIN_CHEM_TOPICS)]
+        buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
+        await cb.message.answer("Выбери главу из раздела «Начала химии»:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    elif section_prefix == "element":
+        from bot.services.plan import theory_allowed
+        if not theory_allowed(cb.from_user.id, "elements"):
+            await cb.message.answer("Этот раздел доступен на тарифах (‘Химия элементов’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.", reply_markup=main_kb)
+            await cb.answer()
+            return
+        buttons = [[InlineKeyboardButton(text=f"{t}", callback_data=f"element_topic_{i}")]
+                   for i, t in enumerate(ELEMENT_CHEM_TOPICS)]
+        buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
+        await cb.message.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    else:
+        from bot.services.plan import theory_allowed
+        if not theory_allowed(cb.from_user.id, "organic"):
+            await cb.message.answer("Этот раздел доступен на тарифах (‘Органика’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.", reply_markup=main_kb)
+            await cb.answer()
+            return
+        buttons = [[InlineKeyboardButton(text=f"{t}", callback_data=f"learn_topic_{i}")]
+                   for i, t in enumerate(LEARNING_TOPICS)]
+        buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
+        await cb.message.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data == "to_main_menu_from_parts")
+async def to_main_menu_from_parts(cb: types.CallbackQuery):
+    """Удаляет сообщение со списком частей и открывает главное меню (Reply)."""
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    from bot.handlers.menu import main_kb
+    await cb.message.answer("Главное меню:", reply_markup=main_kb)
+    await cb.answer()
+
 @router.callback_query(lambda c: c.data == "learn_task")
 async def learn_task(cb: types.CallbackQuery):
     """Отправляет вопросы из prepared_lectures.qa_questions по текущему фрагменту."""
@@ -321,10 +543,12 @@ async def learn_task(cb: types.CallbackQuery):
 
     question_text = questions[q_index]
     # Добавим кнопку: показать образец (на всякий) — но саму кнопку выводим только после неверного ответа.
+    total_in_chunk = len(questions)
+    total_in_topic = get_total_questions_count_for_topic(topic)
     text = (
         "📝 Задание по теме\n"
-        f"«{topic}», часть {idx+1}\n\n"
-        f"Вопрос №{q_index+1}: {question_text}\n\nНапиши ответ текстом или отправь голосовое."
+        f"«{topic}», часть {idx+1} (в этом куске: {total_in_chunk}, всего по теме: {total_in_topic})\n\n"
+        f"Вопрос №{q_index+1}/{total_in_chunk}: {question_text}\n\nНапиши ответ текстом или отправь голосовое."
     )
     # Удалим предыдущий текст задания, если он был
     try:
@@ -357,7 +581,7 @@ async def learn_task(cb: types.CallbackQuery):
         if has_audio:
             keyboard_buttons.append([InlineKeyboardButton(text="🔊 Слушать аудио", callback_data="learn_audio")])
         keyboard_buttons.append([
-            InlineKeyboardButton(text="■ Стоп", callback_data="learn_stop"),
+            InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts"),
             InlineKeyboardButton(text="🏠 К главам", callback_data="learn_to_chapters"),
         ])
         await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
@@ -407,10 +631,11 @@ async def learn_task_next(cb: types.CallbackQuery):
     assigned[key] = new_idx
 
     question_text = questions[new_idx]
+    total_in_chunk = len(questions)
     text = (
         "📝 Задание по теме\n"
         f"«{topic}», часть {idx+1}\n\n"
-        f"Вопрос №{new_idx+1}: {question_text}\n\nНапиши ответ сообщением."
+        f"Вопрос №{new_idx+1}/{total_in_chunk}: {question_text}\n\nНапиши ответ сообщением."
     )
     # Удалим предыдущий текст задания, если он был
     try:
@@ -460,6 +685,13 @@ async def catch_task_answer(m: types.Message):
         answer_type = "text"
         answer_text = m.text.strip()
     elif getattr(m, "voice", None):
+        from bot.services.plan import get_user_plan_code, limits_for, consume_daily
+        plan = get_user_plan_code(m.from_user.id)
+        limit = limits_for(plan)["theory_voice_per_day"]
+        ok, _left = consume_daily(m.from_user.id, "theory_voice", limit)
+        if not ok:
+            await m.answer("Лимит голосовых ответов на сегодня исчерпан. Оформи подписку для безлимита.")
+            return
         answer_type = "voice"
         voice_file_id = m.voice.file_id
         try:
@@ -486,46 +718,23 @@ async def catch_task_answer(m: types.Message):
     # Сообщим пользователю, что идёт обработка ответа
     loading_msg = await m.answer("⏳ Обрабатываю ответ... подожди немного.")
 
-    # 1) Базовая проверка (строковое совпадение/похожесть)
+    # Всегда используем LLM‑проверку (строковую похожесть не применяем, чтобы не засчитывать ложноположительно)
     answers = get_qa_answers(topic, idx)
     expected = answers[q_index] if q_index < len(answers) else ""
-    def _norm(s: str) -> str:
-        return " ".join((s or "").lower().strip().split())
-    norm_user = _norm(answer_text)
-    norm_exp = _norm(expected)
-    ratio = difflib.SequenceMatcher(None, norm_user, norm_exp).ratio() if norm_exp else 0.0
-    simple_correct = bool(norm_exp and (ratio >= 0.8 or norm_exp in norm_user or norm_user in norm_exp))
-    if simple_correct:
-        is_correct = True
-        feedback = "Молодец! ✅ Ответ верный."
-        # отметим вопрос как решённый, чтобы кнопка "Ещё вопрос" не предлагала его снова
-        try:
-            solved_key = f"solved:{topic}:{idx}"
-            st.setdefault(solved_key, set()).add(q_index)
-            st["last_answer_correct"] = True
-        except Exception:
-            st["last_answer_correct"] = True
-        # удалим сообщение загрузки, если оно ещё есть
+    try:
+        is_correct, llm_feedback = await grade_theory_answer(
+            topic=topic,
+            question_text=question_text,
+            student_answer=answer_text or "",
+            expected_answer=expected or "",
+        )
+    finally:
         try:
             await loading_msg.delete()
         except Exception:
             pass
-    else:
-        # 2) Если базовая не сработала — просим LLM внимательно проверить
-        try:
-            is_correct, llm_feedback = await grade_theory_answer(
-                topic=topic,
-                question_text=question_text,
-                student_answer=answer_text or "",
-                expected_answer=expected or "",
-            )
-        finally:
-            try:
-                await loading_msg.delete()
-            except Exception:
-                pass
-        feedback = llm_feedback
-        st["last_answer_correct"] = bool(is_correct)
+    feedback = llm_feedback
+    st["last_answer_correct"] = bool(is_correct)
 
     # Статистика по теме
     correct_before, total_before = get_theory_stats(m.from_user.id, topic)
@@ -546,17 +755,12 @@ async def catch_task_answer(m: types.Message):
 
     # Итоговая статистика, оценка и кнопки
     import math
-    correct_after, _ = get_theory_stats(m.from_user.id, topic)
-    # Общее число порций в теме
-    chunks_json = TEXTBOOK_CONTENT.get(topic, [])
-    total_from_json = len(chunks_json)
-    total_from_db = get_prepared_chunks_count(topic)
-    total_portions = total_from_json if total_from_json > 0 else total_from_db
+    correct_after, total_questions = get_theory_stats(m.from_user.id, topic)
 
     # Пороговые значения
-    t_satisf = max(1, math.ceil(0.3 * total_portions))        # 30% и выше — удовлетворительно
-    t_good   = max(1, math.floor(0.5 * total_portions) + 1)   # >50%
-    t_excell = max(1, math.floor(0.7 * total_portions) + 1)   # >70%
+    t_satisf = max(1, math.ceil(0.3 * max(1, total_questions)))        # 30% и выше — удовлетворительно
+    t_good   = max(1, math.floor(0.5 * max(1, total_questions)) + 1)   # >50%
+    t_excell = max(1, math.floor(0.7 * max(1, total_questions)) + 1)   # >70%
 
     if correct_after >= t_excell:
         grade = "отлично"
@@ -586,7 +790,7 @@ async def catch_task_answer(m: types.Message):
         head = "Не совсем верно. Попробуй ещё раз: нажми «🔁 Другой вопрос»."
 
     # Строка статуса с эмодзи и мотивацией
-    base = f"Верно: {correct_after} из {total_portions}.\nТекущая оценка: {grade} {emoji}."
+    base = f"Верно: {correct_after} из {total_questions}.\nТекущая оценка: {grade} {emoji}."
     if to_next > 0 and next_label:
         motivation = f" До оценки «{next_label}» осталось {to_next}. 🚀 Возьми ещё вопрос!"
     else:
@@ -594,12 +798,20 @@ async def catch_task_answer(m: types.Message):
     stat_line = base + motivation
 
     full_msg = f"{head}\n\n{stat_line}"
-    if not is_correct and expected:
+    # Дополнительно: если по текущему кусочку все вопросы решены верно — похвалим и предложим перейти к следующей части
+    solved_key = f"solved:{topic}:{idx}"
+    solved_set: set[int] = st.setdefault(solved_key, set())
+    if is_correct:
+        solved_set.add(q_index)
+    all_solved_here = len(solved_set) >= len(get_qa_questions(topic, idx)) and len(get_qa_questions(topic, idx)) > 0
+
+    if not is_correct and expected and not all_solved_here:
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[
                 InlineKeyboardButton(text="💡 Показать образец ответа", callback_data="show_sample_answer"),
                 InlineKeyboardButton(text="🔁 Другой вопрос", callback_data="learn_task_next"),
-            ]]
+            ],
+            [InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts")]]
         )
         sent = await m.answer(full_msg, reply_markup=kb)
         try:
@@ -608,12 +820,23 @@ async def catch_task_answer(m: types.Message):
             pass
     else:
         # При верном ответе показываем две кнопки: Ещё вопрос (в этом разделе) и К следующему разделу (следующий кусок)
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 Ещё вопрос", callback_data="learn_task_next"),
-                InlineKeyboardButton(text="➡️ К следующему разделу", callback_data="learn_ok"),
-            ]]
-        )
+        if all_solved_here:
+            praise = "Отлично! ✅ Ты ответил(а) на все вопросы этой части. Готов двигаться дальше?"
+            full_msg += f"\n\n{praise}"
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="➡️ Перейти к следующей части", callback_data="learn_ok"),
+                ],
+                [InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts")]]
+            )
+        else:
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="🔄 Ещё вопрос", callback_data="learn_task_next"),
+                    InlineKeyboardButton(text="➡️ К следующему разделу", callback_data="learn_ok"),
+                ],
+                [InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts")]]
+            )
         sent = await m.answer(full_msg, reply_markup=kb)
         try:
             st["last_result_msg_id"] = sent.message_id
@@ -646,6 +869,17 @@ async def learn_to_chapters(cb: types.CallbackQuery):
     topic = st["topic"] if st else None
     user_learning_state.pop(cb.from_user.id, None)
 
+    # Если состояние отсутствует (часто после «Стоп»), показываем бесплатные «Начала химии»
+    if not topic:
+        buttons = [
+            [InlineKeyboardButton(text=t, callback_data=f"begin_topic_{i}")]
+            for i, t in enumerate(BEGIN_CHEM_TOPICS)
+        ]
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await cb.message.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
+        await cb.answer()
+        return
+
     if topic in BEGIN_CHEM_TOPICS:
         buttons = [
             [InlineKeyboardButton(text=t, callback_data=f"begin_topic_{i}")]
@@ -655,6 +889,11 @@ async def learn_to_chapters(cb: types.CallbackQuery):
         await cb.message.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
 
     elif topic in ELEMENT_CHEM_TOPICS:
+        from bot.services.plan import theory_allowed
+        if not theory_allowed(cb.from_user.id, "elements"):
+            await cb.message.answer("Этот раздел доступен на тарифах (‘Химия элементов’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.", reply_markup=main_kb)
+            await cb.answer()
+            return
         buttons = [
             [InlineKeyboardButton(text=t, callback_data=f"element_topic_{i}")]
             for i, t in enumerate(ELEMENT_CHEM_TOPICS)
@@ -663,6 +902,11 @@ async def learn_to_chapters(cb: types.CallbackQuery):
         await cb.message.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
 
     else:
+        from bot.services.plan import theory_allowed
+        if not theory_allowed(cb.from_user.id, "organic"):
+            await cb.message.answer("Этот раздел доступен на тарифах (‘Органика’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.", reply_markup=main_kb)
+            await cb.answer()
+            return
         buttons = [
             [InlineKeyboardButton(text=t, callback_data=f"learn_topic_{i}")]
             for i, t in enumerate(LEARNING_TOPICS)
@@ -736,6 +980,14 @@ async def noop(cb: types.CallbackQuery):
 # ================== Вопрос по теории ==================
 @router.callback_query(lambda c: c.data == "learn_ask")
 async def learn_ask(cb: types.CallbackQuery):
+    from bot.services.plan import get_user_plan_code, limits_for, consume_daily
+    plan = get_user_plan_code(cb.from_user.id)
+    limit = limits_for(plan)["theory_ai_per_day"]
+    ok, _left = consume_daily(cb.from_user.id, "theory_ai", limit)
+    if not ok:
+        await cb.message.answer("Лимит вопросов ИИ на сегодня исчерпан. Оформи подписку для безлимита.")
+        await cb.answer()
+        return
     st = user_learning_state.get(cb.from_user.id)
     if st:
         st["awaiting_question"] = True

@@ -11,6 +11,8 @@ from bot.handlers.topics import router as topics_router
 from bot.handlers.tests import router as tests_router
 from bot.handlers.report import router as report_router
 from bot.handlers.flashcards import router as flashcards_router
+from bot.handlers.billing import router as billing_router
+from bot.services.plan import init_billing_tables
 
 # --- Конфиг и токен ---
 from dotenv import load_dotenv
@@ -37,6 +39,11 @@ async def main():
     # --- Инициализация бота и диспетчера ---
     bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
     dp = Dispatcher(storage=MemoryStorage())
+    # Инициализация таблиц тарифов/использования
+    try:
+        init_billing_tables()
+    except Exception as e:
+        logging.warning(f"Billing tables init failed: {e}")
     # Подключаем middleware подписки
     try:
         from bot.middlewares.subscription_gate import SubscriptionGateMiddleware
@@ -51,6 +58,7 @@ async def main():
     dp.include_router(topics_router)
     dp.include_router(report_router)
     dp.include_router(flashcards_router)
+    dp.include_router(billing_router)
 
     # --- Установка команд ---
     await set_bot_commands(bot)

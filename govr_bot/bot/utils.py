@@ -135,6 +135,60 @@ def get_prepared_lecture(topic, idx):
         return row[0] if row else None
 
 
+def ensure_chunk_title_column() -> None:
+    """Безопасно добавляет столбец chunk_title в prepared_lectures, если его нет."""
+    import sqlite3
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            cols = {row[1] for row in c.execute("PRAGMA table_info(prepared_lectures)")}
+            if "chunk_title" not in cols:
+                c.execute("ALTER TABLE prepared_lectures ADD COLUMN chunk_title TEXT")
+                conn.commit()
+    except Exception:
+        pass
+
+
+def get_chunk_title(topic: str, idx: int) -> str | None:
+    """Возвращает сохранённый заголовок части или None."""
+    import sqlite3
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            cols = {row[1] for row in c.execute("PRAGMA table_info(prepared_lectures)")}
+            if "chunk_title" not in cols:
+                return None
+            c.execute(
+                "SELECT chunk_title FROM prepared_lectures WHERE topic=? AND chunk_idx=?",
+                (topic, int(idx)),
+            )
+            row = c.fetchone()
+            return str(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+
+
+def set_chunk_title(topic: str, idx: int, title: str) -> None:
+    """Сохраняет заголовок части (тихо игнорирует ошибки)."""
+    import sqlite3
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            cols = {row[1] for row in c.execute("PRAGMA table_info(prepared_lectures)")}
+            if "chunk_title" not in cols:
+                try:
+                    c.execute("ALTER TABLE prepared_lectURES ADD COLUMN chunk_title TEXT")
+                except Exception:
+                    return
+            c.execute(
+                "UPDATE prepared_lectures SET chunk_title=? WHERE topic=? AND chunk_idx=?",
+                (title, topic, int(idx)),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
 def get_qa_questions(topic: str, idx: int) -> list[str]:
     """
     Возвращает список вопросов для задания по теме и номеру фрагмента
@@ -173,6 +227,30 @@ def get_qa_questions(topic: str, idx: int) -> list[str]:
                 return lines
     except Exception:
         return []
+
+
+def get_total_questions_count_for_topic(topic: str) -> int:
+    """
+    Возвращает общее количество вопросов по всей теме (сумма по всем chunk'ам).
+    Считаем динамически по БД `prepared_lectures`, поле `qa_questions`.
+    """
+    import sqlite3
+    try:
+        total = 0
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            try:
+                c.execute(
+                    "SELECT qa_questions FROM prepared_lectures WHERE topic=?",
+                    (topic,),
+                )
+            except sqlite3.OperationalError:
+                return 0
+            for (raw,) in c.fetchall():
+                total += len(_parse_qa_field(raw))
+        return int(total)
+    except Exception:
+        return 0
 
 
 def get_qa_answers(topic: str, idx: int) -> list[str]:

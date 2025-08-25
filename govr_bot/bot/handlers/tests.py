@@ -22,6 +22,7 @@ from bot.services.answer_db import (
 from bot.services.test_sql import get_all_tests_types, get_questions_by_type, get_question_by_id, mark_question_issue, copy_question_to_tests_bug
 
 from bot.handlers.menu import main_kb  # Импорт клавиатуры главного меню
+from bot.services.plan import get_user_plan_code, limits_for, consume_daily
 
 router = Router()
 user_test_state = {}
@@ -232,6 +233,19 @@ async def start_test(cb: CallbackQuery):
 
 @router.callback_query(lambda c: c.data.startswith("explain_"))
 async def show_explanation(cb: CallbackQuery):
+    # --- Лимит объяснений в день по тарифу ---
+    user_id = cb.from_user.id
+    plan = get_user_plan_code(user_id)
+    limit = limits_for(plan)["test_explain_per_day"]
+    ok, _left = consume_daily(user_id, "test_explain", limit)
+    if not ok:
+        try:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Тарифы и оплата", callback_data="to_tariffs")]])
+            await cb.message.answer("Дневной лимит объяснений исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
+        except Exception:
+            pass
+        await cb.answer()
+        return
     q_id = int(cb.data.split("_")[-1])
     q = get_question_by_id(q_id)
     explanation = q.get("explanation", "") or q.get("detailed_explanation", "")
@@ -581,6 +595,19 @@ async def to_main_menu(cb: CallbackQuery):
 # =========================
 @router.callback_query(lambda c: c.data.startswith("hint_"))
 async def show_hint(cb: CallbackQuery):
+    # --- Лимит подсказок в день по тарифу ---
+    user_id = cb.from_user.id
+    plan = get_user_plan_code(user_id)
+    limit = limits_for(plan)["test_hint_per_day"]
+    ok, _left = consume_daily(user_id, "test_hint", limit)
+    if not ok:
+        try:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Тарифы и оплата", callback_data="to_tariffs")]])
+            await cb.message.answer("Дневной лимит подсказок исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
+        except Exception:
+            pass
+        await cb.answer()
+        return
     q_id = int(cb.data.split("_")[-1])
     q = get_question_by_id(q_id)
     # Подсказки: проверяем лимит 10 на тест (30 вопросов)

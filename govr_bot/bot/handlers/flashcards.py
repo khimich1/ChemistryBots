@@ -837,6 +837,11 @@ async def nav_back(m: types.Message):
 async def cards_inorg(m: types.Message):
     # В зависимости от режима: заучивание/практика/ошибки
     mode = (user_flashcards_state.get(m.from_user.id) or {}).get("mode")
+    if mode in {"practice", "errors"}:
+        from bot.services.plan import flashcards_mode_allowed
+        if not flashcards_mode_allowed(m.from_user.id, mode, "inorg"):
+            await m.answer("Этот режим доступен на тарифах. Открой ‘💳 Тарифы и оплата’.")
+            return
     if mode == "practice":
         await start_practice_round(m, category="inorg")
     elif mode == "errors":
@@ -848,6 +853,11 @@ async def cards_inorg(m: types.Message):
 @router.message(lambda m: m.text == "🧬 Органика")
 async def cards_org(m: types.Message):
     mode = (user_flashcards_state.get(m.from_user.id) or {}).get("mode")
+    if mode in {"practice", "errors"}:
+        from bot.services.plan import flashcards_mode_allowed
+        if not flashcards_mode_allowed(m.from_user.id, mode, "org"):
+            await m.answer("Этот режим доступен на тарифах. Открой ‘💳 Тарифы и оплата’.")
+            return
     if mode == "practice":
         await start_practice_round(m, category="org")
     elif mode == "errors":

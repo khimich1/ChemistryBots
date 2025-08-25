@@ -678,21 +678,111 @@ def save_theory_task_answer(
 
 
 def get_theory_stats(user_id: int, topic: str) -> tuple[int, int]:
-    """Возвращает (correct, total) по ответам ученика в теории для указанной темы.
-    Учитываются только ответы, где is_correct не NULL.
+    """Возвращает (correct, total) по теме:
+    - correct: число УНИКАЛЬНЫХ вопросов (topic+chunk_idx+question_index), на которые ученик ответил верно хотя бы раз
+    - total: текущее число вопросов по теме в БД prepared_lectures (сумма по всем chunk'ам)
+
+    Это устойчиво к ручным правкам количества вопросов в БД: total пересчитывается динамически.
     """
+    # 1) correct — считаем уникальные правильные вопросы
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
         c.execute(
             """
-            SELECT 
-                SUM(CASE WHEN is_correct=1 THEN 1 ELSE 0 END) AS correct_cnt,
-                COUNT(*) AS total_cnt
-            FROM theory_task_answers
-            WHERE user_id=? AND topic=? AND is_correct IS NOT NULL
+            SELECT COUNT(*) FROM (
+                SELECT DISTINCT chunk_idx, question_index
+                FROM theory_task_answers
+                WHERE user_id=? AND topic=? AND is_correct=1
+            ) t
             """,
             (user_id, topic),
         )
-        row = c.fetchone() or (0, 0)
-        correct, total = row[0] or 0, row[1] or 0
-        return int(correct), int(total)
+        row = c.fetchone()
+        correct = int(row[0] if row and row[0] is not None else 0)
+
+    # 2) total — берём из prepared_lectures сумму количества вопросов по теме
+    try:
+        # Ленивая и безопасная импорт-зависимость, чтобы не создавать циклы
+        from bot.utils import PREPARED_LECTURES_DB
+        from bot.utils import _parse_qa_field  # noqa: F401 (используем ниже)
+        import sqlite3 as _sqlite
+        total = 0
+        with _sqlite.connect(PREPARED_LECTURES_DB) as conn2:
+            c2 = conn2.cursor()
+            try:
+                c2.execute("SELECT qa_questions FROM prepared_lectures WHERE topic=?", (topic,))
+            except _sqlite.OperationalError:
+                total = 0
+            else:
+                for (raw,) in c2.fetchall():
+                    # используем общий парсер для JSON/строк
+                    from bot.utils import _parse_qa_field as _parse
+                    total += len(_parse(raw))
+        total = int(total)
+    except Exception:
+        total = 0
+
+    return int(correct), int(total)
+
+
+def get_theory_stats_by_chunk(user_id: int, topic: str) -> dict[int, tuple[int, int]]:
+    """Возвращает словарь chunk_idx -> (correct, total) по теме.
+
+    - correct — количество УНИКАЛЬНЫХ вопросов по этому chunk, на которые
+      пользователь ответил верно хотя бы раз.
+    - total   — текущее число вопросов в этом chunk (динамически из БД prepared_lectures).
+    """
+    # 1) correct по каждому chunk_idx
+    correct_by_chunk: dict[int, int] = {}
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        try:
+            c.execute(
+                """
+                SELECT chunk_idx, COUNT(DISTINCT question_index)
+                FROM theory_task_answers
+                WHERE user_id=? AND topic=? AND is_correct=1
+                GROUP BY chunk_idx
+                """,
+                (user_id, topic),
+            )
+            for ch_idx, cnt in c.fetchall():
+                try:
+                    correct_by_chunk[int(ch_idx)] = int(cnt)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # 2) total по каждому chunk_idx — из prepared_lectures
+    totals_by_chunk: dict[int, int] = {}
+    try:
+        from bot.utils import PREPARED_LECTURES_DB
+        from bot.utils import _parse_qa_field as _parse
+        import sqlite3 as _sqlite
+
+        with _sqlite.connect(PREPARED_LECTURES_DB) as conn2:
+            c2 = conn2.cursor()
+            try:
+                c2.execute(
+                    "SELECT chunk_idx, qa_questions FROM prepared_lectures WHERE topic=?",
+                    (topic,),
+                )
+            except _sqlite.OperationalError:
+                totals_by_chunk = {}
+            else:
+                for ch_idx, raw in c2.fetchall():
+                    try:
+                        idx = int(ch_idx)
+                        totals_by_chunk[idx] = len(_parse(raw))
+                    except Exception:
+                        continue
+    except Exception:
+        totals_by_chunk = {}
+
+    # 3) Объединяем
+    result: dict[int, tuple[int, int]] = {}
+    keys = set(totals_by_chunk.keys()) | set(correct_by_chunk.keys())
+    for k in keys:
+        result[int(k)] = (int(correct_by_chunk.get(k, 0)), int(totals_by_chunk.get(k, 0)))
+    return result
