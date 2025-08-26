@@ -3,6 +3,7 @@ from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from aiogram.filters.callback_data import CallbackData
 
 from bot.utils import user_learning_state
 from bot.services.spreadsheet import fetch_user_records
@@ -22,11 +23,34 @@ from io import BytesIO
 # если main_kb используется в других файлах — импортируй там: from bot.handlers.menu import main_kb
 
 router = Router()
+
+# Callback data для кнопок решатора
+class TaskSolverCallback(CallbackData, prefix="task_solver"):
+    action: str
+
 class ProfileStates(StatesGroup):
     waiting_full_name = State()
 
 class TaskSolverStates(StatesGroup):
     waiting_photo = State()
+
+# ==== Клавиатура для решатора задач ====
+def get_task_solver_kb():
+    """Создает inline клавиатуру с кнопками для решатора задач"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏠 В главное меню",
+                    callback_data=TaskSolverCallback(action="main_menu").pack()
+                ),
+                InlineKeyboardButton(
+                    text="📝 Еще задание",
+                    callback_data=TaskSolverCallback(action="another_task").pack()
+                )
+            ]
+        ]
+    )
 
 # ==== Главное меню (обновлено) ====
 main_kb = ReplyKeyboardMarkup(
@@ -198,23 +222,6 @@ async def theory_menu(m: types.Message):
 • Голосовые объяснения сложных тем
 • Отслеживание прогресса изучения
 • Возможность задавать вопросы ИИ
-
-**Разделы курса:**
-
-**📖 Начала химии**
-• Основы химии: строение атома, периодический закон
-• Химическая связь, формулы веществ
-• Классы соединений: оксиды, кислоты, основания, соли
-
-**⚗️ Химия элементов**
-• Неорганическая химия по группам элементов
-• ОВР, свойства металлов и неметаллов
-• Практика с реальными задачами
-
-**🧬 Органическая химия**
-• Углеводороды и их производные
-• Механизмы реакций
-• Специфика органических соединений
 
 **Как работает обучение:**
 1. Выбираешь раздел и главу
@@ -460,7 +467,10 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
             if is_task:
                 solution = await solve_text_task(m.text)
                 if solution:
-                    await m.answer(f"📝 Решение задачи:\n\n{solution}\n\n📊 Осталось запросов: {remaining}")
+                    await m.answer(
+                        f"📝 Решение задачи:\n\n{solution}\n\n📊 Осталось запросов: {remaining}",
+                        reply_markup=get_task_solver_kb()
+                    )
                 else:
                     await m.answer("Не удалось решить задачу. Попробуйте сформулировать её более чётко.")
             else:
@@ -516,10 +526,10 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
                 # Добавляем заголовок в зависимости от типа контента
                 if content_type == "ЗАДАЧА":
                     header = f"📝 Решение задачи:\n\n{result}\n\n📊 Осталось запросов: {remaining}"
+                    await m.answer(header, reply_markup=get_task_solver_kb())
                 else:  # КОНСПЕКТ
                     header = f"📸 Распознанный конспект:\n\n{result}\n\n📊 Осталось запросов: {remaining}"
-                
-                await m.answer(header)
+                    await m.answer(header, reply_markup=get_task_solver_kb())
         except Exception as e:
             await m.answer("Произошла ошибка при обработке фото. Попробуйте ещё раз позже.")
         finally:
@@ -529,3 +539,48 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
     # Если отправлено что-то другое
     await m.answer("Пожалуйста, отправьте текст химической задачи или фото задачи/конспекта 📝📷")
     await state.clear()
+
+# ==== Обработчики callback кнопок решатора ====
+@router.callback_query(TaskSolverCallback.filter())
+async def handle_task_solver_callback(callback: types.CallbackQuery, callback_data: TaskSolverCallback, state: FSMContext):
+    await callback.answer()  # Убираем "часики" у кнопки
+    
+    if callback_data.action == "main_menu":
+        # Возвращаемся в главное меню
+        await state.clear()
+        await callback.message.answer("Возвращаю в главное меню.", reply_markup=main_kb)
+        # Удаляем сообщение с кнопками
+        try:
+            await callback.message.delete()
+        except:
+            pass
+    
+    elif callback_data.action == "another_task":
+        # Удаляем 3 последних сообщения (включая текущее)
+        try:
+            # Удаляем текущее сообщение с кнопками
+            await callback.message.delete()
+            
+            # Удаляем еще 2 предыдущих сообщения
+            chat_id = callback.message.chat.id
+            message_id = callback.message.message_id
+            
+            for i in range(1, 3):  # Удаляем 2 предыдущих сообщения
+                try:
+                    await callback.bot.delete_message(chat_id, message_id - i)
+                except:
+                    pass  # Игнорируем ошибки, если сообщение уже удалено
+                    
+        except Exception as e:
+            # Если не удалось удалить, просто отправляем новое сообщение
+            pass
+        
+        # Отправляем сообщение для нового задания
+        await callback.message.answer(
+            "📝 Отправьте новую химическую задачу (текстом или фото):",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="⬅️ В меню")]],
+                resize_keyboard=True
+            )
+        )
+        await state.set_state(TaskSolverStates.waiting_photo)
