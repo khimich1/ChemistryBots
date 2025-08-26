@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.filters.callback_data import CallbackData
 
-from bot.utils import user_learning_state
+from bot.utils_pkg import user_learning_state
 from bot.services.spreadsheet import fetch_user_records
 from bot.services.answer_db import (
     get_user_full_name,

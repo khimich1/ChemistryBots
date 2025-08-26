@@ -5,7 +5,7 @@ from typing import List
 
 from openai import AsyncOpenAI
 from openai import PermissionDeniedError, APIConnectionError, RateLimitError, APIStatusError
-from bot.utils import (
+from bot.utils_pkg import (
     TEXTBOOK_CONTENT,
     get_prepared_chunks_count,
     get_prepared_lecture,

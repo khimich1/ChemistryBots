@@ -703,8 +703,8 @@ def get_theory_stats(user_id: int, topic: str) -> tuple[int, int]:
     # 2) total — берём из prepared_lectures сумму количества вопросов по теме
     try:
         # Ленивая и безопасная импорт-зависимость, чтобы не создавать циклы
-        from bot.utils import PREPARED_LECTURES_DB
-        from bot.utils import _parse_qa_field  # noqa: F401 (используем ниже)
+        from bot.utils_pkg import PREPARED_LECTURES_DB
+        from bot.utils_pkg import _parse_qa_field  # noqa: F401 (используем ниже)
         import sqlite3 as _sqlite
         total = 0
         with _sqlite.connect(PREPARED_LECTURES_DB) as conn2:
@@ -716,7 +716,7 @@ def get_theory_stats(user_id: int, topic: str) -> tuple[int, int]:
             else:
                 for (raw,) in c2.fetchall():
                     # используем общий парсер для JSON/строк
-                    from bot.utils import _parse_qa_field as _parse
+                    from bot.utils_pkg import _parse_qa_field as _parse
                     total += len(_parse(raw))
         total = int(total)
     except Exception:
@@ -757,8 +757,8 @@ def get_theory_stats_by_chunk(user_id: int, topic: str) -> dict[int, tuple[int, 
     # 2) total по каждому chunk_idx — из prepared_lectures
     totals_by_chunk: dict[int, int] = {}
     try:
-        from bot.utils import PREPARED_LECTURES_DB
-        from bot.utils import _parse_qa_field as _parse
+        from bot.utils_pkg import PREPARED_LECTURES_DB
+        from bot.utils_pkg import _parse_qa_field as _parse
         import sqlite3 as _sqlite
 
         with _sqlite.connect(PREPARED_LECTURES_DB) as conn2:

@@ -25,7 +25,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from dotenv import load_dotenv
 load_dotenv()
 
-from bot.utils import ALL_TOPICS
+from bot.utils_pkg import ALL_TOPICS
 
 # ───────── Палитра ─────────
 CLR_ORANGE     = "#f5c679"   # светлооранжевый (бренд)

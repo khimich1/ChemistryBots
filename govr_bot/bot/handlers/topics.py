@@ -9,7 +9,7 @@ from aiogram.types import (
 from aiogram.enums import ParseMode
 import random
 
-from bot.utils import (
+from bot.utils_pkg import (
     ALL_TOPICS,  # не используется напрямую, но оставим для расширений
     clean_html,  # не используется здесь, но может пригодиться
     user_topics, # не используется здесь, но может пригодиться
@@ -191,7 +191,7 @@ async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, sec
         if total == 0:
             # если в таблице ещё нет total — посчитаем напрямую
             try:
-                from bot.utils import get_qa_questions as _qq
+                from bot.utils_pkg import get_qa_questions as _qq
                 total = len(_qq(topic, i))
             except Exception:
                 total = 0
