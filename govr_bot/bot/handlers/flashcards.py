@@ -550,6 +550,20 @@ async def practice_catch_answer(m: types.Message):
     if m.text and m.text.strip():
         user_answer = m.text.strip()
     elif getattr(m, "voice", None):
+        from bot.services.plan import get_user_plan_code, limits_for, consume_daily
+        plan = get_user_plan_code(m.from_user.id)
+        limit = limits_for(plan)["theory_voice_per_day"]
+        ok, _left = consume_daily(m.from_user.id, "theory_voice", limit)
+        if not ok:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Тарифы и оплата", callback_data="to_tariffs")]
+            ])
+            await m.answer("Лимит голосовых ответов на сегодня исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
+            try:
+                await loading_msg.delete()
+            except Exception:
+                pass
+            return
         try:
             file = await m.bot.get_file(m.voice.file_id)
             url = f"https://api.telegram.org/file/bot{m.bot.token}/{file.file_path}"

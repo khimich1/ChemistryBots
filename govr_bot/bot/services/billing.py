@@ -2,7 +2,7 @@ import os
 import sqlite3
 from datetime import datetime
 
-from bot.services.answer_db import DB_FILE
+from bot.services.answer_db import DB_FILE, get_conn
 
 
 # Параметры YooKassa из окружения
@@ -19,6 +19,25 @@ PRICES: dict[str, int] = {
 	"elements": 2990,
 	"full": 3990,
 }
+
+
+def _ensure_payments_table():
+	"""Создаёт таблицу payments если она не существует."""
+	with get_conn() as conn:
+		c = conn.cursor()
+		c.execute("""
+			CREATE TABLE IF NOT EXISTS payments(
+				payment_id TEXT PRIMARY KEY,
+				user_id INTEGER,
+				plan_code TEXT,
+				amount INTEGER,
+				currency TEXT,
+				status TEXT,
+				created_at TEXT,
+				paid_at TEXT
+			)
+		""")
+		conn.commit()
 
 
 def _ensure_yookassa_configured():
@@ -52,7 +71,11 @@ def create_payment(user_id: int, plan_code: str) -> tuple[str, str]:
 	})
 	pid = payment.id
 	url = payment.confirmation.confirmation_url
-	with sqlite3.connect(DB_FILE) as conn:
+	
+	# Создаём таблицу если её нет
+	_ensure_payments_table()
+	
+	with get_conn() as conn:
 		c = conn.cursor()
 		c.execute(
 			"""INSERT OR REPLACE INTO payments(payment_id, user_id, plan_code, amount, currency, status, created_at)
@@ -70,7 +93,11 @@ def check_payment(payment_id: str) -> str:
 
 	p = Payment.find_one(payment_id)
 	status = str(p.status)
-	with sqlite3.connect(DB_FILE) as conn:
+	
+	# Создаём таблицу если её нет
+	_ensure_payments_table()
+	
+	with get_conn() as conn:
 		c = conn.cursor()
 		c.execute(
 			"UPDATE payments SET status=?, paid_at=? WHERE payment_id=?",

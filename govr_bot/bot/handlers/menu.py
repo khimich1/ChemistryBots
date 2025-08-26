@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.filters.callback_data import CallbackData
 
-from bot.utils_pkg import user_learning_state
+from bot.utils import user_learning_state
 from bot.services.spreadsheet import fetch_user_records
 from bot.services.answer_db import (
     get_user_full_name,
@@ -101,11 +101,21 @@ async def cmd_start(m: types.Message, state: FSMContext):
         log_start_param(m.from_user.id, getattr(m.from_user, "username", None), start_param)
     except Exception:
         pass
-    # Сначала проверим подписку. Если нет — предложим подписаться и прервёмся.
-    if not await is_user_subscribed(m.bot, m.from_user.id):
+    # Сначала проверим подписку
+    subscription_status = await is_user_subscribed(m.bot, m.from_user.id)
+    
+    if subscription_status is None:
+        # Ошибка API — показываем понятное сообщение, но всё равно предлагаем подписаться
+        await m.answer(
+            "Не удалось проверить подписку (временная ошибка). Попробуйте позже или нажмите 'Проверить подписку' ещё раз.",
+            reply_markup=build_subscribe_kb()
+        )
+        return
+    elif not subscription_status:
+        # Пользователь не подписан
         await m.answer(
             "Чтобы пользоваться ботом, подпишись на канал и нажми 'Проверить подписку'.",
-            reply_markup=build_subscribe_kb(),
+            reply_markup=build_subscribe_kb()
         )
         return
     full_name = get_user_full_name(m.from_user.id)
@@ -113,7 +123,8 @@ async def cmd_start(m: types.Message, state: FSMContext):
         await state.set_state(ProfileStates.waiting_full_name)
         await m.answer(
             "Пожалуйста, напиши своё имя и фамилию в одном сообщении (например: Иван Петров).\n"
-            "Это нужно для отчётов и статистики.")
+            "Это нужно для отчётов и статистики."
+        )
         return
 
     # Отправим мотивационное сообщение (если таблица chem_motivation есть в базе)
@@ -152,7 +163,20 @@ async def cmd_start(m: types.Message, state: FSMContext):
 @router.callback_query(lambda c: c.data == "check_sub")
 async def on_check_subscription(cb: types.CallbackQuery, state: FSMContext):
     # Повторная проверка подписки по кнопке
-    if await is_user_subscribed(cb.bot, cb.from_user.id):
+    subscription_status = await is_user_subscribed(cb.bot, cb.from_user.id)
+    
+    if subscription_status is None:
+        # Ошибка API — показываем понятное сообщение
+        await cb.answer("Не удалось проверить подписку (временная ошибка). Попробуйте позже.", show_alert=True)
+        try:
+            await cb.message.answer(
+                "Не удалось проверить подписку (временная ошибка). Попробуйте позже или нажмите 'Проверить подписку' ещё раз.",
+                reply_markup=build_subscribe_kb()
+            )
+        except Exception:
+            pass
+    elif subscription_status:
+        # Пользователь подписан
         try:
             mark_subscribed(cb.from_user.id)
         except Exception:
@@ -176,6 +200,7 @@ async def on_check_subscription(cb: types.CallbackQuery, state: FSMContext):
             await cb.message.answer("Спасибо за подписку! Ниже — главное меню.", reply_markup=main_kb)
         await cb.answer("Подписка подтверждена ✅", show_alert=False)
     else:
+        # Пользователь не подписан
         await cb.answer("Ещё не вижу подписки. Подпишись и попробуй снова.", show_alert=True)
         try:
             await cb.message.answer(
@@ -315,6 +340,7 @@ async def to_main_menu_cb(cb: types.CallbackQuery):
 
 # ==== Отчёт (PDF) ====
 @router.message(lambda m: m.text == "📈 Получить отчёт")
+@router.message(Command("report"))
 async def get_report(m: types.Message):
     # Лимит 1 PDF/месяц для бесплатного тарифа
     try:
@@ -449,12 +475,15 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
         
         ok, remaining = consume_monthly(m.from_user.id, "task_solver", limit)
         if not ok:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Тарифы и оплата", callback_data="to_tariffs")]
+            ])
             await m.answer(
                 "❌ Лимит запросов к решатору задач на этот месяц исчерпан!\n\n"
                 "💳 Оформите подписку для увеличения лимита:\n"
                 "• Бесплатный тариф: 20 запросов/месяц\n"
-                "• Платные тарифы: 100 запросов/месяц\n\n"
-                "Нажмите «💳 Тарифы и оплата» в главном меню."
+                "• Платные тарифы: 100 запросов/месяц",
+                reply_markup=kb
             )
             await state.clear()
             return
@@ -498,12 +527,15 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
         
         ok, remaining = consume_monthly(m.from_user.id, "task_solver", limit)
         if not ok:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Тарифы и оплата", callback_data="to_tariffs")]
+            ])
             await m.answer(
                 "❌ Лимит запросов к решатору задач на этот месяц исчерпан!\n\n"
                 "💳 Оформите подписку для увеличения лимита:\n"
                 "• Бесплатный тариф: 20 запросов/месяц\n"
-                "• Платные тарифы: 100 запросов/месяц\n\n"
-                "Нажмите «💳 Тарифы и оплата» в главном меню."
+                "• Платные тарифы: 100 запросов/месяц",
+                reply_markup=kb
             )
             await state.clear()
             return

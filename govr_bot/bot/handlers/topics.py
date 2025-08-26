@@ -9,7 +9,7 @@ from aiogram.types import (
 from aiogram.enums import ParseMode
 import random
 
-from bot.utils_pkg import (
+from bot.utils import (
     ALL_TOPICS,  # не используется напрямую, но оставим для расширений
     clean_html,  # не используется здесь, но может пригодиться
     user_topics, # не используется здесь, но может пригодиться
@@ -191,7 +191,7 @@ async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, sec
         if total == 0:
             # если в таблице ещё нет total — посчитаем напрямую
             try:
-                from bot.utils_pkg import get_qa_questions as _qq
+                from bot.utils import get_qa_questions as _qq
                 total = len(_qq(topic, i))
             except Exception:
                 total = 0
@@ -690,7 +690,10 @@ async def catch_task_answer(m: types.Message):
         limit = limits_for(plan)["theory_voice_per_day"]
         ok, _left = consume_daily(m.from_user.id, "theory_voice", limit)
         if not ok:
-            await m.answer("Лимит голосовых ответов на сегодня исчерпан. Оформи подписку для безлимита.")
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Тарифы и оплата", callback_data="to_tariffs")]
+            ])
+            await m.answer("Лимит голосовых ответов на сегодня исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
             return
         answer_type = "voice"
         voice_file_id = m.voice.file_id
@@ -985,7 +988,10 @@ async def learn_ask(cb: types.CallbackQuery):
     limit = limits_for(plan)["theory_ai_per_day"]
     ok, _left = consume_daily(cb.from_user.id, "theory_ai", limit)
     if not ok:
-        await cb.message.answer("Лимит вопросов ИИ на сегодня исчерпан. Оформи подписку для безлимита.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Тарифы и оплата", callback_data="to_tariffs")]
+        ])
+        await cb.message.answer("Лимит вопросов ИИ на сегодня исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
         await cb.answer()
         return
     st = user_learning_state.get(cb.from_user.id)

@@ -8,6 +8,19 @@ _PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
 DB_FILE = os.getenv("DB_ANSWERS") or os.path.join(_PROJECT_ROOT, "shared", "test_answers.db")
   # Имя файла с базой данных
 
+def get_conn():
+    """Централизованное подключение к БД с оптимизированными настройками для стабильности под нагрузкой."""
+    conn = sqlite3.connect(DB_FILE, timeout=5.0, isolation_level=None)
+    c = conn.cursor()
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
+        c.execute("PRAGMA foreign_keys=ON")
+        c.execute("PRAGMA busy_timeout=5000")
+    finally:
+        c.close()
+    return conn
+
 # 1. Создаём таблицу ответов (вызывается один раз при запуске)
 def init_db():
     """
@@ -17,7 +30,7 @@ def init_db():
       - test_activity
       - test_debug (жалобы на вопросы)
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         # Основная таблица ответов
         c.execute('''
@@ -152,7 +165,7 @@ def log_start_param(user_id: int, username: str | None, start_param: str | None)
     - всегда обновляем username.
     """
     start_param = (start_param or "").strip()
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         # 1) Вставим запись при первом контакте
         c.execute(
@@ -174,7 +187,7 @@ def log_start_param(user_id: int, username: str | None, start_param: str | None)
 
 def mark_subscribed(user_id: int) -> None:
     """Отмечает момент подтверждённой подписки пользователя."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute(
             '''UPDATE acquisition SET subscribed_at=? WHERE user_id=?''',
@@ -190,7 +203,7 @@ def save_test_answer(user_id, username, test_type, question_id, question_text, u
     """
     if full_name is None:
         full_name = get_user_full_name(user_id)
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             INSERT INTO test_answers
@@ -215,7 +228,7 @@ def save_test_progress(user_id, test_type, idx, q_ids):
     """
     Сохраняет прогресс теста: пользователя, номер теста, текущий вопрос и список id вопросов.
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             CREATE TABLE IF NOT EXISTS test_progress (
@@ -238,7 +251,7 @@ def load_test_progress(user_id, test_type):
     Возвращает (idx, q_ids) — номер текущего вопроса и список id вопросов, если пользователь уже проходил этот тест.
     Если не найдено — возвращает (None, None).
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('SELECT idx, q_ids FROM test_progress WHERE user_id=? AND test_type=?', (user_id, test_type))
         row = c.fetchone()
@@ -252,7 +265,7 @@ def clear_test_progress(user_id, test_type):
     """
     Очищает прогресс прохождения теста (когда пользователь начинает заново).
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('DELETE FROM test_progress WHERE user_id=? AND test_type=?', (user_id, test_type))
         conn.commit()
@@ -263,7 +276,7 @@ def reset_test_results(user_id: int, test_type: int) -> None:
     - удаляем ответы из test_answers
     - удаляем логи активности из test_activity
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute("DELETE FROM test_answers WHERE user_id=? AND test_type=?", (user_id, test_type))
         c.execute("DELETE FROM test_activity WHERE user_id=? AND test_type=?", (user_id, test_type))
@@ -280,7 +293,7 @@ def get_last_results_for_questions(user_id: int, test_type: int, q_ids: list[int
         return {}
     placeholders = ",".join(["?"] * len(q_ids))
     params = [user_id, test_type, *[int(q) for q in q_ids]]
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute(
             f"""
@@ -300,7 +313,7 @@ def init_progress_table():
     """
     Создаёт таблицу для хранения прогресса тестов, если она ещё не создана.
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             CREATE TABLE IF NOT EXISTS test_progress (
@@ -322,7 +335,7 @@ def get_mistake_questions(user_id):
     Возвращает список кортежей (test_type, question_id, question_text, user_answer, correct_answer)
     для всех ошибочных заданий пользователя (is_correct=0).
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute("""
             SELECT test_type, question_id, question_text, user_answer, correct_answer
@@ -335,7 +348,7 @@ def set_answer_correct(user_id, question_id):
     """
     Помечает ошибку как исправленную (is_correct=1) для user_id и question_id.
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute("""
             UPDATE test_answers SET is_correct=1 WHERE user_id=? AND question_id=?
@@ -350,7 +363,7 @@ def init_activity_table():
     """
     Создаёт таблицу для логирования активности по вопросам: кто когда начал решать, когда ответил и с каким результатом.
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             CREATE TABLE IF NOT EXISTS test_activity (
@@ -372,7 +385,7 @@ def init_activity_table():
 
 def get_user_full_name(user_id: int) -> str | None:
     """Возвращает сохранённое ФИО пользователя (если есть)."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute("SELECT COALESCE(NULLIF(TRIM(full_name), ''), NULL) FROM user_profiles WHERE user_id=?", (user_id,))
         row = c.fetchone()
@@ -381,7 +394,7 @@ def get_user_full_name(user_id: int) -> str | None:
 
 def set_user_full_name(user_id: int, username: str | None, full_name: str) -> None:
     """Сохраняет/обновляет ФИО пользователя в таблице user_profiles."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             INSERT INTO user_profiles (user_id, username, full_name, created_at)
@@ -406,7 +419,7 @@ def get_random_motivation_text() -> str | None:
     `shared/test_answers.db`. Если таблицы нет — возвращает None и не падает.
     """
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_conn() as conn:
             c = conn.cursor()
             c.execute("SELECT text FROM chem_motivation ORDER BY RANDOM() LIMIT 1")
             row = c.fetchone()
@@ -430,7 +443,7 @@ def get_user_activity_stats(user_id: int) -> tuple[int, int]:
       - flashcards_practice_log (created_at)
     """
     days: set[str] = set()
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         try:
             for table, col in (
@@ -484,7 +497,7 @@ def get_user_activity_stats(user_id: int) -> tuple[int, int]:
 # ========================
 
 def flashcards_mark_seen(user_id: int, category: str, card_key: str) -> None:
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             INSERT OR IGNORE INTO flashcards_seen (user_id, category, card_key, first_seen_at)
@@ -493,13 +506,13 @@ def flashcards_mark_seen(user_id: int, category: str, card_key: str) -> None:
         conn.commit()
 
 def flashcards_get_seen_set(user_id: int, category: str) -> set[str]:
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('SELECT card_key FROM flashcards_seen WHERE user_id=? AND category=?', (user_id, category))
         return {row[0] for row in c.fetchall()}
 
 def flashcards_reset_category(user_id: int, category: str) -> None:
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('DELETE FROM flashcards_seen WHERE user_id=? AND category=?', (user_id, category))
         conn.commit()
@@ -509,7 +522,7 @@ def flashcards_reset_category(user_id: int, category: str) -> None:
 # ========================
 
 def flashcards_add_error(user_id: int, category: str, card_key: str, formula: str, expected_variants: str) -> None:
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             INSERT OR REPLACE INTO flashcards_errors (user_id, category, card_key, formula, expected_variants, added_at)
@@ -518,21 +531,21 @@ def flashcards_add_error(user_id: int, category: str, card_key: str, formula: st
         conn.commit()
 
 def flashcards_remove_error(user_id: int, category: str, card_key: str) -> None:
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('DELETE FROM flashcards_errors WHERE user_id=? AND category=? AND card_key=?', (user_id, category, card_key))
         conn.commit()
 
 def flashcards_list_errors(user_id: int, category: str) -> list[tuple[str, str, str]]:
     """Возвращает список (card_key, formula, expected_variants)"""
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('SELECT card_key, formula, expected_variants FROM flashcards_errors WHERE user_id=? AND category=? ORDER BY added_at', (user_id, category))
         return [(row[0], row[1], row[2]) for row in c.fetchall()]
 
 
 def flashcards_log_answer(user_id: int, category: str, card_key: str | None, formula: str | None, answer_text: str, source: str, is_correct: bool) -> None:
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             INSERT INTO flashcards_practice_log (user_id, category, card_key, formula, answer_text, source, is_correct, created_at)
@@ -542,7 +555,7 @@ def flashcards_log_answer(user_id: int, category: str, card_key: str | None, for
 
 def flashcards_last_transcript(user_id: int) -> tuple[str, str, str, str] | None:
     """Возвращает последний лог (category, card_key, formula, answer_text) пользователя."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             SELECT category, card_key, formula, answer_text
@@ -558,7 +571,7 @@ def flashcards_last_transcript(user_id: int) -> tuple[str, str, str, str] | None
 
 def flashcards_count_wrong_voice_attempts(user_id: int, category: str, card_key: str) -> int:
     """Возвращает количество неверных голосовых попыток по карточке."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute(
             '''SELECT COUNT(*) FROM flashcards_practice_log
@@ -573,7 +586,7 @@ def log_question_started(user_id, test_type, question_id):
     Логируем начало показа вопроса пользователю: user_id, test_type, question_id, started_at=now.
     Остальные поля NULL (ответа пока нет).
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             INSERT INTO test_activity
@@ -592,7 +605,7 @@ def log_question_answered(user_id, question_id, user_answer, is_correct):
     Когда пользователь ответил — обновляем запись: answered_at, user_answer, is_correct
     (ищем по user_id, question_id и answered_at IS NULL).
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute('''
             UPDATE test_activity
@@ -619,7 +632,7 @@ def save_test_debug(question_id: int, reason: str, status: str = "не реше�
       - reason: причина жалобы (вариант, выбранный в боте, либо свободный текст)
       - status: 'решено' | 'не решено' (по умолчанию 'не решено')
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute(
             '''
@@ -653,7 +666,7 @@ def save_theory_task_answer(
     answer_type: "text" или "voice"
     voice_file_id: file_id голосового (если есть)
     """
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute(
             '''INSERT INTO theory_task_answers
@@ -685,7 +698,7 @@ def get_theory_stats(user_id: int, topic: str) -> tuple[int, int]:
     Это устойчиво к ручным правкам количества вопросов в БД: total пересчитывается динамически.
     """
     # 1) correct — считаем уникальные правильные вопросы
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute(
             """
@@ -703,8 +716,8 @@ def get_theory_stats(user_id: int, topic: str) -> tuple[int, int]:
     # 2) total — берём из prepared_lectures сумму количества вопросов по теме
     try:
         # Ленивая и безопасная импорт-зависимость, чтобы не создавать циклы
-        from bot.utils_pkg import PREPARED_LECTURES_DB
-        from bot.utils_pkg import _parse_qa_field  # noqa: F401 (используем ниже)
+        from bot.utils import PREPARED_LECTURES_DB
+        from bot.utils import _parse_qa_field  # noqa: F401 (используем ниже)
         import sqlite3 as _sqlite
         total = 0
         with _sqlite.connect(PREPARED_LECTURES_DB) as conn2:
@@ -716,7 +729,7 @@ def get_theory_stats(user_id: int, topic: str) -> tuple[int, int]:
             else:
                 for (raw,) in c2.fetchall():
                     # используем общий парсер для JSON/строк
-                    from bot.utils_pkg import _parse_qa_field as _parse
+                    from bot.utils import _parse_qa_field as _parse
                     total += len(_parse(raw))
         total = int(total)
     except Exception:
@@ -734,7 +747,7 @@ def get_theory_stats_by_chunk(user_id: int, topic: str) -> dict[int, tuple[int, 
     """
     # 1) correct по каждому chunk_idx
     correct_by_chunk: dict[int, int] = {}
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         try:
             c.execute(
@@ -757,8 +770,8 @@ def get_theory_stats_by_chunk(user_id: int, topic: str) -> dict[int, tuple[int, 
     # 2) total по каждому chunk_idx — из prepared_lectures
     totals_by_chunk: dict[int, int] = {}
     try:
-        from bot.utils_pkg import PREPARED_LECTURES_DB
-        from bot.utils_pkg import _parse_qa_field as _parse
+        from bot.utils import PREPARED_LECTURES_DB
+        from bot.utils import _parse_qa_field as _parse
         import sqlite3 as _sqlite
 
         with _sqlite.connect(PREPARED_LECTURES_DB) as conn2:

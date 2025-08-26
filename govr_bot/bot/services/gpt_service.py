@@ -5,7 +5,7 @@ from typing import List
 
 from openai import AsyncOpenAI
 from openai import PermissionDeniedError, APIConnectionError, RateLimitError, APIStatusError
-from bot.utils_pkg import (
+from bot.utils import (
     TEXTBOOK_CONTENT,
     get_prepared_chunks_count,
     get_prepared_lecture,
@@ -136,36 +136,88 @@ async def _transcribe_chunk(file_bytes: bytes) -> str:
         return resp.text.strip()
 
 
+async def _transcribe_chunk_with_retry(file_bytes: bytes) -> str:
+    """
+    Транскрибирует чанк с retry логикой (до 3 попыток с backoff).
+    """
+    delays = [0.5, 1.0, 2.0]  # Задержки в секундах
+    
+    for attempt in range(3):
+        try:
+            return await _transcribe_chunk(file_bytes)
+        except Exception as e:
+            if attempt == 2:  # Последняя попытка
+                logger.error(f"Транскрипция чанка не удалась после 3 попыток: {e}")
+                raise
+            
+            delay = delays[attempt]
+            logger.warning(f"Попытка {attempt + 1} не удалась, повтор через {delay}s: {e}")
+            await asyncio.sleep(delay)
+    
+    # Не должно дойти до сюда, но на всякий случай
+    raise Exception("Транскрипция не удалась после всех попыток")
+
+
 async def transcribe_audio(file_path: str) -> str:
     """
-    Разбивает аудио на 60-секундные сегменты, транскрибирует каждый
-    и возвращает объединённый текст.
+    Транскрибирует аудио файл с оптимизацией:
+    - Короткие файлы (≤90s) отправляются одним чанком
+    - Длинные файлы разбиваются на 60-секундные сегменты
+    - Блокирующие операции выполняются в отдельных потоках
+    - Добавлен retry с backoff для надежности
     """
-    logger.info(f"🔍 Начало транскрипции (с резкой на сегменты): {file_path}")
+    logger.info(f"🔍 Начало транскрипции: {file_path}")
 
-    audio = AudioSegment.from_file(file_path, format="ogg")
+    # Загружаем аудио в отдельном потоке (блокирующая операция)
+    audio = await asyncio.to_thread(AudioSegment.from_file, file_path, format="ogg")
     duration_ms = len(audio)
+    duration_seconds = duration_ms / 1000
+    
+    # Если файл короткий (≤90 секунд) - отправляем одним чанком
+    if duration_seconds <= 90:
+        logger.info(f"📁 Короткий файл ({duration_seconds:.1f}s), отправляем одним чанком")
+        
+        # Экспортируем в отдельном потоке
+        buf = await asyncio.to_thread(audio.export, format="ogg")
+        data = await asyncio.to_thread(buf.read)
+        await asyncio.to_thread(buf.close)
+        
+        try:
+            txt = await _transcribe_chunk_with_retry(data)
+            logger.info("✅ Транскрипция короткого файла завершена")
+            return txt
+        except Exception as e:
+            logger.error(f"Ошибка при транскрипции короткого файла: {e}")
+            return ""
+    
+    # Для длинных файлов - разбиваем на чанки
+    logger.info(f"📁 Длинный файл ({duration_seconds:.1f}s), разбиваем на чанки")
     chunk_length_ms = 60 * 1000  # 60 секунд
-
     transcripts: List[str] = []
+    
     for start in range(0, duration_ms, chunk_length_ms):
         end = min(start + chunk_length_ms, duration_ms)
         chunk = audio[start:end]
-        buf = chunk.export(format="ogg")
-        data = buf.read()
-        buf.close()
+        
+        # Экспортируем чанк в отдельном потоке
+        buf = await asyncio.to_thread(chunk.export, format="ogg")
+        data = await asyncio.to_thread(buf.read)
+        await asyncio.to_thread(buf.close)
 
         logger.info(f"  → Чанк {start//1000}-{end//1000}s, байт {len(data)}")
         try:
-            txt = await _transcribe_chunk(data)
+            txt = await _transcribe_chunk_with_retry(data)
             transcripts.append(txt)
         except Exception as e:
             logger.warning(f"Ошибка при транскрипции чанка {start//1000}-{end//1000}: {e}")
             transcripts.append("")
-        await asyncio.sleep(0.5)
+        
+        # Пауза только для длинных файлов, уменьшена до 0.2s
+        if duration_seconds > 90:
+            await asyncio.sleep(0.2)
 
     full = "\n".join(filter(None, transcripts))
-    logger.info("✅ Полная транскрипция завершена")
+    logger.info("✅ Полная транскрипция длинного файла завершена")
     return full
 
 
@@ -388,6 +440,3 @@ async def generate_chunk_title(topic: str, chunk_text: str) -> str:
     except Exception as e:
         _log_llm_issue("generate_chunk_title", e)
         return ""
-    except Exception as e:
-        _log_llm_issue("check_trivial_name_by_formula", e)
-        return False, ""

@@ -2,7 +2,7 @@ import sqlite3
 from datetime import datetime, date
 from typing import Optional, Tuple
 
-from bot.services.answer_db import DB_FILE
+from bot.services.answer_db import DB_FILE, get_conn
 
 
 # Коды тарифов (простые строковые константы)
@@ -25,7 +25,7 @@ def _year_month() -> str:
 
 def init_billing_tables() -> None:
     """Создаёт необходимые таблицы в общей БД DB_FILE (если их ещё нет)."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute(
             """
@@ -64,7 +64,7 @@ def init_billing_tables() -> None:
 def set_user_plan(user_id: int, plan_code: str) -> None:
     """Сохраняет тариф для пользователя."""
     init_billing_tables()
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute(
             """
@@ -80,7 +80,7 @@ def set_user_plan(user_id: int, plan_code: str) -> None:
 def get_user_plan_code(user_id: int) -> str:
     """Возвращает код тарифа. По умолчанию — FREE."""
     init_billing_tables()
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         c.execute("SELECT plan_code FROM user_plans WHERE user_id=?", (int(user_id),))
         row = c.fetchone()
@@ -154,7 +154,7 @@ def _consume_generic(
         return True, 999_999
 
     init_billing_tables()
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         if scope == "daily":
             day = _today_str()
@@ -257,7 +257,7 @@ def get_task_solver_remaining(user_id: int) -> Tuple[int, int]:
     
     # Получаем количество использованных запросов
     init_billing_tables()
-    with sqlite3.connect(DB_FILE) as conn:
+    with get_conn() as conn:
         c = conn.cursor()
         ym = _year_month()
         c.execute(

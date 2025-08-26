@@ -8,19 +8,22 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "@himich_teacher").strip()
 
 
-async def is_user_subscribed(bot: Bot, user_id: int) -> bool:
+async def is_user_subscribed(bot: Bot, user_id: int) -> bool | None:
     """
     Проверяет подписку пользователя на канал REQUIRED_CHANNEL.
-    Возвращает True, если пользователь состоит в канале (member/administrator/creator).
+    Возвращает:
+    - True: пользователь состоит в канале (member/administrator/creator)
+    - False: пользователь не состоит в канале (left/kicked)
+    - None: произошла ошибка API или исключение
     """
     try:
         member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
         status = getattr(member, "status", None)
         return status in {"member", "administrator", "creator"}
     except Exception:
-        # Если бот не админ в канале или канал приватный — будет ошибка.
-        # В этом случае считаем, что пользователь НЕ подписан.
-        return False
+        # Если бот не админ в канале, канал приватный или другая ошибка API
+        # Возвращаем None вместо False, чтобы UI мог показать понятное сообщение
+        return None
 
 
 def build_subscribe_kb() -> InlineKeyboardMarkup:
@@ -28,13 +31,18 @@ def build_subscribe_kb() -> InlineKeyboardMarkup:
     Клавиатура с кнопкой на канал и кнопкой повторной проверки подписки.
     """
     channel_link = REQUIRED_CHANNEL if str(REQUIRED_CHANNEL).startswith("@") else str(REQUIRED_CHANNEL)
+    
     # Если у нас @username — делаем прямую ссылку
     if channel_link.startswith("@"):
         url = f"https://t.me/{channel_link.lstrip('@')}"
     else:
-        # На случай числового ID — дадим просто t.me/himich_teacher как безопасный дефолт
-        # Можно переопределить REQUIRED_CHANNEL в .env на @username, чтобы работала ссылка
-        url = "https://t.me/himich_teacher"
+        # Для числового ID — проверяем env переменную для переопределения URL
+        custom_url = os.getenv("CHANNEL_URL")
+        if custom_url:
+            url = custom_url
+        else:
+            # Fallback для числового ID — даём безопасный дефолт
+            url = "https://t.me/himich_teacher"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[

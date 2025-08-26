@@ -1,7 +1,7 @@
 import sqlite3
 import os
 from typing import Optional
-from bot.services.answer_db import DB_FILE
+from bot.services.answer_db import DB_FILE, get_conn
 
 
 def _get_prepod_db_path() -> str:
@@ -82,7 +82,7 @@ def can_access_group_tariff(user_id: int) -> bool:
     """
     # Сначала проверяем, есть ли у пользователя тариф 'group'
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_conn() as conn:
             cur = conn.cursor()
             
             # Создаем таблицу user_plans, если её нет
@@ -121,7 +121,7 @@ def get_group_access_status(user_id: int) -> dict:
         Словарь с информацией о статусе доступа
     """
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with get_conn() as conn:
             cur = conn.cursor()
             
             # Создаем таблицу user_plans, если её нет
