@@ -69,14 +69,24 @@ def _to_html_with_code(text: str) -> str:
 
 
 def tests_instruction_text() -> str:
-    """Короткая инструкция по разделу тестов (показываем при входе)."""
+    """Красивое и мотивирующее описание раздела тестов."""
     return (
-        "<b>Как пользоваться тестами</b>\n"
-        "1) Выбери нужный тест.\n"
-        "2) Появится таблица 3×10 с номерами: N✅ — верно, N❌ — неверно, N⬜ — ещё не решал.\n"
-        "3) Нажми номер, чтобы открыть задание. Отвечай цифрами (например: 2 или 13).\n"
-        "4) Кнопки под заданием: 💡 Подсказка, ⏹️ Стоп тест, ❗ Пожаловаться.\n"
-        "5) В таблице есть «🔄 Начать заново» (сброс статусов) и «🧹 Скрыть таблицу»."
+        "🎯 <b>Тренировка и самопроверка</b>\n\n"
+        "📚 <b>Что тебя ждёт:</b>\n"
+        "• Разнообразные задания по всем темам химии\n"
+        "• Мгновенная проверка ответов с объяснениями\n"
+        "• Подсказки, если что-то не получается\n"
+        "• Работа над ошибками — учись на своих промахах\n"
+        "• Прогресс-карта: видишь, что уже знаешь, а что нужно подтянуть\n\n"
+        "🚀 <b>Как это работает:</b>\n"
+        "1️⃣ Выбери тест по нужной теме\n"
+        "2️⃣ Увидишь карту из 30 заданий: ✅ решено верно, ❌ с ошибкой, ⬜ ещё не пробовал\n"
+        "3️⃣ Нажимай на номер задания и решай!\n"
+        "4️⃣ Получай объяснения и подсказки\n"
+        "5️⃣ Отслеживай прогресс и улучшай результат\n\n"
+        "💪 <b>Совет:</b> Не бойся ошибок! Каждая ошибка — это шаг к пониманию. "
+        "Используй режим «Работа над ошибками» для закрепления материала.\n\n"
+        "🎓 <b>Цель:</b> Систематически готовиться к экзамену, выявлять пробелы и превращать их в сильные стороны!"
     )
 
 # =========================
@@ -162,9 +172,67 @@ def get_test_grid_kb(user_id: int, test_type: int, q_ids: list[int]) -> InlineKe
             rows.append(row)
     rows.append([
         InlineKeyboardButton(text="🔄 Начать заново", callback_data=f"restart_test_{test_type}"),
+        InlineKeyboardButton(text="📊 Статистика", callback_data=f"show_stats_{test_type}"),
+    ])
+    rows.append([
         InlineKeyboardButton(text="🧹 Скрыть таблицу", callback_data="hide_grid"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def generate_test_stats(user_id: int, test_type: int, q_ids: list[int]) -> str:
+    """Генерирует статистику прохождения теста."""
+    status = get_last_results_for_questions(user_id, test_type, q_ids)
+    
+    total = len(q_ids)
+    correct = sum(1 for st in status.values() if st == 1)
+    incorrect = sum(1 for st in status.values() if st == 0)
+    not_attempted = total - correct - incorrect
+    
+    if total == 0:
+        return "📊 <b>Статистика теста {test_type}</b>\n\nНет данных для анализа."
+    
+    percentage = (correct / total) * 100 if total > 0 else 0
+    
+    # Определяем уровень
+    if percentage >= 90:
+        level = "🟢 Отлично"
+    elif percentage >= 75:
+        level = "🟡 Хорошо"
+    elif percentage >= 60:
+        level = "🟠 Удовлетворительно"
+    else:
+        level = "🔴 Требует доработки"
+    
+    stats_text = (
+        f"📊 <b>Статистика теста {test_type}</b>\n\n"
+        f"🎯 <b>Общий прогресс:</b> {level}\n"
+        f"📈 <b>Процент правильных ответов:</b> {percentage:.1f}%\n\n"
+        f"📋 <b>Детализация:</b>\n"
+        f"✅ Правильно: {correct} из {total} ({correct/total*100:.1f}%)\n"
+        f"❌ Неправильно: {incorrect} из {total} ({incorrect/total*100:.1f}%)\n"
+        f"⬜ Не решал: {not_attempted} из {total} ({not_attempted/total*100:.1f}%)\n\n"
+    )
+    
+    # Добавляем мотивацию
+    if correct == total:
+        stats_text += "🎉 <b>Поздравляем! Ты отлично справился с тестом!</b>"
+    elif correct > incorrect:
+        stats_text += "💪 <b>Хорошая работа! Продолжай в том же духе!</b>"
+    elif correct == 0 and incorrect > 0:
+        stats_text += "💡 <b>Не расстраивайся! Каждая ошибка — это шаг к пониманию. Попробуй ещё раз!</b>"
+    else:
+        stats_text += "📚 <b>Есть над чем поработать! Используй режим «Работа над ошибками».</b>"
+    
+    return stats_text
+
+def get_stats_kb(test_type: int) -> InlineKeyboardMarkup:
+    """Клавиатура для статистики с кнопкой возврата к таблице."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📋 К таблице", callback_data=f"back_to_grid_{test_type}")],
+            [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")],
+        ]
+    )
 
 # =========================
 # 3. Показываем меню тестов
@@ -548,6 +616,16 @@ async def send_next_test_question(user_id, message_obj, is_callback=False):
 @router.callback_query(lambda c: c.data == "stop_test")
 async def stop_test(cb: CallbackQuery):
     state = user_test_state.pop(cb.from_user.id, None)
+    
+    # Очищаем состояние карточек при остановке теста
+    try:
+        from bot.handlers.flashcards import user_flashcards_state
+        user_id = cb.from_user.id
+        if user_id in user_flashcards_state:
+            user_flashcards_state[user_id] = {}
+    except Exception:
+        pass
+    
     # --- Если работаем над ошибками ---
     if state and "mistake_q_ids" in state:
         await cb.message.answer(
@@ -583,10 +661,94 @@ async def hide_grid(cb: CallbackQuery):
     await cb.answer()
 
 # =========================
+# 6.2 Показать статистику теста
+# =========================
+@router.callback_query(lambda c: c.data.startswith("show_stats_"))
+async def show_test_stats(cb: CallbackQuery):
+    try:
+        test_type = int(cb.data.split("_")[-1])
+    except ValueError:
+        await cb.answer("Ошибка: неверный номер теста.")
+        return
+    
+    # Получаем список вопросов для теста
+    questions = get_questions_by_type(test_type)
+    if not questions:
+        await cb.message.answer("Нет вопросов для этого теста.")
+        await cb.answer()
+        return
+    
+    q_ids = [q["id"] for q in questions]
+    
+    # Генерируем статистику
+    stats_text = generate_test_stats(cb.from_user.id, test_type, q_ids)
+    stats_kb = get_stats_kb(test_type)
+    
+    # Сохраняем ID сообщения со статистикой для возможности удаления
+    sent = await cb.message.answer(stats_text, parse_mode="HTML", reply_markup=stats_kb)
+    
+    # Сохраняем ID сообщения со статистикой в состоянии пользователя
+    st = user_test_state.setdefault(cb.from_user.id, {})
+    st["stats_msg_id"] = sent.message_id
+    user_test_state[cb.from_user.id] = st
+    
+    await cb.answer()
+
+# =========================
+# 6.3 Вернуться к таблице из статистики
+# =========================
+@router.callback_query(lambda c: c.data.startswith("back_to_grid_"))
+async def back_to_grid(cb: CallbackQuery):
+    try:
+        test_type = int(cb.data.split("_")[-1])
+    except ValueError:
+        await cb.answer("Ошибка: неверный номер теста.")
+        return
+    
+    # Удаляем сообщение со статистикой
+    try:
+        st = user_test_state.get(cb.from_user.id) or {}
+        stats_msg_id = st.pop("stats_msg_id", None)
+        if stats_msg_id:
+            await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=stats_msg_id)
+            user_test_state[cb.from_user.id] = st
+    except Exception:
+        pass
+    
+    # Получаем список вопросов для теста
+    questions = get_questions_by_type(test_type)
+    if not questions:
+        await cb.message.answer("Нет вопросов для этого теста.")
+        await cb.answer()
+        return
+    
+    q_ids = [q["id"] for q in questions]
+    
+    # Показываем таблицу снова
+    grid_kb = get_test_grid_kb(cb.from_user.id, test_type, q_ids)
+    sent = await cb.message.answer(f"Тест {test_type}. Выбери номер задания или нажми «Начать заново»:", reply_markup=grid_kb)
+    
+    # Сохраняем ID сообщения-сетки
+    st = user_test_state.setdefault(cb.from_user.id, {})
+    st["grid_msg_id"] = sent.message_id
+    user_test_state[cb.from_user.id] = st
+    
+    await cb.answer()
+
+# =========================
 # 7. Обработчик кнопки возврата в главное меню
 # =========================
 @router.callback_query(lambda c: c.data == "to_main_menu")
 async def to_main_menu(cb: CallbackQuery):
+    # Очищаем состояние карточек при возврате в главное меню
+    try:
+        from bot.handlers.flashcards import user_flashcards_state
+        user_id = cb.from_user.id
+        if user_id in user_flashcards_state:
+            user_flashcards_state[user_id] = {}
+    except Exception:
+        pass
+    
     await cb.message.answer("Главное меню:", reply_markup=main_kb)
     await cb.answer()
 

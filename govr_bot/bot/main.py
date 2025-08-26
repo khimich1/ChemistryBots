@@ -54,11 +54,11 @@ async def main():
 
     # --- Подключение роутеров ---
     dp.include_router(menu_router)
+    dp.include_router(billing_router)   # billing ДО tests и topics!
     dp.include_router(tests_router)     # tests ДО topics!
     dp.include_router(topics_router)
     dp.include_router(report_router)
     dp.include_router(flashcards_router)
-    dp.include_router(billing_router)
 
     # --- Установка команд ---
     await set_bot_commands(bot)

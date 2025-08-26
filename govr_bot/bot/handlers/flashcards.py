@@ -455,24 +455,55 @@ async def practice_catch_answer(m: types.Message):
     st = user_flashcards_state.get(m.from_user.id) or {}
     category: str = st.get("last_category") or ""
     mode: str = st.get("mode") or "practice"
+    
+    # Проверяем, что пользователь действительно в режиме практики/ошибок
+    if mode not in {"practice", "errors"}:
+        # Если режим не установлен, сбрасываем флаг и игнорируем
+        st["awaiting_practice_answer"] = False
+        return
+    
+    # Проверяем, что есть активная карточка
+    if mode == "practice" and not st.get("last"):
+        st["awaiting_practice_answer"] = False
+        return
+    if mode == "errors" and not st.get("last_error_formula"):
+        st["awaiting_practice_answer"] = False
+        return
+    
     expected_variants: list[str] = []
     # Обработка системных кнопок до начала проверки
     txt_raw = m.text or ""
     txt = txt_raw.strip()
+    
+    # Проверяем системные команды ПЕРЕД обработкой ответа
     if txt in {"Назад", "⬅️ Назад"}:
         st["awaiting_practice_answer"] = False
+        # Сбрасываем состояние при возврате в меню
+        user_id = m.from_user.id
+        if user_id in user_flashcards_state:
+            user_flashcards_state[user_id] = {}
         await m.answer("Выбери режим работы с карточками:", reply_markup=cards_kb)
         return
     if "в главное меню" in txt.lower():
         st["awaiting_practice_answer"] = False
+        # Сбрасываем состояние при возврате в главное меню
+        user_id = m.from_user.id
+        if user_id in user_flashcards_state:
+            user_flashcards_state[user_id] = {}
         await m.answer("Главное меню:", reply_markup=main_kb)
         return
     if txt in {"⚗️ Неорганика", "Неорганика"}:
         st["awaiting_practice_answer"] = False
+        # Сбрасываем состояние при выборе раздела
+        user_id = m.from_user.id
+        user_flashcards_state[user_id] = {"mode": "practice"}
         await start_practice_round(m, category="inorg")
         return
     if txt in {"🧬 Органика", "Органика"}:
         st["awaiting_practice_answer"] = False
+        # Сбрасываем состояние при выборе раздела
+        user_id = m.from_user.id
+        user_flashcards_state[user_id] = {"mode": "practice"}
         await start_practice_round(m, category="org")
         return
     # Показать индикатор обработки (скачивание/распознавание голоса может занимать время)
@@ -771,6 +802,11 @@ async def _show_next_formula(message: types.Message, category: str) -> None:
 # ====== Точки входа ======
 @router.message(lambda m: m.text in ("🃏 Карточки для запоминания", "Карточки", "Карточки для запоминания"))
 async def open_cards_menu(m: types.Message):
+    # Сбрасываем состояние при входе в меню карточек
+    user_id = m.from_user.id
+    if user_id in user_flashcards_state:
+        user_flashcards_state[user_id] = {}
+    
     guide = (
         "🃏 Карточки для запоминания — как пользоваться:\n\n"
         "• 📘 Заучивание — листай формулы, раскрывай названия, закрепляй.\n"
@@ -811,25 +847,35 @@ async def show_last_voice(m: types.Message):
 
 @router.message(lambda m: m.text == "📘 Заучивание")
 async def open_learn_menu(m: types.Message):
-    user_flashcards_state.setdefault(m.from_user.id, {})["mode"] = "learn"
+    # Сбрасываем состояние при выборе режима
+    user_id = m.from_user.id
+    user_flashcards_state[user_id] = {"mode": "learn"}
     await m.answer("Заучивание: выбери раздел", reply_markup=_mode_select_kb())
 
 
 @router.message(lambda m: m.text == "🧪 Практика")
 async def open_practice_menu(m: types.Message):
-    user_flashcards_state.setdefault(m.from_user.id, {})["mode"] = "practice"
+    # Сбрасываем состояние при выборе режима
+    user_id = m.from_user.id
+    user_flashcards_state[user_id] = {"mode": "practice"}
     await m.answer("Практика: выбери раздел", reply_markup=_mode_select_kb())
 
 
 @router.message(lambda m: m.text == "🛠 Работа над ошибками")
 async def open_errors_menu(m: types.Message):
-    user_flashcards_state.setdefault(m.from_user.id, {})["mode"] = "errors"
+    # Сбрасываем состояние при выборе режима
+    user_id = m.from_user.id
+    user_flashcards_state[user_id] = {"mode": "errors"}
     await m.answer("Работа над ошибками: выбери раздел", reply_markup=_mode_select_kb())
 
 
 @router.message(lambda m: (m.text or "").strip() in {"Назад", "⬅️ Назад"})
 async def nav_back(m: types.Message):
     # Возврат к выбору режима из уровня выбора раздела
+    # Сбрасываем состояние при возврате в меню
+    user_id = m.from_user.id
+    if user_id in user_flashcards_state:
+        user_flashcards_state[user_id] = {}
     await m.answer("Выбери режим работы с карточками:", reply_markup=cards_kb)
 
 
@@ -953,6 +999,10 @@ async def reset_cards(cb: CallbackQuery):
 
 @router.callback_query(lambda c: c.data == "to_main_menu")
 async def back_to_main_menu(cb: CallbackQuery):
+    # Сбрасываем состояние при возврате в главное меню
+    user_id = cb.from_user.id
+    if user_id in user_flashcards_state:
+        user_flashcards_state[user_id] = {}
     await cb.message.answer("Главное меню:", reply_markup=main_kb)
     await cb.answer()
 
@@ -987,6 +1037,10 @@ async def inline_back(cb: CallbackQuery):
     except Exception:
         pass
     # Вернёмся на уровень выбора раздела внутри текущего режима
+    # Сохраняем только режим, остальное сбрасываем
+    mode = st.get("mode")
+    user_id = cb.from_user.id
+    user_flashcards_state[user_id] = {"mode": mode} if mode else {}
     await cb.message.answer("Выбери раздел", reply_markup=_mode_select_kb())
     await cb.answer()
 

@@ -9,3 +9,4 @@ httpx~=0.24.0
 matplotlib
 pydub==0.25.1
 Pillow>=10.0.0
+yookassa==3.0.0

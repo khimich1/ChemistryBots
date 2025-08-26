@@ -96,6 +96,7 @@ def limits_for(plan_code: str) -> dict:
       - test_explain_per_day
       - test_hint_per_day
       - reports_per_month
+      - task_solver_per_month
     """
     plan = (plan_code or FREE).lower()
     if plan in {FULL, GROUP, SELF}:
@@ -106,6 +107,7 @@ def limits_for(plan_code: str) -> dict:
             "test_explain_per_day": 200,
             "test_hint_per_day": 200,
             "reports_per_month": 20,
+            "task_solver_per_month": 100,
         }
     if plan == ORGANIC:
         return {
@@ -114,6 +116,7 @@ def limits_for(plan_code: str) -> dict:
             "test_explain_per_day": 100,
             "test_hint_per_day": 100,
             "reports_per_month": 5,
+            "task_solver_per_month": 100,
         }
     if plan == ELEMENTS:
         return {
@@ -122,6 +125,7 @@ def limits_for(plan_code: str) -> dict:
             "test_explain_per_day": 100,
             "test_hint_per_day": 100,
             "reports_per_month": 5,
+            "task_solver_per_month": 100,
         }
     # FREE
     return {
@@ -130,6 +134,7 @@ def limits_for(plan_code: str) -> dict:
         "test_explain_per_day": 3,
         "test_hint_per_day": 5,
         "reports_per_month": 1,
+        "task_solver_per_month": 20,
     }
 
 
@@ -218,5 +223,67 @@ def theory_allowed(user_id: int, section: str) -> bool:
     if section == "organic":
         return p in {ORGANIC, SELF, GROUP, FULL}
     return False
+
+
+def flashcards_mode_allowed(user_id: int, mode: str, category: str) -> bool:
+    """Проверка доступа к режимам карточек по тарифу.
+    
+    mode: "practice" | "errors"
+    category: "inorg" | "org"
+    """
+    p = get_user_plan_code(user_id)
+    
+    # Заучивание доступно всем
+    if mode == "learn":
+        return True
+    
+    # Практика и работа над ошибками доступны только на платных тарифах
+    if mode in {"practice", "errors"}:
+        return p in {ORGANIC, ELEMENTS, SELF, GROUP, FULL}
+    
+    return False
+
+
+def get_task_solver_remaining(user_id: int) -> Tuple[int, int]:
+    """
+    Возвращает количество оставшихся запросов к решатору задач.
+    
+    Returns:
+        Tuple[int, int]: (осталось_запросов, всего_запросов)
+    """
+    plan = get_user_plan_code(user_id)
+    limits = limits_for(plan)
+    total = limits["task_solver_per_month"]
+    
+    # Получаем количество использованных запросов
+    init_billing_tables()
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        ym = _year_month()
+        c.execute(
+            "SELECT used FROM monthly_counters WHERE user_id=? AND counter_key=? AND ym=?",
+            (int(user_id), "task_solver", ym),
+        )
+        row = c.fetchone()
+        used = int(row[0]) if row and row[0] is not None else 0
+    
+    remaining = max(0, total - used)
+    return remaining, total
+
+
+def get_plan_name(plan_code: str) -> str:
+    """
+    Возвращает человекочитаемое название тарифа.
+    """
+    plan = (plan_code or FREE).lower()
+    names = {
+        FREE: "Бесплатный",
+        GROUP: "Групповой",
+        SELF: "Самоподготовка",
+        ORGANIC: "Органическая химия",
+        ELEMENTS: "Химия элементов",
+        FULL: "Полный доступ",
+    }
+    return names.get(plan, "Неизвестный")
 
 

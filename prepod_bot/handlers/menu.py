@@ -1,7 +1,9 @@
 from aiogram import Router, types
 from aiogram.filters import Command
-from keyboards import get_teacher_keyboard
+from keyboards import get_teacher_keyboard, get_students_keyboard
 from services.acquisition import get_ad_stats
+from services.students import get_all_students
+from services.groups import add_student_to_group, is_student_in_group
 
 router = Router()
 
@@ -9,6 +11,73 @@ router = Router()
 async def cmd_start(message: types.Message):
     await message.answer(
         "Привет! Я помощник преподавателя. Выберите действие:",
+        reply_markup=get_teacher_keyboard()
+    )
+
+
+@router.message(lambda m: m.text == "👥 Добавить в группу")
+async def show_students_list(message: types.Message):
+    """Показывает список всех зарегистрированных учеников"""
+    students = get_all_students()
+    
+    if not students:
+        await message.answer("Пока нет зарегистрированных учеников.")
+        return
+    
+    # Добавляем информацию о том, кто уже в группе
+    for student in students:
+        student["is_in_group"] = is_student_in_group(student["user_id"])
+    
+    keyboard = get_students_keyboard(students)
+    await message.answer(
+        "Список всех зарегистрированных учеников:\n\n"
+        "Нажмите на ученика, чтобы добавить его в группу для доступа к тарифу 'Групповые':",
+        reply_markup=keyboard
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("add_to_group:"))
+async def add_student_to_group_handler(callback: types.CallbackQuery):
+    """Обработчик добавления ученика в группу"""
+    try:
+        user_id = int(callback.data.split(":")[1])
+        
+        # Получаем информацию об ученике
+        students = get_all_students()
+        student_info = None
+        for student in students:
+            if student["user_id"] == user_id:
+                student_info = student
+                break
+        
+        if not student_info:
+            await callback.answer("Ученик не найден!")
+            return
+        
+        # Проверяем, не добавлен ли уже ученик
+        if is_student_in_group(user_id):
+            await callback.answer("Ученик уже в группе!")
+            return
+        
+        # Добавляем ученика в группу
+        add_student_to_group(user_id)
+        
+        student_name = student_info.get("label", f"ID {user_id}")
+        await callback.answer(f"✅ {student_name} добавлен в группу! Теперь он может купить тариф 'Групповые'.")
+        
+        # Обновляем список учеников
+        await show_students_list(callback.message)
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка: {e}", show_alert=True)
+
+
+@router.callback_query(lambda c: c.data == "back_to_main")
+async def back_to_main_handler(callback: types.CallbackQuery):
+    """Возврат в главное меню"""
+    await callback.message.delete()
+    await callback.message.answer(
+        "Выберите действие:",
         reply_markup=get_teacher_keyboard()
     )
 
