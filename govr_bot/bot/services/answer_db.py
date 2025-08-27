@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from datetime import datetime, date, timedelta
+from bot.utils_pkg_new.logger import log_error, log_database_operation
 
 # Единая БД ответов в корне проекта: ChemistryBots/shared/test_answers.db
 _THIS_DIR = os.path.dirname(__file__)  # govr_bot/bot/services
@@ -459,11 +460,17 @@ def get_user_activity_stats(user_id: int) -> tuple[int, int]:
                     for (d,) in c.fetchall():
                         if d:
                             days.add(str(d))
-                except Exception:
-                    # Если таблицы нет — игнорируем
-                    pass
-        except Exception:
-            pass
+                except sqlite3.OperationalError as e:
+                    # Таблицы нет или проблемы с БД
+                    log_error(e, f"Database table {table} error for user {user_id}", user_id=user_id)
+                    continue
+                except sqlite3.Error as e:
+                    # Другие ошибки SQLite
+                    log_error(e, f"SQLite error in table {table} for user {user_id}", user_id=user_id)
+                    continue
+        except Exception as e:
+            log_error(e, f"Unexpected error getting activity stats for user {user_id}", user_id=user_id)
+            return 0, 0
 
     # Преобразуем в множество дат
     have: set[date] = set()
@@ -471,7 +478,13 @@ def get_user_activity_stats(user_id: int) -> tuple[int, int]:
         try:
             y, m, dd = map(int, d.split("-"))
             have.add(date(y, m, dd))
-        except Exception:
+        except (ValueError, TypeError) as e:
+            # Неправильный формат даты
+            log_error(e, f"Invalid date format: {d} for user {user_id}", user_id=user_id)
+            continue
+        except Exception as e:
+            # Неожиданные ошибки при парсинге даты
+            log_error(e, f"Unexpected error parsing date {d} for user {user_id}", user_id=user_id)
             continue
 
     today = date.today()
@@ -732,7 +745,8 @@ def get_theory_stats(user_id: int, topic: str) -> tuple[int, int]:
                     from bot.utils import _parse_qa_field as _parse
                     total += len(_parse(raw))
         total = int(total)
-    except Exception:
+    except Exception as e:
+        log_error(e, f"Error getting theory stats total for user {user_id}, topic {topic}", user_id=user_id)
         total = 0
 
     return int(correct), int(total)
@@ -762,10 +776,15 @@ def get_theory_stats_by_chunk(user_id: int, topic: str) -> dict[int, tuple[int, 
             for ch_idx, cnt in c.fetchall():
                 try:
                     correct_by_chunk[int(ch_idx)] = int(cnt)
-                except Exception:
+                except (ValueError, TypeError) as e:
+                    log_error(e, f"Invalid chunk data for user {user_id}, topic {topic}", user_id=user_id)
                     continue
-        except Exception:
-            pass
+        except sqlite3.OperationalError as e:
+            log_error(e, f"Database error getting theory stats for user {user_id}, topic {topic}", user_id=user_id)
+        except sqlite3.Error as e:
+            log_error(e, f"SQLite error getting theory stats for user {user_id}, topic {topic}", user_id=user_id)
+        except Exception as e:
+            log_error(e, f"Unexpected error getting theory stats for user {user_id}, topic {topic}", user_id=user_id)
 
     # 2) total по каждому chunk_idx — из prepared_lectures
     totals_by_chunk: dict[int, int] = {}
@@ -788,9 +807,14 @@ def get_theory_stats_by_chunk(user_id: int, topic: str) -> dict[int, tuple[int, 
                     try:
                         idx = int(ch_idx)
                         totals_by_chunk[idx] = len(_parse(raw))
-                    except Exception:
+                    except (ValueError, TypeError) as e:
+                        log_error(e, f"Invalid chunk index for user {user_id}, topic {topic}", user_id=user_id)
                         continue
-    except Exception:
+                    except Exception as e:
+                        log_error(e, f"Error parsing chunk data for user {user_id}, topic {topic}", user_id=user_id)
+                        continue
+    except Exception as e:
+        log_error(e, f"Error getting totals by chunk for user {user_id}, topic {topic}", user_id=user_id)
         totals_by_chunk = {}
 
     # 3) Объединяем

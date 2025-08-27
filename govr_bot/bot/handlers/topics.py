@@ -34,8 +34,11 @@ from bot.services.gpt_service import answer_student_question
 from bot.services.gpt_service import transcribe_audio, grade_theory_answer
 from bot.services.gpt_service import generate_chunk_title
 from bot.services.answer_db import save_theory_task_answer, get_theory_stats, get_theory_stats_by_chunk
+from bot.utils_pkg_new.logger import log_error
 import httpx
 import difflib
+import sqlite3
+import math
 
 router = Router()
 
@@ -54,7 +57,6 @@ def _has_assigned_task(m: types.Message) -> bool:
 # Цветная точка прогресса рядом с названием темы
 def _topic_progress_dot(user_id: int, topic: str) -> str:
     try:
-        import math
         correct, _ = get_theory_stats(user_id, topic)
         # Сколько всего порций по теме
         chunks_json = TEXTBOOK_CONTENT.get(topic, [])
@@ -73,7 +75,14 @@ def _topic_progress_dot(user_id: int, topic: str) -> str:
         if correct >= t_satisf:
             return "🟥"   # удовлетворительно — красный
         return ""        # <30% — без индикатора
-    except Exception:
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error in topic progress dot for user {user_id}, topic {topic}", user_id=user_id)
+        return ""
+    except sqlite3.OperationalError as e:
+        log_error(e, f"Database error in topic progress dot for user {user_id}, topic {topic}", user_id=user_id)
+        return ""
+    except Exception as e:
+        log_error(e, f"Unexpected error in topic progress dot for user {user_id}, topic {topic}", user_id=user_id)
         return "⬛"
 
 # 1) Начала химии — список глав
@@ -93,8 +102,13 @@ async def begin_topic_chosen(cb: types.CallbackQuery, bot):
     try:
         idx = int(cb.data.split("begin_topic_")[-1])
         topic = BEGIN_CHEM_TOPICS[idx]
-    except Exception:
+    except (ValueError, IndexError) as e:
+        log_error(e, f"Invalid topic index in begin_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
+        return
+    except Exception as e:
+        log_error(e, f"Unexpected error in begin_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.message.answer("Произошла ошибка. Попробуй ещё раз.", reply_markup=main_kb)
         return
     await _show_topic_parts(cb.message, cb.from_user.id, topic, section_prefix="begin", topic_index=idx)
 
@@ -119,8 +133,13 @@ async def element_topic_chosen(cb: types.CallbackQuery, bot):
     try:
         idx = int(cb.data.split("element_topic_")[-1])
         topic = ELEMENT_CHEM_TOPICS[idx]
-    except Exception:
+    except (ValueError, IndexError) as e:
+        log_error(e, f"Invalid topic index in element_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
+        return
+    except Exception as e:
+        log_error(e, f"Unexpected error in element_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.message.answer("Произошла ошибка. Попробуй ещё раз.", reply_markup=main_kb)
         return
     await _show_topic_parts(cb.message, cb.from_user.id, topic, section_prefix="element", topic_index=idx)
 
@@ -145,8 +164,13 @@ async def learn_topic_chosen(cb: types.CallbackQuery, bot):
     try:
         idx = int(cb.data.split("learn_topic_")[-1])
         topic = LEARNING_TOPICS[idx]
-    except Exception:
+    except (ValueError, IndexError) as e:
+        log_error(e, f"Invalid topic index in learn_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
+        return
+    except Exception as e:
+        log_error(e, f"Unexpected error in learn_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.message.answer("Произошла ошибка. Попробуй ещё раз.", reply_markup=main_kb)
         return
     await _show_topic_parts(cb.message, cb.from_user.id, topic, section_prefix="learn", topic_index=idx)
 
@@ -179,7 +203,11 @@ async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, sec
             continue
         try:
             title = await generate_chunk_title(topic, chunk_text)
-        except Exception:
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error generating chunk title for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
+            title = ""
+        except Exception as e:
+            log_error(e, f"Unexpected error generating chunk title for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
             title = ""
         if title:
             set_chunk_title(topic, i, title)
@@ -193,7 +221,11 @@ async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, sec
             try:
                 from bot.utils import get_qa_questions as _qq
                 total = len(_qq(topic, i))
-            except Exception:
+            except (ValueError, TypeError) as e:
+                log_error(e, f"Data error getting QA questions for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
+                total = 0
+            except Exception as e:
+                log_error(e, f"Unexpected error getting QA questions for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
                 total = 0
         # Заголовок части (если есть), иначе номер
         title = get_chunk_title(topic, i) or f"Часть {i+1}"
@@ -222,8 +254,13 @@ async def begin_part_start(cb: types.CallbackQuery, bot):
         _prefix, _p, t_idx, ch_idx = cb.data.split("_")
         topic = BEGIN_CHEM_TOPICS[int(t_idx)]
         part = int(ch_idx)
-    except Exception:
-        await cb.answer()
+    except (ValueError, IndexError) as e:
+        log_error(e, f"Invalid part data in begin_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.answer("Ошибка данных. Попробуй ещё раз.")
+        return
+    except Exception as e:
+        log_error(e, f"Unexpected error in begin_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.answer("Произошла ошибка. Попробуй ещё раз.")
         return
     user_learning_state[cb.from_user.id] = {"topic": topic, "index": part, "awaiting_question": False}
     await send_next_chunk(cb.from_user.id, bot)
@@ -235,8 +272,13 @@ async def element_part_start(cb: types.CallbackQuery, bot):
         _prefix, _p, t_idx, ch_idx = cb.data.split("_")
         topic = ELEMENT_CHEM_TOPICS[int(t_idx)]
         part = int(ch_idx)
-    except Exception:
-        await cb.answer()
+    except (ValueError, IndexError) as e:
+        log_error(e, f"Invalid part data in element_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.answer("Ошибка данных. Попробуй ещё раз.")
+        return
+    except Exception as e:
+        log_error(e, f"Unexpected error in element_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.answer("Произошла ошибка. Попробуй ещё раз.")
         return
     user_learning_state[cb.from_user.id] = {"topic": topic, "index": part, "awaiting_question": False}
     await send_next_chunk(cb.from_user.id, bot)
@@ -248,8 +290,13 @@ async def learn_part_start(cb: types.CallbackQuery, bot):
         _prefix, _p, t_idx, ch_idx = cb.data.split("_")
         topic = LEARNING_TOPICS[int(t_idx)]
         part = int(ch_idx)
-    except Exception:
-        await cb.answer()
+    except (ValueError, IndexError) as e:
+        log_error(e, f"Invalid part data in learn_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.answer("Ошибка данных. Попробуй ещё раз.")
+        return
+    except Exception as e:
+        log_error(e, f"Unexpected error in learn_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.answer("Произошла ошибка. Попробуй ещё раз.")
         return
     user_learning_state[cb.from_user.id] = {"topic": topic, "index": part, "awaiting_question": False}
     await send_next_chunk(cb.from_user.id, bot)
@@ -352,8 +399,10 @@ async def send_next_chunk(user_id: int, bot):
     )
     try:
         st["last_lecture_msg_id"] = sent_msg.message_id
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error setting last_lecture_msg_id for user {user_id}", user_id=user_id)
+    except Exception as e:
+        log_error(e, f"Unexpected error setting last_lecture_msg_id for user {user_id}", user_id=user_id)
 
 # ================== Навигация ==================
 @router.callback_query(lambda c: c.data == "learn_ok")
@@ -377,8 +426,10 @@ async def learn_stop(cb: types.CallbackQuery):
     # чтобы после «Стоп» нельзя было нажать «К главам» без проверок
     try:
         await cb.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error editing reply markup in learn_stop for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error editing reply markup in learn_stop for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.message.answer("Обучение остановлено.", reply_markup=main_kb)
 
 @router.callback_query(lambda c: c.data == "learn_audio")
@@ -412,7 +463,11 @@ async def learn_audio(cb: types.CallbackQuery, bot):
         )
         await cb.answer("Аудио отправлено!")
         
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error sending audio for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.answer("Ошибка данных при отправке аудио")
     except Exception as e:
+        log_error(e, f"Unexpected error sending audio for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer(f"Ошибка отправки аудио: {str(e)}")
 
 @router.callback_query(lambda c: c.data == "learn_to_parts")
@@ -428,22 +483,28 @@ async def learn_to_parts(cb: types.CallbackQuery, bot):
         msg_id = st.get("last_lecture_msg_id")
         if msg_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting lecture message for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting lecture message for user {cb.from_user.id}", user_id=cb.from_user.id)
     try:
         msg_id = st.get("last_task_msg_id")
         if msg_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
             st.pop("last_task_msg_id", None)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting task message for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting task message for user {cb.from_user.id}", user_id=cb.from_user.id)
     try:
         msg_id = st.get("last_result_msg_id")
         if msg_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
             st.pop("last_result_msg_id", None)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
     # Чистим состояние после удаления
     user_learning_state.pop(cb.from_user.id, None)
     # Определяем секцию и индекс темы
@@ -466,15 +527,22 @@ async def parts_to_chapters(cb: types.CallbackQuery):
     """Из списка частей перейти назад к списку глав соответствующего раздела."""
     try:
         _, section_prefix = cb.data.split("parts_to_chapters_")
-    except Exception:
-        await cb.answer()
+    except (ValueError, IndexError) as e:
+        log_error(e, f"Invalid callback data in parts_to_chapters for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.answer("Ошибка данных. Попробуй ещё раз.")
+        return
+    except Exception as e:
+        log_error(e, f"Unexpected error in parts_to_chapters for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.answer("Произошла ошибка. Попробуй ещё раз.")
         return
 
     # Удалим сообщение со списком частей
     try:
         await cb.message.delete()
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting message in parts_to_chapters for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting message in parts_to_chapters for user {cb.from_user.id}", user_id=cb.from_user.id)
 
     if section_prefix == "begin":
         buttons = [[InlineKeyboardButton(text=f"{t}", callback_data=f"begin_topic_{i}")]
@@ -510,8 +578,10 @@ async def to_main_menu_from_parts(cb: types.CallbackQuery):
     """Удаляет сообщение со списком частей и открывает главное меню (Reply)."""
     try:
         await cb.message.delete()
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting message in to_main_menu_from_parts for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting message in to_main_menu_from_parts for user {cb.from_user.id}", user_id=cb.from_user.id)
     from bot.handlers.menu import main_kb
     await cb.message.answer("Главное меню:", reply_markup=main_kb)
     await cb.answer()
@@ -555,16 +625,20 @@ async def learn_task(cb: types.CallbackQuery):
         prev_id = st.get("last_task_msg_id")
         if prev_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_id)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting previous task message for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting previous task message for user {cb.from_user.id}", user_id=cb.from_user.id)
     # Удалим карточку результата, если она была
     try:
         res_id = st.get("last_result_msg_id")
         if res_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=res_id)
             st.pop("last_result_msg_id", None)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
     sent = await cb.message.answer(text)
     st["last_task_msg_id"] = sent.message_id
     # После показа задания скрываем кнопку «Спросить ИИ» до следующего вопроса
@@ -585,8 +659,10 @@ async def learn_task(cb: types.CallbackQuery):
             InlineKeyboardButton(text="🏠 К главам", callback_data="learn_to_chapters"),
         ])
         await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error editing reply markup in learn_task for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error editing reply markup in learn_task for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.answer()
 
 @router.callback_query(lambda c: c.data == "learn_task_next")
@@ -609,7 +685,11 @@ async def learn_task_next(cb: types.CallbackQuery):
     # 1) Попробуем исключить те, на которые уже был верный ответ
     try:
         from bot.services.answer_db import get_theory_stats  # для импорта побочно не тянем
-    except Exception:
+    except (ImportError, ModuleNotFoundError) as e:
+        log_error(e, f"Import error in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
+        get_theory_stats = None
+    except Exception as e:
+        log_error(e, f"Unexpected error importing get_theory_stats in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
         get_theory_stats = None
 
     # В таблице у нас нет поштучной истории индексов, поэтому храним в состоянии последние верные индексы
@@ -642,16 +722,20 @@ async def learn_task_next(cb: types.CallbackQuery):
         prev_id = st.get("last_task_msg_id")
         if prev_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_id)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting previous task message in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting previous task message in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
     # Удалим карточку результата, если она была
     try:
         res_id = st.get("last_result_msg_id")
         if res_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=res_id)
             st.pop("last_result_msg_id", None)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting result message in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting result message in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
     sent = await cb.message.answer(text)
     st["last_task_msg_id"] = sent.message_id
     await cb.answer("Готово")
@@ -713,7 +797,11 @@ async def catch_task_answer(m: types.Message):
                 with open(tmp_path, "wb") as f:
                     f.write(resp.content)
             answer_text = await transcribe_audio(tmp_path)
-        except Exception:
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error transcribing audio for user {m.from_user.id}", user_id=m.from_user.id)
+            answer_text = ""
+        except Exception as e:
+            log_error(e, f"Unexpected error transcribing audio for user {m.from_user.id}", user_id=m.from_user.id)
             answer_text = ""
     else:
         return  # не текст и не voice — игнорируем
@@ -734,8 +822,10 @@ async def catch_task_answer(m: types.Message):
     finally:
         try:
             await loading_msg.delete()
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
     feedback = llm_feedback
     st["last_answer_correct"] = bool(is_correct)
 
@@ -819,8 +909,10 @@ async def catch_task_answer(m: types.Message):
         sent = await m.answer(full_msg, reply_markup=kb)
         try:
             st["last_result_msg_id"] = sent.message_id
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
     else:
         # При верном ответе показываем две кнопки: Ещё вопрос (в этом разделе) и К следующему разделу (следующий кусок)
         if all_solved_here:
@@ -843,8 +935,10 @@ async def catch_task_answer(m: types.Message):
         sent = await m.answer(full_msg, reply_markup=kb)
         try:
             st["last_result_msg_id"] = sent.message_id
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
 
 @router.callback_query(lambda c: c.data == "show_sample_answer")
 async def show_sample_answer(cb: types.CallbackQuery):

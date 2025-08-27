@@ -23,6 +23,8 @@ from bot.services.test_sql import get_all_tests_types, get_questions_by_type, ge
 
 from bot.handlers.menu import main_kb  # Импорт клавиатуры главного меню
 from bot.services.plan import get_user_plan_code, limits_for, consume_daily
+from bot.utils_pkg_new.logger import log_error
+import sqlite3
 
 router = Router()
 user_test_state = {}
@@ -263,8 +265,10 @@ async def start_test(cb: CallbackQuery):
         prev_grid_id = prev.get("grid_msg_id")
         if prev_grid_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_grid_id)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting previous grid message for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting previous grid message for user {cb.from_user.id}", user_id=cb.from_user.id)
 
     idx, q_ids = load_test_progress(cb.from_user.id, test_type)
     if idx is not None and q_ids:
@@ -310,8 +314,10 @@ async def show_explanation(cb: CallbackQuery):
         try:
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Тарифы и оплата", callback_data="to_tariffs")]])
             await cb.message.answer("Дневной лимит объяснений исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error sending tariff message for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error sending tariff message for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer()
         return
     q_id = int(cb.data.split("_")[-1])
@@ -342,19 +348,36 @@ async def go_next_question(cb: CallbackQuery):
         if is_explanation:
             try:
                 await cb.message.delete()
-            except Exception:
+            except (ValueError, TypeError) as e:
+                log_error(e, f"Data error deleting explanation message for user {cb.from_user.id}", user_id=cb.from_user.id)
                 # если не удалилось — хотя бы скрыть клавиатуру
                 try:
                     await cb.message.edit_reply_markup(reply_markup=None)
-                except Exception:
-                    pass
+                except (ValueError, TypeError) as e2:
+                    log_error(e2, f"Data error hiding keyboard for user {cb.from_user.id}", user_id=cb.from_user.id)
+                except Exception as e2:
+                    log_error(e2, f"Unexpected error hiding keyboard for user {cb.from_user.id}", user_id=cb.from_user.id)
+            except Exception as e:
+                log_error(e, f"Unexpected error deleting explanation message for user {cb.from_user.id}", user_id=cb.from_user.id)
+                # если не удалилось — хотя бы скрыть клавиатуру
+                try:
+                    await cb.message.edit_reply_markup(reply_markup=None)
+                except (ValueError, TypeError) as e2:
+                    log_error(e2, f"Data error hiding keyboard for user {cb.from_user.id}", user_id=cb.from_user.id)
+                except Exception as e2:
+                    log_error(e2, f"Unexpected error hiding keyboard for user {cb.from_user.id}", user_id=cb.from_user.id)
         else:
             if q_id:
                 try:
                     await cb.message.edit_reply_markup(reply_markup=get_explain_only_kb(q_id))
-                except Exception:
-                    pass
-    except Exception:
+                except (ValueError, TypeError) as e:
+                    log_error(e, f"Data error editing reply markup for user {cb.from_user.id}", user_id=cb.from_user.id)
+                except Exception as e:
+                    log_error(e, f"Unexpected error editing reply markup for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error in go_next_question for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error in go_next_question for user {cb.from_user.id}", user_id=cb.from_user.id)
         pass
 
     st = user_test_state.get(cb.from_user.id)
@@ -369,8 +392,10 @@ async def go_next_question(cb: CallbackQuery):
             last_q_id = st.pop("last_question_msg_id", None)
             if last_q_id:
                 await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_id)
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error deleting last question message for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error deleting last question message for user {cb.from_user.id}", user_id=cb.from_user.id)
         st["idx"] += 1
         await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
         await cb.answer()
@@ -382,8 +407,10 @@ async def go_next_question(cb: CallbackQuery):
             last_q_id = st.pop("last_question_msg_id", None)
             if last_q_id:
                 await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_id)
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error deleting last mistake question message for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error deleting last mistake question message for user {cb.from_user.id}", user_id=cb.from_user.id)
         st["idx"] += 1
         await send_next_mistake_question(cb.from_user.id, cb.message)
         await cb.answer()
@@ -415,8 +442,10 @@ async def jump_to_question(cb: CallbackQuery):
         last_q_msg_id = st_prev.pop("last_question_msg_id", None)
         if last_q_msg_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_msg_id)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting previous question message in jump_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting previous question message in jump_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
 
     prev = user_test_state.get(cb.from_user.id) or {}
     user_test_state[cb.from_user.id] = {
@@ -441,8 +470,10 @@ async def report_question(cb: CallbackQuery):
         last_q_id = st.pop("last_question_msg_id", None)
         if last_q_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_id)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting question message in report_question for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting question message in report_question for user {cb.from_user.id}", user_id=cb.from_user.id)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📝 Проблема с заданием", callback_data=f"report_reason_{q_id}_task")],
@@ -493,8 +524,10 @@ async def report_reason(cb: CallbackQuery):
         # режим работы над ошибками: удаляем текущий id из списка и показываем следующий
         try:
             st["mistake_q_ids"].remove(q_id)
-        except ValueError:
-            pass
+        except ValueError as e:
+            log_error(e, f"ValueError removing q_id {q_id} from mistake_q_ids for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error removing q_id {q_id} from mistake_q_ids for user {cb.from_user.id}", user_id=cb.from_user.id)
         user_test_state[cb.from_user.id] = st
         await send_next_mistake_question(cb.from_user.id, cb.message)
     else:
@@ -530,8 +563,10 @@ async def report_custom_text(m: types.Message):
     if "mistake_q_ids" in st and q_id is not None:
         try:
             st["mistake_q_ids"].remove(q_id)
-        except ValueError:
-            pass
+        except ValueError as e:
+            log_error(e, f"ValueError removing q_id {q_id} from mistake_q_ids in report_custom_text for user {m.from_user.id}", user_id=m.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error removing q_id {q_id} from mistake_q_ids in report_custom_text for user {m.from_user.id}", user_id=m.from_user.id)
         user_test_state[m.from_user.id] = st
         await send_next_mistake_question(m.from_user.id, m)
     else:
@@ -555,8 +590,10 @@ async def restart_test(cb: CallbackQuery):
     used_map = user_test_state.setdefault(cb.from_user.id, {}).setdefault("used_hints", {})
     try:
         used_map.pop(test_type, None)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error popping test_type {test_type} from used_hints for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error popping test_type {test_type} from used_hints for user {cb.from_user.id}", user_id=cb.from_user.id)
     prev = user_test_state.get(cb.from_user.id) or {}
     user_test_state[cb.from_user.id] = {
         "type": test_type,
@@ -574,8 +611,10 @@ async def restart_test(cb: CallbackQuery):
         else:
             sent = await cb.message.answer(f"Тест {test_type}. Выбери номер задания или нажми «Начать заново»:", reply_markup=kb)
             user_test_state[cb.from_user.id]["grid_msg_id"] = sent.message_id
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error redrawing test grid for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error redrawing test grid for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.answer()
 
 # =========================
@@ -623,7 +662,10 @@ async def stop_test(cb: CallbackQuery):
         user_id = cb.from_user.id
         if user_id in user_flashcards_state:
             user_flashcards_state[user_id] = {}
-    except Exception:
+    except (ImportError, ModuleNotFoundError) as e:
+        log_error(e, f"Import error clearing flashcards state for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error clearing flashcards state for user {cb.from_user.id}", user_id=cb.from_user.id)
         pass
     
     # --- Если работаем над ошибками ---
@@ -656,8 +698,10 @@ async def hide_grid(cb: CallbackQuery):
         if grid_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=grid_id)
             user_test_state[cb.from_user.id] = st
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error hiding grid for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error hiding grid for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.answer()
 
 # =========================
@@ -712,8 +756,10 @@ async def back_to_grid(cb: CallbackQuery):
         if stats_msg_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=stats_msg_id)
             user_test_state[cb.from_user.id] = st
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting stats message for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting stats message for user {cb.from_user.id}", user_id=cb.from_user.id)
     
     # Получаем список вопросов для теста
     questions = get_questions_by_type(test_type)
@@ -746,8 +792,10 @@ async def to_main_menu(cb: CallbackQuery):
         user_id = cb.from_user.id
         if user_id in user_flashcards_state:
             user_flashcards_state[user_id] = {}
-    except Exception:
-        pass
+    except (ImportError, ModuleNotFoundError) as e:
+        log_error(e, f"Import error clearing flashcards state in to_main_menu for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error clearing flashcards state in to_main_menu for user {cb.from_user.id}", user_id=cb.from_user.id)
     
     await cb.message.answer("Главное меню:", reply_markup=main_kb)
     await cb.answer()
@@ -766,8 +814,10 @@ async def show_hint(cb: CallbackQuery):
         try:
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Тарифы и оплата", callback_data="to_tariffs")]])
             await cb.message.answer("Дневной лимит подсказок исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error sending tariff message in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error sending tariff message in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer()
         return
     q_id = int(cb.data.split("_")[-1])
@@ -794,8 +844,10 @@ async def show_hint(cb: CallbackQuery):
         try:
             left = max(0, 10 - used_map[test_type])
             await cb.message.edit_reply_markup(reply_markup=get_stop_test_kb(q_id, hints_left=left))
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error updating reply markup in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error updating reply markup in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
     else:
         await cb.message.answer("Для этого задания нет подсказки.")
     await cb.answer()
@@ -851,8 +903,10 @@ async def check_test_answer(m: types.Message):
             q_ids = user_test_state[m.from_user.id]["q_ids"]
             kb = get_test_grid_kb(m.from_user.id, test_type, q_ids)
             await m.bot.edit_message_reply_markup(chat_id=m.chat.id, message_id=grid_msg_id, reply_markup=kb)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error updating grid in check_test_answer for user {m.from_user.id}", user_id=m.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error updating grid in check_test_answer for user {m.from_user.id}", user_id=m.from_user.id)
     # Переход к следующему вопросу только после нажатия «Далее»
 
 # ======================================================================
@@ -951,8 +1005,10 @@ async def check_mistake_answer(m: types.Message):
         # Удаляем текущий id из очереди, чтобы не повторялся подряд; вернём в конец, если ещё неверно
         try:
             state["mistake_q_ids"].pop(idx)
-        except Exception:
-            pass
+        except (ValueError, IndexError) as e:
+            log_error(e, f"Data error popping mistake_q_ids at index {idx} for user {m.from_user.id}", user_id=m.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error popping mistake_q_ids at index {idx} for user {m.from_user.id}", user_id=m.from_user.id)
         state["mistake_q_ids"].append(q_id)
         # idx не увеличиваем — следующий показ будет новый первый элемент очереди
 
@@ -977,8 +1033,10 @@ async def check_mistake_answer(m: types.Message):
             if q_ids:
                 kb = get_test_grid_kb(m.from_user.id, test_type, q_ids)
                 await m.bot.edit_message_reply_markup(chat_id=m.chat.id, message_id=grid_msg_id, reply_markup=kb)
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error updating grid in check_mistake_answer for user {m.from_user.id}", user_id=m.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error updating grid in check_mistake_answer for user {m.from_user.id}", user_id=m.from_user.id)
 
 # =========================
 # 10. Кнопка «К заданию» в подсказке — удаляет подсказку
@@ -987,12 +1045,24 @@ async def check_mistake_answer(m: types.Message):
 async def back_to_question(cb: CallbackQuery):
     try:
         await cb.message.delete()
-    except Exception:
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting message in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
         # Если не получилось удалить (нет прав или уже удалено) — просто скрываем кнопки
         try:
             await cb.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e2:
+            log_error(e2, f"Data error hiding keyboard in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e2:
+            log_error(e2, f"Unexpected error hiding keyboard in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting message in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
+        # Если не получилось удалить (нет прав или уже удалено) — просто скрываем кнопки
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except (ValueError, TypeError) as e2:
+            log_error(e2, f"Data error hiding keyboard in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e2:
+            log_error(e2, f"Unexpected error hiding keyboard in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.answer()
 
 # --- КОНЕЦ ФАЙЛА ---

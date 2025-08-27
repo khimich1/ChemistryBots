@@ -11,7 +11,7 @@ from states import EditStudent
 # Добавляем путь к модулю в parent_bot
 parent_services_path = os.path.join(os.path.dirname(__file__), "..", "..", "parent_bot", "bot", "services")
 sys.path.insert(0, parent_services_path)
-from filename_generator import get_filename_for_user
+from filename_generator import get_filename_for_user, get_user_display_name
 
 router = Router()
 
@@ -83,8 +83,11 @@ async def student_progress(cb: types.CallbackQuery):
     # Генерируем имя файла с использованием общего модуля
     filename = get_filename_for_user(user_id, None, None)
     
+    # Получаем отображаемое имя пользователя
+    display_name = get_user_display_name(user_id, None, None)
+    
     # Сгенерируем PDF во временный файл
-    path = make_pdf_report(user_id, fullname=None, filename=filename)
+    path = make_pdf_report(user_id, fullname=display_name, filename=filename)
     try:
         await cb.message.answer_document(document=types.FSInputFile(path), caption=f"Отчёт по ученику ID {user_id}")
     except Exception as e:

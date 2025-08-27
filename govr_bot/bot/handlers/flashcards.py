@@ -31,7 +31,7 @@ from bot.services.answer_db import (
     flashcards_last_transcript,
     flashcards_count_wrong_voice_attempts,
 )
-
+from bot.utils_pkg_new.logger import log_error
 
 router = Router()
 
@@ -561,8 +561,10 @@ async def practice_catch_answer(m: types.Message):
             await m.answer("Лимит голосовых ответов на сегодня исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
             try:
                 await loading_msg.delete()
-            except Exception:
-                pass
+            except (ValueError, TypeError) as e:
+                log_error(e, f"Data error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
+            except Exception as e:
+                log_error(e, f"Unexpected error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
             return
         try:
             file = await m.bot.get_file(m.voice.file_id)
@@ -576,14 +578,20 @@ async def practice_catch_answer(m: types.Message):
                 with open(tmp_path, "wb") as f:
                     f.write(resp.content)
             user_answer = await transcribe_audio(tmp_path)
-        except Exception:
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error transcribing audio for user {m.from_user.id}", user_id=m.from_user.id)
+            user_answer = ""
+        except Exception as e:
+            log_error(e, f"Unexpected error transcribing audio for user {m.from_user.id}", user_id=m.from_user.id)
             user_answer = ""
     else:
         # Удалим индикатор, если ответа нет
         try:
             await loading_msg.delete()
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
         return
 
     norm_user = _normalize_answer(user_answer)
@@ -624,8 +632,10 @@ async def practice_catch_answer(m: types.Message):
                 bad_voices = flashcards_count_wrong_voice_attempts(m.from_user.id, category, card_key)
                 if bad_voices >= 1 and getattr(m, "voice", None):
                     hint = "\n\nИногда распознавание голосовых путает химические термины. Попробуйте ввести ответ текстом."
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error checking wrong voice attempts for user {m.from_user.id}", user_id=m.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error checking wrong voice attempts for user {m.from_user.id}", user_id=m.from_user.id)
 
     reply_text = (
         f"{verdict}\n\n"
@@ -666,8 +676,10 @@ async def practice_catch_answer(m: types.Message):
             source=("voice" if getattr(m, "voice", None) else "text"),
             is_correct=is_ok,
         )
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error logging flashcard answer for user {m.from_user.id}", user_id=m.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error logging flashcard answer for user {m.from_user.id}", user_id=m.from_user.id)
 
     # Если локальная проверка не прошла, попробуем задать уточняющий вопрос LLM по формуле
     if not is_ok:
@@ -699,7 +711,12 @@ async def practice_catch_answer(m: types.Message):
                 text=reply_text,
                 reply_markup=_practice_next_kb(),
             )
-        except Exception:
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error editing message text for user {m.from_user.id}", user_id=m.from_user.id)
+            await m.answer(reply_text, reply_markup=_practice_next_kb())
+            st["practice_msg_id"] = None
+        except Exception as e:
+            log_error(e, f"Unexpected error editing message text for user {m.from_user.id}", user_id=m.from_user.id)
             await m.answer(reply_text, reply_markup=_practice_next_kb())
             st["practice_msg_id"] = None
     else:
@@ -708,8 +725,10 @@ async def practice_catch_answer(m: types.Message):
     # Удаляем индикатор обработки
     try:
         await loading_msg.delete()
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
     st["awaiting_practice_answer"] = False
 
 
@@ -723,8 +742,10 @@ async def practice_next(cb: CallbackQuery):
     if msg_id:
         try:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error deleting practice message for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error deleting practice message for user {cb.from_user.id}", user_id=cb.from_user.id)
     st["awaiting_practice_answer"] = True
     if mode == "errors":
         await start_errors_round_cb(cb, category)
@@ -855,7 +876,11 @@ async def show_last_voice(m: types.Message):
             f"Ключ: {card_key or '—'}\n"
             f"Текст: {answer_text or '—'}"
         )
-    except Exception:
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error getting last voice transcript for user {m.from_user.id}", user_id=m.from_user.id)
+        await m.answer("Не удалось получить последнюю расшифровку.")
+    except Exception as e:
+        log_error(e, f"Unexpected error getting last voice transcript for user {m.from_user.id}", user_id=m.from_user.id)
         await m.answer("Не удалось получить последнюю расшифровку.")
 
 
@@ -946,7 +971,12 @@ async def reveal_name(cb: CallbackQuery):
     )
     try:
         await cb.message.edit_text(text, reply_markup=_make_reveal_kb())
-    except Exception:
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error editing message text in reveal_name for user {cb.from_user.id}", user_id=cb.from_user.id)
+        # Если по каким-то причинам редактирование невозможно (например, старое сообщение), отправим новое
+        await cb.message.answer(text, reply_markup=_make_reveal_kb())
+    except Exception as e:
+        log_error(e, f"Unexpected error editing message text in reveal_name for user {cb.from_user.id}", user_id=cb.from_user.id)
         # Если по каким-то причинам редактирование невозможно (например, старое сообщение), отправим новое
         await cb.message.answer(text, reply_markup=_make_reveal_kb())
     await cb.answer()
@@ -981,7 +1011,11 @@ async def next_item(cb: CallbackQuery):
     text = f"<b>{title}</b>\nФормула: <code>{_format_formula(current.formula)}</code>\n№ {idx + 1} из {total}"
     try:
         await cb.message.edit_text(text, reply_markup=_make_reveal_kb())
-    except Exception:
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error editing message text in next_item for user {cb.from_user.id}", user_id=cb.from_user.id)
+        await cb.message.answer(text, reply_markup=_make_reveal_kb())
+    except Exception as e:
+        log_error(e, f"Unexpected error editing message text in next_item for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer(text, reply_markup=_make_reveal_kb())
     await cb.answer()
 
@@ -1006,7 +1040,11 @@ async def reset_cards(cb: CallbackQuery):
         text = f"<b>{title}</b>\nФормула: <code>{_format_formula(current.formula)}</code>\n№ {idx + 1} из {total}"
         try:
             await cb.message.edit_text(text, reply_markup=_make_reveal_kb())
-        except Exception:
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error editing message text in reset_cards for user {cb.from_user.id}", user_id=cb.from_user.id)
+            await cb.message.answer(text, reply_markup=_make_reveal_kb())
+        except Exception as e:
+            log_error(e, f"Unexpected error editing message text in reset_cards for user {cb.from_user.id}", user_id=cb.from_user.id)
             await cb.message.answer(text, reply_markup=_make_reveal_kb())
     await cb.answer("Начали сначала")
 
@@ -1031,8 +1069,10 @@ async def practice_skip(cb: CallbackQuery):
     if msg_id:
         try:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            log_error(e, f"Data error deleting practice message in practice_skip for user {cb.from_user.id}", user_id=cb.from_user.id)
+        except Exception as e:
+            log_error(e, f"Unexpected error deleting practice message in practice_skip for user {cb.from_user.id}", user_id=cb.from_user.id)
     if mode == "errors":
         await start_errors_round_cb(cb, category)
     else:
@@ -1048,8 +1088,10 @@ async def inline_back(cb: CallbackQuery):
     # Удалим текущее сообщение с инлайн-кнопками (если возможно)
     try:
         await cb.message.delete()
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        log_error(e, f"Data error deleting message in inline_back for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting message in inline_back for user {cb.from_user.id}", user_id=cb.from_user.id)
     # Вернёмся на уровень выбора раздела внутри текущего режима
     # Сохраняем только режим, остальное сбрасываем
     mode = st.get("mode")

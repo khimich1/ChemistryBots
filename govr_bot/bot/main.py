@@ -22,7 +22,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # токен из .env
 
 # --- Настройка логирования ---
-logging.basicConfig(level=logging.INFO)
+from bot.utils_pkg_new.logger import setup_logging
+setup_logging()
 
 async def set_bot_commands(bot: Bot):
     commands = [

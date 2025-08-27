@@ -1,11 +1,13 @@
 from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 import os, sqlite3
 
 from bot.services.plan import get_user_plan_code, set_user_plan
 from bot.services.billing import create_payment, check_payment, PRICES
 from bot.services.answer_db import DB_FILE
 from bot.services.teacher_access import is_student_approved_by_teacher
+from bot.utils_pkg_new.logger import log_error, log_user_action
 
 
 router = Router()
@@ -221,7 +223,14 @@ async def on_checkpay(cb: types.CallbackQuery):
 				c.execute("SELECT plan_code FROM payments WHERE payment_id=?", (pid,))
 				row = c.fetchone()
 				code = row[0] if row else None
-		except Exception:
+		except sqlite3.OperationalError as e:
+			log_error(e, f"Database error getting payment plan for user {cb.from_user.id}", user_id=cb.from_user.id)
+			code = None
+		except sqlite3.Error as e:
+			log_error(e, f"SQLite error getting payment plan for user {cb.from_user.id}", user_id=cb.from_user.id)
+			code = None
+		except Exception as e:
+			log_error(e, f"Unexpected error getting payment plan for user {cb.from_user.id}", user_id=cb.from_user.id)
 			code = None
 		if code:
 			set_user_plan(cb.from_user.id, code, days=31)
@@ -271,7 +280,18 @@ async def confirm_trial(cb: types.CallbackQuery):
 			    text=f"Заявка на бесплатное занятие: @{cb.from_user.username or '—'} (id {cb.from_user.id}), имя: {cb.from_user.full_name}"
 			)
 			await cb.message.answer("✅ Заявка отправлена! Мы свяжемся с тобой в ближайшее время.")
-		except Exception:
+			log_user_action(cb.from_user.id, "trial_request_sent", {"chat_id": chat_id})
+		except TelegramForbiddenError as e:
+			log_error(e, "Bot blocked by trial chat", user_id=cb.from_user.id)
+			await cb.message.answer("Не удалось отправить заявку. Напиши, пожалуйста, в личные сообщения преподавателю.")
+		except TelegramBadRequest as e:
+			log_error(e, "Bad request sending trial request", user_id=cb.from_user.id)
+			await cb.message.answer("Не удалось отправить заявку. Напиши, пожалуйста, в личные сообщения преподавателю.")
+		except TelegramAPIError as e:
+			log_error(e, "Telegram API error sending trial request", user_id=cb.from_user.id)
+			await cb.message.answer("Не удалось отправить заявку. Напиши, пожалуйста, в личные сообщения преподавателю.")
+		except Exception as e:
+			log_error(e, "Unexpected error sending trial request", user_id=cb.from_user.id)
 			await cb.message.answer("Не удалось отправить заявку. Напиши, пожалуйста, в личные сообщения преподавателю.")
 	else:
 		await cb.message.answer("Напиши 'Хочу бесплатное занятие' и оставь телефон — мы свяжемся с тобой.")
@@ -294,7 +314,18 @@ async def trial_message(m: types.Message):
 			    text=f"Заявка на бесплатное занятие: @{m.from_user.username or '—'} (id {m.from_user.id}), имя: {m.from_user.full_name}"
 			)
 			await m.answer("Заявка отправлена! Мы свяжемся с тобой.")
-		except Exception:
+			log_user_action(m.from_user.id, "trial_request_sent_message", {"chat_id": chat_id})
+		except TelegramForbiddenError as e:
+			log_error(e, "Bot blocked by trial chat (message)", user_id=m.from_user.id)
+			await m.answer("Не удалось отправить заявку. Напишите преподавателю напрямую.")
+		except TelegramBadRequest as e:
+			log_error(e, "Bad request sending trial request (message)", user_id=m.from_user.id)
+			await m.answer("Не удалось отправить заявку. Напишите преподавателю напрямую.")
+		except TelegramAPIError as e:
+			log_error(e, "Telegram API error sending trial request (message)", user_id=m.from_user.id)
+			await m.answer("Не удалось отправить заявку. Напишите преподавателю напрямую.")
+		except Exception as e:
+			log_error(e, "Unexpected error sending trial request (message)", user_id=m.from_user.id)
 			await m.answer("Не удалось отправить заявку. Напишите преподавателю напрямую.")
 	else:
 		await m.answer("Напиши 'Хочу бесплатное занятие' и оставь телефон — мы свяжемся с тобой.")
