@@ -9,6 +9,7 @@ init_progress_table()
 from bot.handlers.menu import router as menu_router
 from bot.handlers.topics import router as topics_router
 from bot.handlers.tests import router as tests_router
+from bot.handlers import tests_oge
 
 from bot.handlers.flashcards import router as flashcards_router
 from bot.handlers.billing import router as billing_router
@@ -57,6 +58,7 @@ async def main():
     dp.include_router(menu_router)
     dp.include_router(billing_router)   # billing ДО tests и topics!
     dp.include_router(tests_router)     # tests ДО topics!
+    dp.include_router(tests_oge.router) # ОГЭ тесты
     dp.include_router(topics_router)
 
     dp.include_router(flashcards_router)

@@ -285,11 +285,12 @@ async def tests_entry_menu(m: types.Message):
     kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии")],
+            [KeyboardButton(text="🧪 Тестовая часть ОГЭ по химии")],
             [KeyboardButton(text="⬅️ В меню")],
         ],
         resize_keyboard=True
     )
-    await m.answer("Раздел тестов:", reply_markup=kb)
+    await m.answer("Выбери раздел тестов:", reply_markup=kb)
 
 @router.message(lambda m: (m.text or "").strip().lower() == "🧪 тестовая часть егэ по химии")
 async def tests_open_catalog(m: types.Message):
@@ -315,11 +316,12 @@ async def tests_go_back(cb: types.CallbackQuery):
     kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии")],
+            [KeyboardButton(text="🧪 Тестовая часть ОГЭ по химии")],
             [KeyboardButton(text="⬅️ В меню")],
         ],
         resize_keyboard=True
     )
-    await cb.message.answer("Раздел тестов:", reply_markup=kb)
+    await cb.message.answer("Выбери раздел тестов:", reply_markup=kb)
     await cb.answer()
 
 # Универсальная кнопка «В главное меню» для инлайн-кнопок

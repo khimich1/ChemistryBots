@@ -123,6 +123,7 @@ async def _transcribe_chunk(file_bytes: bytes) -> str:
     files = {
         "file": ("chunk.ogg", file_bytes, "audio/ogg"),
         "model": (None, "whisper-1"),
+        "language": (None, "ru"),
         "response_format": (None, "text"),
     }
 
