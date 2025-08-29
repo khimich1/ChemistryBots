@@ -2,6 +2,8 @@ import os
 import sqlite3
 from datetime import datetime, date, timedelta
 from bot.utils_pkg_new.logger import log_error, log_database_operation
+import threading
+from contextlib import contextmanager
 
 # Единая БД ответов в корне проекта: ChemistryBots/shared/test_answers.db
 _THIS_DIR = os.path.dirname(__file__)  # govr_bot/bot/services
@@ -9,18 +11,49 @@ _PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
 DB_FILE = os.getenv("DB_ANSWERS") or os.path.join(_PROJECT_ROOT, "shared", "test_answers.db")
   # Имя файла с базой данных
 
+# Пул соединений для высокой нагрузки
+_connection_pool = {}
+_pool_lock = threading.Lock()
+
 def get_conn():
-    """Централизованное подключение к БД с оптимизированными настройками для стабильности под нагрузкой."""
-    conn = sqlite3.connect(DB_FILE, timeout=5.0, isolation_level=None)
-    c = conn.cursor()
+    """Централизованное подключение к БД с пулом соединений для стабильности под нагрузкой."""
+    thread_id = threading.get_ident()
+    
+    with _pool_lock:
+        if thread_id not in _connection_pool:
+            conn = sqlite3.connect(DB_FILE, timeout=10.0, isolation_level=None)
+            c = conn.cursor()
+            try:
+                c.execute("PRAGMA journal_mode=WAL")
+                c.execute("PRAGMA synchronous=NORMAL")
+                c.execute("PRAGMA foreign_keys=ON")
+                c.execute("PRAGMA busy_timeout=10000")
+                c.execute("PRAGMA cache_size=10000")  # Увеличиваем кэш
+                c.execute("PRAGMA temp_store=MEMORY")  # Временные таблицы в памяти
+            finally:
+                c.close()
+            _connection_pool[thread_id] = conn
+        return _connection_pool[thread_id]
+
+@contextmanager
+def get_db_connection():
+    """Контекстный менеджер для безопасной работы с БД."""
+    conn = get_conn()
     try:
-        c.execute("PRAGMA journal_mode=WAL")
-        c.execute("PRAGMA synchronous=NORMAL")
-        c.execute("PRAGMA foreign_keys=ON")
-        c.execute("PRAGMA busy_timeout=5000")
-    finally:
-        c.close()
-    return conn
+        yield conn
+    except Exception as e:
+        log_error(e, "Database operation failed")
+        raise
+
+def close_all_connections():
+    """Закрывает все соединения в пуле (вызывать при завершении работы)"""
+    with _pool_lock:
+        for conn in _connection_pool.values():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _connection_pool.clear()
 
 # 1. Создаём таблицу ответов (вызывается один раз при запуске)
 def init_db():

@@ -24,6 +24,7 @@ from bot.services.test_sql import get_all_tests_types, get_questions_by_type, ge
 from bot.handlers.menu import main_kb  # Импорт клавиатуры главного меню
 from bot.services.plan import get_user_plan_code, limits_for, consume_daily
 from bot.utils_pkg_new.logger import log_error
+from bot.utils_pkg_new.telegram_error_handler import safe_edit_message, handle_telegram_errors
 import sqlite3
 
 router = Router()
@@ -607,7 +608,17 @@ async def restart_test(cb: CallbackQuery):
         grid_id = user_test_state[cb.from_user.id].get("grid_msg_id")
         kb = get_test_grid_kb(cb.from_user.id, test_type, user_test_state[cb.from_user.id]["q_ids"])
         if grid_id:
-            await cb.message.bot.edit_message_reply_markup(chat_id=cb.message.chat.id, message_id=grid_id, reply_markup=kb)
+            # Безопасное редактирование с обработкой "message is not modified"
+            try:
+                await cb.message.bot.edit_message_reply_markup(
+                    chat_id=cb.message.chat.id, 
+                    message_id=grid_id, 
+                    reply_markup=kb
+                )
+            except Exception as e:
+                # Игнорируем ошибку "message is not modified"
+                if "message is not modified" not in str(e).lower():
+                    log_error(e, f"Error updating grid markup for user {cb.from_user.id}", user_id=cb.from_user.id)
         else:
             sent = await cb.message.answer(f"Тест {test_type}. Выбери номер задания или нажми «Начать заново»:", reply_markup=kb)
             user_test_state[cb.from_user.id]["grid_msg_id"] = sent.message_id
@@ -902,7 +913,17 @@ async def check_test_answer(m: types.Message):
             test_type = user_test_state[m.from_user.id]["type"]
             q_ids = user_test_state[m.from_user.id]["q_ids"]
             kb = get_test_grid_kb(m.from_user.id, test_type, q_ids)
-            await m.bot.edit_message_reply_markup(chat_id=m.chat.id, message_id=grid_msg_id, reply_markup=kb)
+            # Безопасное редактирование с обработкой "message is not modified"
+            try:
+                await m.bot.edit_message_reply_markup(
+                    chat_id=m.chat.id, 
+                    message_id=grid_msg_id, 
+                    reply_markup=kb
+                )
+            except Exception as e:
+                # Игнорируем ошибку "message is not modified"
+                if "message is not modified" not in str(e).lower():
+                    log_error(e, f"Error updating grid markup after answer for user {m.from_user.id}", user_id=m.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error updating grid in check_test_answer for user {m.from_user.id}", user_id=m.from_user.id)
     except Exception as e:
@@ -1032,7 +1053,17 @@ async def check_mistake_answer(m: types.Message):
             q_ids = user_test_state[m.from_user.id].get("q_ids")
             if q_ids:
                 kb = get_test_grid_kb(m.from_user.id, test_type, q_ids)
-                await m.bot.edit_message_reply_markup(chat_id=m.chat.id, message_id=grid_msg_id, reply_markup=kb)
+                # Безопасное редактирование с обработкой "message is not modified"
+                try:
+                    await m.bot.edit_message_reply_markup(
+                        chat_id=m.chat.id, 
+                        message_id=grid_msg_id, 
+                        reply_markup=kb
+                    )
+                except Exception as e:
+                    # Игнорируем ошибку "message is not modified"
+                    if "message is not modified" not in str(e).lower():
+                        log_error(e, f"Error updating grid markup in mistake mode for user {m.from_user.id}", user_id=m.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error updating grid in check_mistake_answer for user {m.from_user.id}", user_id=m.from_user.id)
     except Exception as e:

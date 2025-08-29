@@ -21,7 +21,10 @@ practice_started_at: dict[int, str] = {}
 def _practice_kb(user_id: int) -> ReplyKeyboardMarkup:
     started = user_id in practice_started_at
     btn = "⏹ Закончить практику" if started else "▶ Начать практику"
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=btn)]], resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text=btn)],
+        [KeyboardButton(text="⬅️ Выход в главное меню")]
+    ], resize_keyboard=True)
 
 
 def _refresh_kb() -> InlineKeyboardMarkup:
@@ -114,6 +117,12 @@ async def start_practice(m: types.Message):
 async def stop_practice(m: types.Message):
     practice_started_at.pop(m.from_user.id, None)
     await m.answer("Практика завершена.")
+    await menu.cmd_start(m)
+
+
+@router.message(lambda m: m.text == "⬅️ Выход в главное меню")
+async def back_to_main_menu(m: types.Message):
+    """Возврат в главное меню без завершения практики"""
     await menu.cmd_start(m)
 
 
