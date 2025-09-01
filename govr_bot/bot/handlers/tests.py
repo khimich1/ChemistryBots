@@ -25,6 +25,7 @@ from bot.handlers.menu import main_kb  # Импорт клавиатуры гл�
 from bot.services.plan import get_user_plan_code, limits_for, consume_daily
 from bot.utils_pkg_new.logger import log_error
 from bot.utils_pkg_new.telegram_error_handler import safe_edit_message, handle_telegram_errors
+from bot.utils import user_learning_state  # для проверки состояния учебника
 import sqlite3
 
 router = Router()
@@ -268,7 +269,7 @@ async def start_test(cb: CallbackQuery):
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_grid_id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting previous grid message for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting previous grid message for user {cb.from_user.id}", user_id=cb.from_user.id)
 
     idx, q_ids = load_test_progress(cb.from_user.id, test_type)
@@ -317,7 +318,7 @@ async def show_explanation(cb: CallbackQuery):
             await cb.message.answer("Дневной лимит объяснений исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error sending tariff message for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error sending tariff message for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer()
         return
@@ -377,7 +378,7 @@ async def go_next_question(cb: CallbackQuery):
                     log_error(e, f"Unexpected error editing reply markup for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error in go_next_question for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error in go_next_question for user {cb.from_user.id}", user_id=cb.from_user.id)
         pass
 
@@ -395,7 +396,7 @@ async def go_next_question(cb: CallbackQuery):
                 await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_id)
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error deleting last question message for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting last question message for user {cb.from_user.id}", user_id=cb.from_user.id)
         st["idx"] += 1
         await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
@@ -410,7 +411,7 @@ async def go_next_question(cb: CallbackQuery):
                 await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_id)
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error deleting last mistake question message for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting last mistake question message for user {cb.from_user.id}", user_id=cb.from_user.id)
         st["idx"] += 1
         await send_next_mistake_question(cb.from_user.id, cb.message)
@@ -445,7 +446,7 @@ async def jump_to_question(cb: CallbackQuery):
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_msg_id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting previous question message in jump_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting previous question message in jump_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
 
     prev = user_test_state.get(cb.from_user.id) or {}
@@ -473,7 +474,7 @@ async def report_question(cb: CallbackQuery):
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=last_q_id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting question message in report_question for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting question message in report_question for user {cb.from_user.id}", user_id=cb.from_user.id)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -527,7 +528,7 @@ async def report_reason(cb: CallbackQuery):
             st["mistake_q_ids"].remove(q_id)
         except ValueError as e:
             log_error(e, f"ValueError removing q_id {q_id} from mistake_q_ids for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error removing q_id {q_id} from mistake_q_ids for user {cb.from_user.id}", user_id=cb.from_user.id)
         user_test_state[cb.from_user.id] = st
         await send_next_mistake_question(cb.from_user.id, cb.message)
@@ -566,7 +567,7 @@ async def report_custom_text(m: types.Message):
             st["mistake_q_ids"].remove(q_id)
         except ValueError as e:
             log_error(e, f"ValueError removing q_id {q_id} from mistake_q_ids in report_custom_text for user {m.from_user.id}", user_id=m.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error removing q_id {q_id} from mistake_q_ids in report_custom_text for user {m.from_user.id}", user_id=m.from_user.id)
         user_test_state[m.from_user.id] = st
         await send_next_mistake_question(m.from_user.id, m)
@@ -593,7 +594,7 @@ async def restart_test(cb: CallbackQuery):
         used_map.pop(test_type, None)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error popping test_type {test_type} from used_hints for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error popping test_type {test_type} from used_hints for user {cb.from_user.id}", user_id=cb.from_user.id)
     prev = user_test_state.get(cb.from_user.id) or {}
     user_test_state[cb.from_user.id] = {
@@ -615,7 +616,7 @@ async def restart_test(cb: CallbackQuery):
                     message_id=grid_id, 
                     reply_markup=kb
                 )
-            except Exception as e:
+            except (AttributeError, KeyError) as e:
                 # Игнорируем ошибку "message is not modified"
                 if "message is not modified" not in str(e).lower():
                     log_error(e, f"Error updating grid markup for user {cb.from_user.id}", user_id=cb.from_user.id)
@@ -624,7 +625,7 @@ async def restart_test(cb: CallbackQuery):
             user_test_state[cb.from_user.id]["grid_msg_id"] = sent.message_id
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error redrawing test grid for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error redrawing test grid for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.answer()
 
@@ -675,8 +676,6 @@ async def stop_test(cb: CallbackQuery):
             user_flashcards_state[user_id] = {}
     except (ImportError, ModuleNotFoundError) as e:
         log_error(e, f"Import error clearing flashcards state for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
-        log_error(e, f"Unexpected error clearing flashcards state for user {cb.from_user.id}", user_id=cb.from_user.id)
         pass
     
     # --- Если работаем над ошибками ---
@@ -711,7 +710,7 @@ async def hide_grid(cb: CallbackQuery):
             user_test_state[cb.from_user.id] = st
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error hiding grid for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error hiding grid for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.answer()
 
@@ -769,7 +768,7 @@ async def back_to_grid(cb: CallbackQuery):
             user_test_state[cb.from_user.id] = st
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting stats message for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting stats message for user {cb.from_user.id}", user_id=cb.from_user.id)
     
     # Получаем список вопросов для теста
@@ -805,8 +804,6 @@ async def to_main_menu(cb: CallbackQuery):
             user_flashcards_state[user_id] = {}
     except (ImportError, ModuleNotFoundError) as e:
         log_error(e, f"Import error clearing flashcards state in to_main_menu for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
-        log_error(e, f"Unexpected error clearing flashcards state in to_main_menu for user {cb.from_user.id}", user_id=cb.from_user.id)
     
     await cb.message.answer("Главное меню:", reply_markup=main_kb)
     await cb.answer()
@@ -827,7 +824,7 @@ async def show_hint(cb: CallbackQuery):
             await cb.message.answer("Дневной лимит подсказок исчерпан. Оформи подписку для безлимита.", reply_markup=kb)
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error sending tariff message in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error sending tariff message in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer()
         return
@@ -857,7 +854,7 @@ async def show_hint(cb: CallbackQuery):
             await cb.message.edit_reply_markup(reply_markup=get_stop_test_kb(q_id, hints_left=left))
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error updating reply markup in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error updating reply markup in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
     else:
         await cb.message.answer("Для этого задания нет подсказки.")
@@ -871,6 +868,7 @@ async def show_hint(cb: CallbackQuery):
     and "q_ids" in user_test_state[m.from_user.id]
     and isinstance(getattr(m, "text", None), str)
     and any(ch.isdigit() for ch in m.text)
+    and not user_learning_state.get(m.from_user.id, {}).get("awaiting_question")  # НЕ ждем вопрос учебника
 ))
 async def check_test_answer(m: types.Message):
     state = user_test_state.get(m.from_user.id)
@@ -920,13 +918,13 @@ async def check_test_answer(m: types.Message):
                     message_id=grid_msg_id, 
                     reply_markup=kb
                 )
-            except Exception as e:
+            except (AttributeError, KeyError) as e:
                 # Игнорируем ошибку "message is not modified"
                 if "message is not modified" not in str(e).lower():
                     log_error(e, f"Error updating grid markup after answer for user {m.from_user.id}", user_id=m.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error updating grid in check_test_answer for user {m.from_user.id}", user_id=m.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error updating grid in check_test_answer for user {m.from_user.id}", user_id=m.from_user.id)
     # Переход к следующему вопросу только после нажатия «Далее»
 
@@ -1028,7 +1026,7 @@ async def check_mistake_answer(m: types.Message):
             state["mistake_q_ids"].pop(idx)
         except (ValueError, IndexError) as e:
             log_error(e, f"Data error popping mistake_q_ids at index {idx} for user {m.from_user.id}", user_id=m.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error popping mistake_q_ids at index {idx} for user {m.from_user.id}", user_id=m.from_user.id)
         state["mistake_q_ids"].append(q_id)
         # idx не увеличиваем — следующий показ будет новый первый элемент очереди
@@ -1060,13 +1058,13 @@ async def check_mistake_answer(m: types.Message):
                         message_id=grid_msg_id, 
                         reply_markup=kb
                     )
-                except Exception as e:
+                except (AttributeError, KeyError) as e:
                     # Игнорируем ошибку "message is not modified"
                     if "message is not modified" not in str(e).lower():
                         log_error(e, f"Error updating grid markup in mistake mode for user {m.from_user.id}", user_id=m.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error updating grid in check_mistake_answer for user {m.from_user.id}", user_id=m.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error updating grid in check_mistake_answer for user {m.from_user.id}", user_id=m.from_user.id)
 
 # =========================
@@ -1083,16 +1081,16 @@ async def back_to_question(cb: CallbackQuery):
             await cb.message.edit_reply_markup(reply_markup=None)
         except (ValueError, TypeError) as e2:
             log_error(e2, f"Data error hiding keyboard in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e2:
+        except (AttributeError, KeyError) as e2:
             log_error(e2, f"Unexpected error hiding keyboard in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting message in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
         # Если не получилось удалить (нет прав или уже удалено) — просто скрываем кнопки
         try:
             await cb.message.edit_reply_markup(reply_markup=None)
         except (ValueError, TypeError) as e2:
             log_error(e2, f"Data error hiding keyboard in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e2:
+        except (AttributeError, KeyError) as e2:
             log_error(e2, f"Unexpected error hiding keyboard in back_to_question for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.answer()
 

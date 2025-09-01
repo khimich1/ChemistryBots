@@ -65,7 +65,7 @@ def get_tariff_description(plan_code: str) -> str:
 • Специальные карточки по органике
 • Неограниченные подсказки и объяснения
 • Голосовые объяснения сложных реакций
-• Доступ на 31 день
+• Доступ на 9 месяцев
 
 **Почему органика:**
 • Самая сложная часть химии
@@ -84,7 +84,7 @@ def get_tariff_description(plan_code: str) -> str:
 • Специальные карточки по элементам
 • Неограниченные подсказки и объяснения
 • Голосовые объяснения реакций
-• Доступ на 31 день
+• Доступ на 9 месяцев
 
 **Почему элементы:**
 • Основа всей химии
@@ -97,7 +97,7 @@ def get_tariff_description(plan_code: str) -> str:
 		"full": """**Полный доступ — 3990 ₽**
 
 **Что включено:**
-• Всё без ограничений на 31 день
+• Всё без ограничений на 9 месяцев
 • Все блоки: "Начала химии", "Органика", "Элементы"
 • Безлимитные тесты по всем темам
 • Неограниченные подсказки и объяснения
@@ -233,8 +233,11 @@ async def on_checkpay(cb: types.CallbackQuery):
 			log_error(e, f"Unexpected error getting payment plan for user {cb.from_user.id}", user_id=cb.from_user.id)
 			code = None
 		if code:
-			set_user_plan(cb.from_user.id, code, days=31)
-			await cb.message.answer("Оплата подтверждена ✅ Тариф активирован на 31 день.")
+			set_user_plan(cb.from_user.id, code)
+			if code in ["full", "elements", "organic"]:
+				await cb.message.answer("Оплата подтверждена ✅ Тариф активирован на 9 месяцев.")
+			else:
+				await cb.message.answer("Оплата подтверждена ✅ Тариф активирован на 31 день.")
 		else:
 			await cb.message.answer("Оплата подтверждена ✅. Если тариф не активировался — открой '💳 Тарифы и оплата'.")
 		await cb.answer("Оплачено ✅")

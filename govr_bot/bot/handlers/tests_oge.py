@@ -7,6 +7,7 @@ from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from bot.handlers.menu import main_kb
+from bot.utils import user_learning_state  # для проверки состояния учебника
 # ОГЭ берём из НОВОГО сервиса, который читает shared/tests_updated.db
 from bot.services.test_sql_oge import (
     get_all_tests_types, get_questions_by_type, get_question_by_id,
@@ -20,6 +21,7 @@ from bot.services.answer_db import (
 )
 from bot.utils_pkg_new.logger import log_error
 from bot.utils_pkg_new.telegram_error_handler import safe_edit_message, handle_telegram_errors
+from bot.services.plan import get_user_plan_code, limits_for, consume_daily
 
 router = Router()
 
@@ -679,6 +681,7 @@ async def go_next_question(cb: CallbackQuery):
     and "q_ids" in user_test_state_oge[m.from_user.id]
     and isinstance(getattr(m, "text", None), str)
     and any(ch.isdigit() for ch in m.text)
+    and not user_learning_state.get(m.from_user.id, {}).get("awaiting_question")  # НЕ ждем вопрос учебника
 ))
 async def check_test_answer(m: types.Message):
     try:

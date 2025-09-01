@@ -143,9 +143,9 @@ def ensure_chunk_title_column() -> None:
             c = conn.cursor()
             cols = {row[1] for row in c.execute("PRAGMA table_info(prepared_lectures)")}
             if "chunk_title" not in cols:
-                c.execute("ALTER TABLE prepared_lectures ADD COLUMN chunk_title TEXT")
-                conn.commit()
-    except Exception:
+                            c.execute("ALTER TABLE prepared_lectures ADD COLUMN chunk_title TEXT")
+            conn.commit()
+    except (sqlite3.Error, OSError):
         pass
 
 
@@ -164,7 +164,7 @@ def get_chunk_title(topic: str, idx: int) -> str | None:
             )
             row = c.fetchone()
             return str(row[0]) if row and row[0] else None
-    except Exception:
+    except (sqlite3.Error, OSError):
         return None
 
 
@@ -178,14 +178,14 @@ def set_chunk_title(topic: str, idx: int, title: str) -> None:
             if "chunk_title" not in cols:
                 try:
                     c.execute("ALTER TABLE prepared_lectURES ADD COLUMN chunk_title TEXT")
-                except Exception:
+                except sqlite3.Error:
                     return
             c.execute(
                 "UPDATE prepared_lectures SET chunk_title=? WHERE topic=? AND chunk_idx=?",
                 (title, topic, int(idx)),
             )
             conn.commit()
-    except Exception:
+    except (sqlite3.Error, OSError):
         pass
 
 
@@ -221,11 +221,11 @@ def get_qa_questions(topic: str, idx: int) -> list[str]:
             try:
                 data = _json.loads(raw)
                 return [str(x).strip() for x in data if str(x).strip()]
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 # Фоллбэк: разбить по строкам/маркерам
                 lines = [ln.strip("- *\t ") for ln in str(raw).splitlines() if ln.strip()]
                 return lines
-    except Exception:
+    except (sqlite3.Error, OSError):
         return []
 
 
@@ -249,7 +249,7 @@ def get_total_questions_count_for_topic(topic: str) -> int:
             for (raw,) in c.fetchall():
                 total += len(_parse_qa_field(raw))
         return int(total)
-    except Exception:
+    except (sqlite3.Error, OSError, ValueError):
         return 0
 
 
@@ -281,10 +281,10 @@ def get_qa_answers(topic: str, idx: int) -> list[str]:
             try:
                 data = _json.loads(raw)
                 return [str(x).strip() for x in data if str(x).strip()]
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 lines = [ln.strip("- *\t ") for ln in str(raw).splitlines() if ln.strip()]
                 return lines
-    except Exception:
+    except (sqlite3.Error, OSError):
         return []
 
 
@@ -366,7 +366,7 @@ def _parse_qa_field(raw: str | bytes | None) -> list[str]:
     if isinstance(raw, bytes):
         try:
             raw = raw.decode("utf-8", errors="ignore")
-        except Exception:
+        except (UnicodeDecodeError, AttributeError):
             raw = raw.decode("utf-8", errors="ignore")
     text = str(raw).strip()
     if not text:
@@ -378,7 +378,7 @@ def _parse_qa_field(raw: str | bytes | None) -> list[str]:
             items = [str(x).strip() for x in obj]
         else:
             items = []
-    except Exception:
+    except (json.JSONDecodeError, TypeError):
         # Фоллбэк: разбиваем по строкам
         lines = [ln.strip() for ln in text.splitlines()]
         items = [ln for ln in lines if ln]
@@ -410,7 +410,7 @@ def get_qa_questions(topic: str, chunk_idx: int) -> list[str]:
                 return []
             row = c.fetchone()
             return _parse_qa_field(row[0]) if row else []
-    except Exception:
+    except (sqlite3.Error, OSError):
         return []
 
 
@@ -433,5 +433,5 @@ def get_qa_answers(topic: str, chunk_idx: int) -> list[str]:
                 return []
             row = c.fetchone()
             return _parse_qa_field(row[0]) if row else []
-    except Exception:
+    except (sqlite3.Error, OSError):
         return []

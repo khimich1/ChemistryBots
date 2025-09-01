@@ -563,7 +563,7 @@ async def practice_catch_answer(m: types.Message):
                 await loading_msg.delete()
             except (ValueError, TypeError) as e:
                 log_error(e, f"Data error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
-            except Exception as e:
+            except (AttributeError, KeyError) as e:
                 log_error(e, f"Unexpected error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
             return
         try:
@@ -581,7 +581,7 @@ async def practice_catch_answer(m: types.Message):
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error transcribing audio for user {m.from_user.id}", user_id=m.from_user.id)
             user_answer = ""
-        except Exception as e:
+        except (httpx.RequestError, OSError, IOError) as e:
             log_error(e, f"Unexpected error transcribing audio for user {m.from_user.id}", user_id=m.from_user.id)
             user_answer = ""
     else:
@@ -590,7 +590,7 @@ async def practice_catch_answer(m: types.Message):
             await loading_msg.delete()
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
         return
 
@@ -634,7 +634,7 @@ async def practice_catch_answer(m: types.Message):
                     hint = "\n\nИногда распознавание голосовых путает химические термины. Попробуйте ввести ответ текстом."
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error checking wrong voice attempts for user {m.from_user.id}", user_id=m.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError, sqlite3.Error) as e:
         log_error(e, f"Unexpected error checking wrong voice attempts for user {m.from_user.id}", user_id=m.from_user.id)
 
     reply_text = (
@@ -678,7 +678,7 @@ async def practice_catch_answer(m: types.Message):
         )
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error logging flashcard answer for user {m.from_user.id}", user_id=m.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError, sqlite3.Error) as e:
         log_error(e, f"Unexpected error logging flashcard answer for user {m.from_user.id}", user_id=m.from_user.id)
 
     # Если локальная проверка не прошла, попробуем задать уточняющий вопрос LLM по формуле
@@ -715,7 +715,7 @@ async def practice_catch_answer(m: types.Message):
             log_error(e, f"Data error editing message text for user {m.from_user.id}", user_id=m.from_user.id)
             await m.answer(reply_text, reply_markup=_practice_next_kb())
             st["practice_msg_id"] = None
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error editing message text for user {m.from_user.id}", user_id=m.from_user.id)
             await m.answer(reply_text, reply_markup=_practice_next_kb())
             st["practice_msg_id"] = None
@@ -727,7 +727,7 @@ async def practice_catch_answer(m: types.Message):
         await loading_msg.delete()
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
     st["awaiting_practice_answer"] = False
 
@@ -744,7 +744,7 @@ async def practice_next(cb: CallbackQuery):
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error deleting practice message for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting practice message for user {cb.from_user.id}", user_id=cb.from_user.id)
     st["awaiting_practice_answer"] = True
     if mode == "errors":
@@ -879,7 +879,7 @@ async def show_last_voice(m: types.Message):
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error getting last voice transcript for user {m.from_user.id}", user_id=m.from_user.id)
         await m.answer("Не удалось получить последнюю расшифровку.")
-    except Exception as e:
+    except (AttributeError, KeyError, sqlite3.Error) as e:
         log_error(e, f"Unexpected error getting last voice transcript for user {m.from_user.id}", user_id=m.from_user.id)
         await m.answer("Не удалось получить последнюю расшифровку.")
 
@@ -975,7 +975,7 @@ async def reveal_name(cb: CallbackQuery):
         log_error(e, f"Data error editing message text in reveal_name for user {cb.from_user.id}", user_id=cb.from_user.id)
         # Если по каким-то причинам редактирование невозможно (например, старое сообщение), отправим новое
         await cb.message.answer(text, reply_markup=_make_reveal_kb())
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error editing message text in reveal_name for user {cb.from_user.id}", user_id=cb.from_user.id)
         # Если по каким-то причинам редактирование невозможно (например, старое сообщение), отправим новое
         await cb.message.answer(text, reply_markup=_make_reveal_kb())
@@ -1014,7 +1014,7 @@ async def next_item(cb: CallbackQuery):
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error editing message text in next_item for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer(text, reply_markup=_make_reveal_kb())
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error editing message text in next_item for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer(text, reply_markup=_make_reveal_kb())
     await cb.answer()
@@ -1043,7 +1043,7 @@ async def reset_cards(cb: CallbackQuery):
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error editing message text in reset_cards for user {cb.from_user.id}", user_id=cb.from_user.id)
             await cb.message.answer(text, reply_markup=_make_reveal_kb())
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error editing message text in reset_cards for user {cb.from_user.id}", user_id=cb.from_user.id)
             await cb.message.answer(text, reply_markup=_make_reveal_kb())
     await cb.answer("Начали сначала")
@@ -1071,7 +1071,7 @@ async def practice_skip(cb: CallbackQuery):
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error deleting practice message in practice_skip for user {cb.from_user.id}", user_id=cb.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting practice message in practice_skip for user {cb.from_user.id}", user_id=cb.from_user.id)
     if mode == "errors":
         await start_errors_round_cb(cb, category)
@@ -1090,7 +1090,7 @@ async def inline_back(cb: CallbackQuery):
         await cb.message.delete()
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting message in inline_back for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting message in inline_back for user {cb.from_user.id}", user_id=cb.from_user.id)
     # Вернёмся на уровень выбора раздела внутри текущего режима
     # Сохраняем только режим, остальное сбрасываем

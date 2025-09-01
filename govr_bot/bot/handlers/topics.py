@@ -81,7 +81,7 @@ def _topic_progress_dot(user_id: int, topic: str) -> str:
     except sqlite3.OperationalError as e:
         log_error(e, f"Database error in topic progress dot for user {user_id}, topic {topic}", user_id=user_id)
         return ""
-    except Exception as e:
+    except (AttributeError, KeyError, sqlite3.Error) as e:
         log_error(e, f"Unexpected error in topic progress dot for user {user_id}, topic {topic}", user_id=user_id)
         return "⬛"
 
@@ -106,7 +106,7 @@ async def begin_topic_chosen(cb: types.CallbackQuery, bot):
         log_error(e, f"Invalid topic index in begin_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
         return
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error in begin_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer("Произошла ошибка. Попробуй ещё раз.", reply_markup=main_kb)
         return
@@ -137,7 +137,7 @@ async def element_topic_chosen(cb: types.CallbackQuery, bot):
         log_error(e, f"Invalid topic index in element_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
         return
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error in element_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer("Произошла ошибка. Попробуй ещё раз.", reply_markup=main_kb)
         return
@@ -168,7 +168,7 @@ async def learn_topic_chosen(cb: types.CallbackQuery, bot):
         log_error(e, f"Invalid topic index in learn_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer("Не получилось определить тему. Попробуй ещё раз.", reply_markup=main_kb)
         return
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error in learn_topic_chosen for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.message.answer("Произошла ошибка. Попробуй ещё раз.", reply_markup=main_kb)
         return
@@ -206,7 +206,7 @@ async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, sec
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error generating chunk title for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
             title = ""
-        except Exception as e:
+        except (AttributeError, KeyError, httpx.RequestError) as e:
             log_error(e, f"Unexpected error generating chunk title for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
             title = ""
         if title:
@@ -224,7 +224,7 @@ async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, sec
             except (ValueError, TypeError) as e:
                 log_error(e, f"Data error getting QA questions for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
                 total = 0
-            except Exception as e:
+            except (AttributeError, KeyError, sqlite3.Error) as e:
                 log_error(e, f"Unexpected error getting QA questions for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
                 total = 0
         # Заголовок части (если есть), иначе номер
@@ -258,7 +258,7 @@ async def begin_part_start(cb: types.CallbackQuery, bot):
         log_error(e, f"Invalid part data in begin_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer("Ошибка данных. Попробуй ещё раз.")
         return
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error in begin_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer("Произошла ошибка. Попробуй ещё раз.")
         return
@@ -276,7 +276,7 @@ async def element_part_start(cb: types.CallbackQuery, bot):
         log_error(e, f"Invalid part data in element_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer("Ошибка данных. Попробуй ещё раз.")
         return
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error in element_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer("Произошла ошибка. Попробуй ещё раз.")
         return
@@ -294,7 +294,7 @@ async def learn_part_start(cb: types.CallbackQuery, bot):
         log_error(e, f"Invalid part data in learn_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer("Ошибка данных. Попробуй ещё раз.")
         return
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error in learn_part_start for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer("Произошла ошибка. Попробуй ещё раз.")
         return
@@ -401,7 +401,7 @@ async def send_next_chunk(user_id: int, bot):
         st["last_lecture_msg_id"] = sent_msg.message_id
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error setting last_lecture_msg_id for user {user_id}", user_id=user_id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error setting last_lecture_msg_id for user {user_id}", user_id=user_id)
 
 # ================== Навигация ==================
@@ -428,7 +428,7 @@ async def learn_stop(cb: types.CallbackQuery):
         await cb.message.edit_reply_markup(reply_markup=None)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error editing reply markup in learn_stop for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error editing reply markup in learn_stop for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.message.answer("Обучение остановлено.", reply_markup=main_kb)
 
@@ -466,7 +466,7 @@ async def learn_audio(cb: types.CallbackQuery, bot):
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error sending audio for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer("Ошибка данных при отправке аудио")
-    except Exception as e:
+    except (AttributeError, KeyError, httpx.RequestError) as e:
         log_error(e, f"Unexpected error sending audio for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer(f"Ошибка отправки аудио: {str(e)}")
 
@@ -485,7 +485,7 @@ async def learn_to_parts(cb: types.CallbackQuery, bot):
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting lecture message for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting lecture message for user {cb.from_user.id}", user_id=cb.from_user.id)
     try:
         msg_id = st.get("last_task_msg_id")
@@ -494,7 +494,7 @@ async def learn_to_parts(cb: types.CallbackQuery, bot):
             st.pop("last_task_msg_id", None)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting task message for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting task message for user {cb.from_user.id}", user_id=cb.from_user.id)
     try:
         msg_id = st.get("last_result_msg_id")
@@ -503,7 +503,7 @@ async def learn_to_parts(cb: types.CallbackQuery, bot):
             st.pop("last_result_msg_id", None)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
     # Чистим состояние после удаления
     user_learning_state.pop(cb.from_user.id, None)
@@ -531,7 +531,7 @@ async def parts_to_chapters(cb: types.CallbackQuery):
         log_error(e, f"Invalid callback data in parts_to_chapters for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer("Ошибка данных. Попробуй ещё раз.")
         return
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error in parts_to_chapters for user {cb.from_user.id}", user_id=cb.from_user.id)
         await cb.answer("Произошла ошибка. Попробуй ещё раз.")
         return
@@ -541,7 +541,7 @@ async def parts_to_chapters(cb: types.CallbackQuery):
         await cb.message.delete()
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting message in parts_to_chapters for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting message in parts_to_chapters for user {cb.from_user.id}", user_id=cb.from_user.id)
 
     if section_prefix == "begin":
@@ -580,7 +580,7 @@ async def to_main_menu_from_parts(cb: types.CallbackQuery):
         await cb.message.delete()
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting message in to_main_menu_from_parts for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting message in to_main_menu_from_parts for user {cb.from_user.id}", user_id=cb.from_user.id)
     from bot.handlers.menu import main_kb
     await cb.message.answer("Главное меню:", reply_markup=main_kb)
@@ -602,24 +602,99 @@ async def learn_task(cb: types.CallbackQuery):
         await cb.answer()
         return
 
-    # Показываем только ОДИН вопрос из набора. Стараемся распределять по пользователям.
+    # Инициализируем структуры для отслеживания прогресса
     assigned = st.setdefault("assigned_tasks", {})  # key: "topic:idx" -> q_index
+    wrong_questions = st.setdefault("wrong_questions", {})  # key: "topic:idx" -> set of wrong question indices
+    all_answered = st.setdefault("all_answered", {})  # key: "topic:idx" -> bool
+    answered_questions = st.setdefault("answered_questions", {})  # key: "topic:idx" -> set of answered question indices
+    
     key = f"{topic}:{idx}"
-    if key in assigned:
-        q_index = assigned[key]
+    
+    # Проверяем, все ли вопросы уже отвечены
+    if all_answered.get(key, False):
+        # Если все отвечены, показываем только ошибочные
+        wrong_set = wrong_questions.get(key, set())
+        if not wrong_set:
+            await cb.message.answer("🎉 Отлично! Все вопросы решены правильно! Переходи к следующей части.")
+            await cb.answer()
+            return
+        
+        # Выбираем следующий ошибочный вопрос
+        if key not in assigned:
+            q_index = min(wrong_set)  # Начинаем с первого ошибочного
+        else:
+            current_idx = assigned[key]
+            # Находим следующий ошибочный вопрос после текущего
+            next_wrong = None
+            for wrong_idx in sorted(wrong_set):
+                if wrong_idx > current_idx:
+                    next_wrong = wrong_idx
+                    break
+            if next_wrong is None:
+                # Если не нашли следующий, берём первый ошибочный
+                next_wrong = min(wrong_set)
+            q_index = next_wrong
+        
+        assigned[key] = q_index
+        question_text = questions[q_index]
+        total_in_chunk = len(questions)
+        text = (
+            "🔄 Работа над ошибками\n"
+            f"«{topic}», часть {idx+1}\n\n"
+            f"Вопрос №{q_index+1}/{total_in_chunk}: {question_text}\n\n"
+            f"Этот вопрос был решён неправильно. Попробуй ещё раз!"
+        )
     else:
-        q_index = random.randrange(len(questions))
+        # Обычный режим: показываем только неотвеченные вопросы
+        answered_set = answered_questions.get(key, set())
+        all_questions = set(range(len(questions)))
+        unanswered_questions = all_questions - answered_set
+        
+        if not unanswered_questions:
+            # Все вопросы отвечены, переходим к режиму работы над ошибками
+            all_answered[key] = True
+            wrong_set = wrong_questions.get(key, set())
+            if wrong_set:
+                q_index = min(wrong_set)  # Переходим к первому ошибочному
+                text = (
+                    "🔄 Все вопросы пройдены! Теперь работаем над ошибками.\n"
+                    f"«{topic}», часть {idx+1}\n\n"
+                    f"Вопрос №{q_index+1}/{len(questions)}: {questions[q_index]}\n\n"
+                    f"Этот вопрос был решён неправильно. Попробуй ещё раз!"
+                )
+            else:
+                await cb.message.answer("🎉 Отлично! Все вопросы решены правильно! Переходи к следующей части.")
+                await cb.answer()
+                return
+        else:
+            # Выбираем следующий неотвеченный вопрос
+            if key not in assigned:
+                q_index = min(unanswered_questions)  # Начинаем с первого неотвеченного
+            else:
+                current_idx = assigned[key]
+                # Находим следующий неотвеченный вопрос после текущего
+                next_unanswered = None
+                for unanswered_idx in sorted(unanswered_questions):
+                    if unanswered_idx > current_idx:
+                        next_unanswered = unanswered_idx
+                        break
+                if next_unanswered is None:
+                    # Если не нашли следующий, берём первый неотвеченный
+                    next_unanswered = min(unanswered_questions)
+                q_index = next_unanswered
+            
+            question_text = questions[q_index]
+            total_in_chunk = len(questions)
+            total_in_topic = get_total_questions_count_for_topic(topic)
+            text = (
+                "📝 Задание по теме\n"
+                f"«{topic}», часть {idx+1} (в этом куске: {total_in_chunk}, всего по теме: {total_in_topic})\n\n"
+                f"Вопрос №{q_index+1}/{total_in_chunk}: {question_text}\n\nНапиши ответ текстом или отправь голосовое."
+            )
+        
         assigned[key] = q_index
 
-    question_text = questions[q_index]
-    # Добавим кнопку: показать образец (на всякий) — но саму кнопку выводим только после неверного ответа.
-    total_in_chunk = len(questions)
-    total_in_topic = get_total_questions_count_for_topic(topic)
-    text = (
-        "📝 Задание по теме\n"
-        f"«{topic}», часть {idx+1} (в этом куске: {total_in_chunk}, всего по теме: {total_in_topic})\n\n"
-        f"Вопрос №{q_index+1}/{total_in_chunk}: {question_text}\n\nНапиши ответ текстом или отправь голосовое."
-    )
+
     # Удалим предыдущий текст задания, если он был
     try:
         prev_id = st.get("last_task_msg_id")
@@ -627,7 +702,7 @@ async def learn_task(cb: types.CallbackQuery):
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting previous task message for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting previous task message for user {cb.from_user.id}", user_id=cb.from_user.id)
     # Удалим карточку результата, если она была
     try:
@@ -637,7 +712,7 @@ async def learn_task(cb: types.CallbackQuery):
             st.pop("last_result_msg_id", None)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
     sent = await cb.message.answer(text)
     st["last_task_msg_id"] = sent.message_id
@@ -661,62 +736,100 @@ async def learn_task(cb: types.CallbackQuery):
         await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons))
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error editing reply markup in learn_task for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error editing reply markup in learn_task for user {cb.from_user.id}", user_id=cb.from_user.id)
     await cb.answer()
 
 @router.callback_query(lambda c: c.data == "learn_task_next")
 async def learn_task_next(cb: types.CallbackQuery):
-    """Выдаёт другой (случайный, неравный предыдущему) вопрос по текущему фрагменту."""
+    """Выдаёт следующий вопрос по порядку или следующий ошибочный."""
     st = user_learning_state.get(cb.from_user.id)
     if not st:
         await cb.answer("Нет активной главы")
         return
+    
     topic = st["topic"]
     idx = st["index"]
     questions = get_qa_questions(topic, idx)
     if len(questions) < 2:
         await cb.answer("Другого вопроса нет")
         return
+    
     assigned = st.setdefault("assigned_tasks", {})
+    wrong_questions = st.setdefault("wrong_questions", {})
+    all_answered = st.setdefault("all_answered", {})
+    answered_questions = st.setdefault("answered_questions", {})
+    
     key = f"{topic}:{idx}"
-    prev = assigned.get(key, None)
-
-    # 1) Попробуем исключить те, на которые уже был верный ответ
-    try:
-        from bot.services.answer_db import get_theory_stats  # для импорта побочно не тянем
-    except (ImportError, ModuleNotFoundError) as e:
-        log_error(e, f"Import error in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
-        get_theory_stats = None
-    except Exception as e:
-        log_error(e, f"Unexpected error importing get_theory_stats in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
-        get_theory_stats = None
-
-    # В таблице у нас нет поштучной истории индексов, поэтому храним в состоянии последние верные индексы
-    solved_key = f"solved:{topic}:{idx}"
-    solved: set[int] = st.setdefault(solved_key, set())  # тип: set индексов вопросов по этому фрагменту
-
-    # если предыдущий ответ был верным, добавим prev в solved (это делается в обработчике ответа; на всякий случай дубль)
-    if st.get("last_answer_correct") and prev is not None:
-        solved.add(prev)
-
-    # список доступных индексов: все минус prev и минус уже решённые
-    choices = [i for i in range(len(questions)) if i != prev and i not in solved]
-    if not choices:
-        # если всё решено — вернём любой, отличный от prev
-        choices = [i for i in range(len(questions)) if i != prev]
-        if not choices:
-            choices = list(range(len(questions)))
-    new_idx = random.choice(choices)
-    assigned[key] = new_idx
-
-    question_text = questions[new_idx]
-    total_in_chunk = len(questions)
-    text = (
-        "📝 Задание по теме\n"
-        f"«{topic}», часть {idx+1}\n\n"
-        f"Вопрос №{new_idx+1}/{total_in_chunk}: {question_text}\n\nНапиши ответ сообщением."
-    )
+    
+    if all_answered.get(key, False):
+        # Режим работы над ошибками
+        wrong_set = wrong_questions.get(key, set())
+        if not wrong_set:
+            await cb.message.answer("🎉 Все ошибки исправлены! Переходи к следующей части.")
+            await cb.answer()
+            return
+        
+        current_idx = assigned.get(key, 0)
+        # Находим следующий ошибочный вопрос
+        next_wrong = None
+        for wrong_idx in sorted(wrong_set):
+            if wrong_idx > current_idx:
+                next_wrong = wrong_idx
+                break
+        if next_wrong is None:
+            next_wrong = min(wrong_set)  # Циклически к первому
+        
+        assigned[key] = next_wrong
+        question_text = questions[next_wrong]
+        text = (
+            "🔄 Работа над ошибками\n"
+            f"«{topic}», часть {idx+1}\n\n"
+            f"Вопрос №{next_wrong+1}/{len(questions)}: {question_text}\n\n"
+            f"Этот вопрос был решён неправильно. Попробуй ещё раз!"
+        )
+    else:
+        # Обычный режим: показываем только неотвеченные вопросы
+        answered_set = answered_questions.get(key, set())
+        all_questions = set(range(len(questions)))
+        unanswered_questions = all_questions - answered_set
+        
+        if not unanswered_questions:
+            # Все вопросы отвечены, переходим к режиму работы над ошибками
+            all_answered[key] = True
+            wrong_set = wrong_questions.get(key, set())
+            if wrong_set:
+                new_idx = min(wrong_set)  # Переходим к первому ошибочному
+                text = (
+                    "🔄 Все вопросы пройдены! Теперь работаем над ошибками.\n"
+                    f"«{topic}», часть {idx+1}\n\n"
+                    f"Вопрос №{new_idx+1}/{len(questions)}: {questions[new_idx]}\n\n"
+                    f"Этот вопрос был решён неправильно. Попробуй ещё раз!"
+                )
+            else:
+                await cb.message.answer("🎉 Отлично! Все вопросы решены правильно! Переходи к следующей части.")
+                await cb.answer()
+                return
+        else:
+            # Выбираем следующий неотвеченный вопрос
+            current_idx = assigned.get(key, 0)
+            next_unanswered = None
+            for unanswered_idx in sorted(unanswered_questions):
+                if unanswered_idx > current_idx:
+                    next_unanswered = unanswered_idx
+                    break
+            if next_unanswered is None:
+                next_unanswered = min(unanswered_questions)  # Циклически к первому неотвеченному
+            
+            new_idx = next_unanswered
+            question_text = questions[new_idx]
+            text = (
+                "📝 Задание по теме\n"
+                f"«{topic}», часть {idx+1}\n\n"
+                f"Вопрос №{new_idx+1}/{len(questions)}: {question_text}\n\nНапиши ответ сообщением."
+            )
+        
+        assigned[key] = new_idx
     # Удалим предыдущий текст задания, если он был
     try:
         prev_id = st.get("last_task_msg_id")
@@ -724,7 +837,7 @@ async def learn_task_next(cb: types.CallbackQuery):
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting previous task message in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting previous task message in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
     # Удалим карточку результата, если она была
     try:
@@ -734,7 +847,7 @@ async def learn_task_next(cb: types.CallbackQuery):
             st.pop("last_result_msg_id", None)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting result message in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting result message in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
     sent = await cb.message.answer(text)
     st["last_task_msg_id"] = sent.message_id
@@ -800,7 +913,7 @@ async def catch_task_answer(m: types.Message):
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error transcribing audio for user {m.from_user.id}", user_id=m.from_user.id)
             answer_text = ""
-        except Exception as e:
+        except (httpx.RequestError, OSError, IOError) as e:
             log_error(e, f"Unexpected error transcribing audio for user {m.from_user.id}", user_id=m.from_user.id)
             answer_text = ""
     else:
@@ -824,10 +937,28 @@ async def catch_task_answer(m: types.Message):
             await loading_msg.delete()
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting loading message for user {m.from_user.id}", user_id=m.from_user.id)
     feedback = llm_feedback
     st["last_answer_correct"] = bool(is_correct)
+
+    # Запоминаем результат для отслеживания ошибочных вопросов
+    wrong_questions = st.setdefault("wrong_questions", {})
+    all_answered = st.setdefault("all_answered", {})
+    answered_questions = st.setdefault("answered_questions", {})  # key: "topic:idx" -> set of answered question indices
+    
+    # Добавляем текущий вопрос в список отвеченных
+    answered_set = answered_questions.setdefault(key, set())
+    answered_set.add(q_index)
+    
+    if not is_correct:
+        # Добавляем в список ошибочных
+        wrong_set = wrong_questions.setdefault(key, set())
+        wrong_set.add(q_index)
+    else:
+        # Убираем из списка ошибочных (если был там)
+        wrong_set = wrong_questions.get(key, set())
+        wrong_set.discard(q_index)
 
     # Статистика по теме
     correct_before, total_before = get_theory_stats(m.from_user.id, topic)
@@ -899,10 +1030,25 @@ async def catch_task_answer(m: types.Message):
     all_solved_here = len(solved_set) >= len(get_qa_questions(topic, idx)) and len(get_qa_questions(topic, idx)) > 0
 
     if not is_correct and expected and not all_solved_here:
+        # Подсчитываем количество оставшихся вопросов в этом куске
+        total_questions_in_chunk = len(get_qa_questions(topic, idx))
+        wrong_set = wrong_questions.get(key, set())
+        answered_set = answered_questions.get(key, set())
+        
+        # Считаем: неотвеченные + ошибочные
+        unanswered = total_questions_in_chunk - len(answered_set)
+        remaining_total = unanswered + len(wrong_set)
+        
+        # Формируем текст кнопки с количеством оставшихся вопросов
+        if remaining_total > 0:
+            button_text = f"🔁 Другой вопрос ({remaining_total})"
+        else:
+            button_text = "🔁 Другой вопрос"
+        
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[
                 InlineKeyboardButton(text="💡 Показать образец ответа", callback_data="show_sample_answer"),
-                InlineKeyboardButton(text="🔁 Другой вопрос", callback_data="learn_task_next"),
+                InlineKeyboardButton(text=button_text, callback_data="learn_task_next"),
             ],
             [InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts")]]
         )
@@ -911,7 +1057,7 @@ async def catch_task_answer(m: types.Message):
             st["last_result_msg_id"] = sent.message_id
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
     else:
         # При верном ответе показываем две кнопки: Ещё вопрос (в этом разделе) и К следующему разделу (следующий кусок)
@@ -925,19 +1071,40 @@ async def catch_task_answer(m: types.Message):
                 [InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts")]]
             )
         else:
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[[
-                    InlineKeyboardButton(text="🔄 Ещё вопрос", callback_data="learn_task_next"),
-                    InlineKeyboardButton(text="➡️ К следующему разделу", callback_data="learn_ok"),
-                ],
-                [InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts")]]
-            )
+            # Подсчитываем количество оставшихся вопросов в этом куске
+            total_questions_in_chunk = len(get_qa_questions(topic, idx))
+            wrong_set = wrong_questions.get(key, set())
+            answered_set = answered_questions.get(key, set())
+            
+            # Считаем: неотвеченные + ошибочные
+            unanswered = total_questions_in_chunk - len(answered_set)
+            remaining_total = unanswered + len(wrong_set)
+            
+            # Если все вопросы отвечены правильно, убираем кнопку "Ещё вопрос"
+            if remaining_total == 0:
+                kb = InlineKeyboardMarkup(
+                    inline_keyboard=[[
+                        InlineKeyboardButton(text="➡️ К следующему разделу", callback_data="learn_ok"),
+                    ],
+                    [InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts")]]
+                )
+            else:
+                # Формируем текст кнопки с количеством оставшихся вопросов
+                button_text = f"🔄 Ещё вопрос ({remaining_total})"
+                
+                kb = InlineKeyboardMarkup(
+                    inline_keyboard=[[
+                        InlineKeyboardButton(text=button_text, callback_data="learn_task_next"),
+                        InlineKeyboardButton(text="➡️ К следующему разделу", callback_data="learn_ok"),
+                    ],
+                    [InlineKeyboardButton(text="↩️ К частям", callback_data="learn_to_parts")]]
+                )
         sent = await m.answer(full_msg, reply_markup=kb)
         try:
             st["last_result_msg_id"] = sent.message_id
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
 
 @router.callback_query(lambda c: c.data == "show_sample_answer")
@@ -1100,6 +1267,12 @@ async def catch_user_question(m: types.Message):
         return
     st["awaiting_question"] = False
     topic = st["topic"]
+    
+    # Проверяем, что текст вопроса не пустой
+    if not m.text or not m.text.strip():
+        await m.answer("Пожалуйста, задайте вопрос текстом.")
+        return
+    
     # Ответ формирует реальная функция из gpt_service.py
-    answer = await answer_student_question(topic, m.text)
+    answer = await answer_student_question(topic, m.text.strip())
     await m.answer(answer)

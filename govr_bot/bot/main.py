@@ -18,6 +18,7 @@ from bot.handlers import tests_oge
 from bot.handlers.flashcards import router as flashcards_router
 from bot.handlers.billing import router as billing_router
 from bot.services.plan import init_billing_tables
+from bot.handlers.admin import router as admin_router
 
 # --- Конфиг и токен ---
 from dotenv import load_dotenv
@@ -73,6 +74,10 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="report", description="Получить отчёт"),
         BotCommand(command="resume", description="Продолжить курс"),
         BotCommand(command="tests", description="Пройти тесты"),
+        BotCommand(command="stats", description="📊 Статистика бота (админ)"),
+        BotCommand(command="stats_clean", description="📊 Статистика без админов (админ)"),
+        BotCommand(command="help_admin", description="🛠️ Справка по админским командам"),
+        BotCommand(command="retention_week", description="📈 Удержание за неделю (админ)"),
     ]
     
     max_retries = 3
@@ -115,10 +120,11 @@ async def main():
     # --- Подключение роутеров ---
     dp_instance.include_router(menu_router)
     dp_instance.include_router(billing_router)   # billing ДО tests и topics!
-    dp_instance.include_router(tests_router)     # tests ДО topics!
+    dp_instance.include_router(topics_router)    # topics ПЕРЕД tests!
+    dp_instance.include_router(tests_router)     # tests ПОСЛЕ topics!
     dp_instance.include_router(tests_oge.router) # ОГЭ тесты
-    dp_instance.include_router(topics_router)
     dp_instance.include_router(flashcards_router)
+    dp_instance.include_router(admin_router)     # Админские команды
 
     # --- Установка команд ---
     await set_bot_commands(bot_instance)

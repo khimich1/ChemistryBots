@@ -59,6 +59,10 @@ async def classify_topic(transcript: str) -> str:
     """
     Определить тему ответа ученика на основе его текста.
     """
+    # Проверяем входной параметр
+    if not transcript or not transcript.strip():
+        return ""
+    
     prompt = (
         "Определи тему по органической химии из этого ответа:\n\n"
         f"{transcript}"
@@ -89,6 +93,16 @@ async def analyze_answer(
     Проанализировать ответ ученика, сверив его с текстом учебника:
     сильные стороны, ошибки, несоответствия.
     """
+    # Проверяем входные параметры
+    if not transcript or not transcript.strip():
+        return "Не удалось получить ответ ученика для анализа."
+    
+    if not topic or not topic.strip():
+        return "Не удалось определить тему для анализа."
+    
+    if not textbook_context or not textbook_context.strip():
+        return "Не удалось получить контекст учебника для анализа."
+    
     prompt = (
         f"У тебя есть текст учебника по теме «{topic}»:\n\n"
         f"{textbook_context}\n\n"
@@ -226,6 +240,10 @@ async def teach_material(chunk: str) -> str:
     """
     Преобразует фрагмент учебника в компактную, связанную лекцию для Telegram, с красивым форматированием.
     """
+    # Проверяем входной параметр
+    if not chunk or not chunk.strip():
+        return "Не удалось получить материал для объяснения."
+    
     system = (
         "Ты — опытный преподаватель по органической химии."
         "Твоя задача — объяснять теорию простыми словами,,без приветствий, без сложных терминов, с примерами из жизни, как если бы рассказывал ученику на уроке."
@@ -267,13 +285,20 @@ async def answer_student_question(topic: str, question: str) -> str:
     """
     Роль: преподаватель по теме. Дать понятный, краткий ответ на вопрос ученика.
     """
+    # Проверяем входные параметры
+    if not question or not question.strip():
+        return "Пожалуйста, задайте конкретный вопрос."
+    
+    if not topic or not topic.strip():
+        return "Не удалось определить тему для ответа."
+    
     system = f"Ты — преподаватель по теме «{topic}». Отвечай очень понятно и коротко."
     try:
         resp = await client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user",   "content": question},
+                {"role": "user",   "content": question.strip()},
             ],
             temperature=0.7,
         )
@@ -299,6 +324,16 @@ async def grade_theory_answer(topic: str, question_text: str, student_answer: st
       - Если ответ противоречит образцу — неверно.
       - Пиши краткий фидбек (1–2 предложения), по-русски.
     """
+    # Проверяем входные параметры
+    if not student_answer or not student_answer.strip():
+        return False, "Ответ не получен."
+    
+    if not question_text or not question_text.strip():
+        return False, "Вопрос не определен."
+    
+    if not topic or not topic.strip():
+        return False, "Тема не определена."
+    
     # Если нет ожидаемого ответа — считаем всё корректным по умолчанию
     if not expected_answer or not expected_answer.strip():
         return True, "Ответ принят."
