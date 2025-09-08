@@ -39,6 +39,7 @@ import httpx
 import difflib
 import sqlite3
 import math
+import re
 
 router = Router()
 
@@ -117,7 +118,7 @@ async def begin_topic_chosen(cb: types.CallbackQuery, bot):
 async def element_chem(m: types.Message):
     from bot.services.plan import theory_allowed
     if not theory_allowed(m.from_user.id, "elements"):
-        await m.answer("Этот раздел доступен на тарифах (‘Химия элементов’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.")
+        await m.answer("Этот раздел доступен на тарифах ('Химия элементов', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
         return
     buttons = []
     for i, topic in enumerate(ELEMENT_CHEM_TOPICS):
@@ -148,7 +149,7 @@ async def element_topic_chosen(cb: types.CallbackQuery, bot):
 async def organic_chem(m: types.Message):
     from bot.services.plan import theory_allowed
     if not theory_allowed(m.from_user.id, "organic"):
-        await m.answer("Этот раздел доступен на тарифах (‘Органика’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.")
+        await m.answer("Этот раздел доступен на тарифах ('Органика', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
         return
     buttons = []
     for i, topic in enumerate(LEARNING_TOPICS):
@@ -363,6 +364,13 @@ async def send_next_chunk(user_id: int, bot):
     header = f"Глава {chap_num}/{chap_total}, порция {idx+1}/{total}\n\n"
     formatted = latex_to_codeblock(raw)
 
+    # Проверяем длину текста (Telegram лимит ~4096 символов)
+    full_text = header + formatted
+    if len(full_text) > 4000:
+        # Если текст слишком длинный, обрезаем его
+        formatted = formatted[:4000 - len(header) - 50] + "\n\n... (текст обрезан из-за ограничений Telegram)"
+        full_text = header + formatted
+
     # Проверяем наличие аудио для этого фрагмента
     audio_data = get_audio_from_db(topic, idx)
     has_audio = audio_data is not None
@@ -391,12 +399,39 @@ async def send_next_chunk(user_id: int, bot):
 
     kb = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
-    sent_msg = await bot.send_message(
-        user_id,
-        header + formatted,
-        reply_markup=kb,
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    # Пытаемся отправить с Markdown, если не получается - отправляем без него
+    try:
+        sent_msg = await bot.send_message(
+            user_id,
+            header + formatted,
+            reply_markup=kb,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as e:
+        # Если Markdown не работает, отправляем как обычный текст
+        log_error(e, f"Markdown parsing failed for user {user_id}, falling back to plain text", user_id=user_id)
+        try:
+            # Убираем все Markdown-разметку и отправляем как обычный текст
+            plain_text = re.sub(r'```[\s\S]*?```', '', header + formatted)  # Убираем code blocks
+            plain_text = re.sub(r'\*([^*]+)\*', r'\1', plain_text)  # Убираем *жирный*
+            plain_text = re.sub(r'_([^_]+)_', r'\1', plain_text)    # Убираем _курсив_
+            plain_text = re.sub(r'`([^`]+)`', r'\1', plain_text)    # Убираем `код`
+            
+            sent_msg = await bot.send_message(
+                user_id,
+                plain_text,
+                reply_markup=kb,
+                parse_mode=None,  # Без Markdown
+            )
+        except Exception as fallback_error:
+            # Если и это не работает, отправляем только заголовок
+            log_error(fallback_error, f"Both Markdown and plain text failed for user {user_id}", user_id=user_id)
+            sent_msg = await bot.send_message(
+                user_id,
+                f"Ошибка отображения текста лекции. Обратитесь к администратору.\n\n{header}",
+                reply_markup=kb,
+                parse_mode=None,
+            )
     try:
         st["last_lecture_msg_id"] = sent_msg.message_id
     except (ValueError, TypeError) as e:
@@ -547,26 +582,29 @@ async def parts_to_chapters(cb: types.CallbackQuery):
     if section_prefix == "begin":
         buttons = [[InlineKeyboardButton(text=f"{t}", callback_data=f"begin_topic_{i}")]
                    for i, t in enumerate(BEGIN_CHEM_TOPICS)]
+        # Добавляем кнопку "В главное меню" в отдельной строке
         buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         await cb.message.answer("Выбери главу из раздела «Начала химии»:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif section_prefix == "element":
         from bot.services.plan import theory_allowed
         if not theory_allowed(cb.from_user.id, "elements"):
-            await cb.message.answer("Этот раздел доступен на тарифах (‘Химия элементов’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.", reply_markup=main_kb)
+            await cb.message.answer("Этот раздел доступен на тарифах ('Химия элементов', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
             await cb.answer()
             return
         buttons = [[InlineKeyboardButton(text=f"{t}", callback_data=f"element_topic_{i}")]
                    for i, t in enumerate(ELEMENT_CHEM_TOPICS)]
+        # Добавляем кнопку "В главное меню" в отдельной строке
         buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         await cb.message.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     else:
         from bot.services.plan import theory_allowed
         if not theory_allowed(cb.from_user.id, "organic"):
-            await cb.message.answer("Этот раздел доступен на тарифах (‘Органика’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.", reply_markup=main_kb)
+            await cb.message.answer("Этот раздел доступен на тарифах ('Органика', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
             await cb.answer()
             return
         buttons = [[InlineKeyboardButton(text=f"{t}", callback_data=f"learn_topic_{i}")]
                    for i, t in enumerate(LEARNING_TOPICS)]
+        # Добавляем кнопку "В главное меню" в отдельной строке
         buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         await cb.message.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
@@ -1139,6 +1177,8 @@ async def learn_to_chapters(cb: types.CallbackQuery):
             [InlineKeyboardButton(text=t, callback_data=f"begin_topic_{i}")]
             for i, t in enumerate(BEGIN_CHEM_TOPICS)
         ]
+        # Добавляем кнопку "В главное меню"
+        buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await cb.message.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
         await cb.answer()
@@ -1149,34 +1189,42 @@ async def learn_to_chapters(cb: types.CallbackQuery):
             [InlineKeyboardButton(text=t, callback_data=f"begin_topic_{i}")]
             for i, t in enumerate(BEGIN_CHEM_TOPICS)
         ]
+        # Добавляем кнопку "В главное меню"
+        buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await cb.message.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
 
     elif topic in ELEMENT_CHEM_TOPICS:
         from bot.services.plan import theory_allowed
         if not theory_allowed(cb.from_user.id, "elements"):
-            await cb.message.answer("Этот раздел доступен на тарифах (‘Химия элементов’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.", reply_markup=main_kb)
+            await cb.message.answer("Этот раздел доступен на тарифах ('Химия элементов', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
             await cb.answer()
             return
         buttons = [
             [InlineKeyboardButton(text=t, callback_data=f"element_topic_{i}")]
             for i, t in enumerate(ELEMENT_CHEM_TOPICS)
         ]
+        # Добавляем кнопку "В главное меню"
+        buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await cb.message.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
 
     else:
         from bot.services.plan import theory_allowed
         if not theory_allowed(cb.from_user.id, "organic"):
-            await cb.message.answer("Этот раздел доступен на тарифах (‘Органика’, ‘Самоподготовка’, ‘Групповые’, ‘Полный доступ’). Открой ‘💳 Тарифы и оплата’.", reply_markup=main_kb)
+            await cb.message.answer("Этот раздел доступен на тарифах ('Органика', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
             await cb.answer()
             return
         buttons = [
             [InlineKeyboardButton(text=t, callback_data=f"learn_topic_{i}")]
             for i, t in enumerate(LEARNING_TOPICS)
         ]
+        # Добавляем кнопку "В главное меню"
+        buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await cb.message.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=kb)
+
+    await cb.answer()
 
 # ================== ПОИСК ГЛАВ ==================
 awaiting_topic_search: set[int] = set()

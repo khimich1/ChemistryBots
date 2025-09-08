@@ -286,18 +286,18 @@ async def confirm_trial(cb: types.CallbackQuery):
 			log_user_action(cb.from_user.id, "trial_request_sent", {"chat_id": chat_id})
 		except TelegramForbiddenError as e:
 			log_error(e, "Bot blocked by trial chat", user_id=cb.from_user.id)
-			await cb.message.answer("Не удалось отправить заявку. Напиши, пожалуйста, в личные сообщения преподавателю.")
+			await cb.message.answer("Не удалось отправить заявку. Напиши преподавателю: @himich_teachr24")
 		except TelegramBadRequest as e:
 			log_error(e, "Bad request sending trial request", user_id=cb.from_user.id)
-			await cb.message.answer("Не удалось отправить заявку. Напиши, пожалуйста, в личные сообщения преподавателю.")
+			await cb.message.answer("Не удалось отправить заявку. Напиши преподавателю: @himich_teachr24")
 		except TelegramAPIError as e:
 			log_error(e, "Telegram API error sending trial request", user_id=cb.from_user.id)
-			await cb.message.answer("Не удалось отправить заявку. Напиши, пожалуйста, в личные сообщения преподавателю.")
+			await cb.message.answer("Не удалось отправить заявку. Напиши преподавателю: @himich_teachr24")
 		except Exception as e:
 			log_error(e, "Unexpected error sending trial request", user_id=cb.from_user.id)
-			await cb.message.answer("Не удалось отправить заявку. Напиши, пожалуйста, в личные сообщения преподавателю.")
+			await cb.message.answer("Не удалось отправить заявку. Напиши преподавателю: @himich_teachr24")
 	else:
-		await cb.message.answer("Напиши 'Хочу бесплатное занятие' и оставь телефон — мы свяжемся с тобой.")
+		await cb.message.answer("Напиши 'Хочу бесплатное занятие' и оставь телефон — мы свяжемся с тобой. Или сразу напиши преподавателю: @himich_teachr24")
 	await cb.answer()
 
 
@@ -320,18 +320,18 @@ async def trial_message(m: types.Message):
 			log_user_action(m.from_user.id, "trial_request_sent_message", {"chat_id": chat_id})
 		except TelegramForbiddenError as e:
 			log_error(e, "Bot blocked by trial chat (message)", user_id=m.from_user.id)
-			await m.answer("Не удалось отправить заявку. Напишите преподавателю напрямую.")
+			await m.answer("Не удалось отправить заявку. Напишите преподавателю: @himich_teachr24")
 		except TelegramBadRequest as e:
 			log_error(e, "Bad request sending trial request (message)", user_id=m.from_user.id)
-			await m.answer("Не удалось отправить заявку. Напишите преподавателю напрямую.")
+			await m.answer("Не удалось отправить заявку. Напишите преподавателю: @himich_teachr24")
 		except TelegramAPIError as e:
 			log_error(e, "Telegram API error sending trial request (message)", user_id=m.from_user.id)
-			await m.answer("Не удалось отправить заявку. Напишите преподавателю напрямую.")
+			await m.answer("Не удалось отправить заявку. Напишите преподавателю: @himich_teachr24")
 		except Exception as e:
 			log_error(e, "Unexpected error sending trial request (message)", user_id=m.from_user.id)
-			await m.answer("Не удалось отправить заявку. Напишите преподавателю напрямую.")
+			await m.answer("Не удалось отправить заявку. Напишите преподавателю: @himich_teachr24")
 	else:
-		await m.answer("Напиши 'Хочу бесплатное занятие' и оставь телефон — мы свяжемся с тобой.")
+		await m.answer("Напиши 'Хочу бесплатное занятие' и оставь телефон — мы свяжемся с тобой. Или сразу напишите преподавателю: @himich_teachr24")
 
 
 @router.callback_query(lambda c: c.data == "to_tariffs")
