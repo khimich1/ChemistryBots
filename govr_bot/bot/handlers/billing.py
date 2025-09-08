@@ -3,6 +3,9 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 import os, sqlite3
 
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+
 from bot.services.plan import get_user_plan_code, set_user_plan
 from bot.services.billing import create_payment, check_payment, PRICES
 from bot.services.answer_db import DB_FILE
@@ -11,6 +14,10 @@ from bot.utils_pkg_new.logger import log_error, log_user_action
 
 
 router = Router()
+
+class BillingStates(StatesGroup):
+	waiting_phone = State()
+	waiting_email = State()
 
 
 def get_tariff_description(plan_code: str) -> str:
@@ -202,51 +209,65 @@ async def confirm_buy_plan(cb: types.CallbackQuery):
 
 
 @router.callback_query(lambda c: c.data.startswith("send_phone_"))
-async def _send_phone_flow(cb: types.CallbackQuery):
+async def _send_phone_flow(cb: types.CallbackQuery, state: FSMContext):
 	plan_code = cb.data.split("_", 2)[2]
+	await state.update_data(plan_code=plan_code)
+	await state.set_state(BillingStates.waiting_phone)
 	await cb.message.answer("Пришли номер в формате +7XXXXXXXXXX")
-	
-	@router.message(lambda m: True)
-	async def _on_phone(m: types.Message):
-		phone = (m.text or "").strip()
-		if not phone.startswith("+7") or not phone[1:].isdigit() or len(phone) not in (12, 11):
-			await m.answer("Номер должен быть в формате +7XXXXXXXXXX. Отправь заново.")
-			return
-		try:
-			pid, url = create_payment(m.from_user.id, plan_code, customer_phone=phone)
-		except Exception as e:
-			await m.answer(f"Не удалось создать платёж: {e}")
-			return
-		kb = InlineKeyboardMarkup(inline_keyboard=[
-		    [InlineKeyboardButton(text="💳 Оплатить", url=url)],
-		    [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"checkpay_{pid}")],
-		    [InlineKeyboardButton(text="⬅️ Назад", callback_data="tariffs_back")],
-		])
-		await m.answer(f"Счёт на тариф «{plan_code}» создан. После оплаты нажми 'Проверить'.", reply_markup=kb)
+	await cb.answer()
+
+@router.message(BillingStates.waiting_phone)
+async def _on_phone(m: types.Message, state: FSMContext):
+	data = await state.get_data()
+	plan_code = data.get("plan_code")
+	phone = (m.text or "").strip()
+	if not (phone.startswith("+7") and phone[1:].isdigit() and len(phone) == 12):
+		await m.answer("Номер должен быть в формате +7XXXXXXXXXX. Отправь заново.")
+		return
+	try:
+		pid, url = create_payment(m.from_user.id, plan_code, customer_phone=phone)
+	except Exception as e:
+		await m.answer(f"Не удалось создать платёж: {e}")
+		await state.clear()
+		return
+	kb = InlineKeyboardMarkup(inline_keyboard=[
+	    [InlineKeyboardButton(text="💳 Оплатить", url=url)],
+	    [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"checkpay_{pid}")],
+	    [InlineKeyboardButton(text="⬅️ Назад", callback_data="tariffs_back")],
+	])
+	await state.clear()
+	await m.answer(f"Счёт на тариф «{plan_code}» создан. После оплаты нажми 'Проверить'.", reply_markup=kb)
 
 
 @router.callback_query(lambda c: c.data.startswith("send_email_"))
-async def _send_email_flow(cb: types.CallbackQuery):
+async def _send_email_flow(cb: types.CallbackQuery, state: FSMContext):
 	plan_code = cb.data.split("_", 2)[2]
+	await state.update_data(plan_code=plan_code)
+	await state.set_state(BillingStates.waiting_email)
 	await cb.message.answer("Пришли email для чека (например, name@example.com)")
-	
-	@router.message(lambda m: True)
-	async def _on_email(m: types.Message):
-		email = (m.text or "").strip()
-		if "@" not in email or "." not in email.split("@")[-1]:
-			await m.answer("Похоже, это не email. Отправь правильный адрес.")
-			return
-		try:
-			pid, url = create_payment(m.from_user.id, plan_code, customer_email=email)
-		except Exception as e:
-			await m.answer(f"Не удалось создать платёж: {e}")
-			return
-		kb = InlineKeyboardMarkup(inline_keyboard=[
-		    [InlineKeyboardButton(text="💳 Оплатить", url=url)],
-		    [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"checkpay_{pid}")],
-		    [InlineKeyboardButton(text="⬅️ Назад", callback_data="tariffs_back")],
-		])
-		await m.answer(f"Счёт на тариф «{plan_code}» создан. После оплаты нажми 'Проверить'.", reply_markup=kb)
+	await cb.answer()
+
+@router.message(BillingStates.waiting_email)
+async def _on_email(m: types.Message, state: FSMContext):
+	data = await state.get_data()
+	plan_code = data.get("plan_code")
+	email = (m.text or "").strip()
+	if "@" not in email or "." not in email.split("@")[-1]:
+		await m.answer("Похоже, это не email. Отправь правильный адрес.")
+		return
+	try:
+		pid, url = create_payment(m.from_user.id, plan_code, customer_email=email)
+	except Exception as e:
+		await m.answer(f"Не удалось создать платёж: {e}")
+		await state.clear()
+		return
+	kb = InlineKeyboardMarkup(inline_keyboard=[
+	    [InlineKeyboardButton(text="💳 Оплатить", url=url)],
+	    [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"checkpay_{pid}")],
+	    [InlineKeyboardButton(text="⬅️ Назад", callback_data="tariffs_back")],
+	])
+	await state.clear()
+	await m.answer(f"Счёт на тариф «{plan_code}» создан. После оплаты нажми 'Проверить'.", reply_markup=kb)
 
 
 @router.callback_query(lambda c: c.data.startswith("checkpay_"))
@@ -347,7 +368,8 @@ async def confirm_trial(cb: types.CallbackQuery):
 
 
 @router.callback_query(lambda c: c.data == "tariffs_back")
-async def tariffs_back(cb: types.CallbackQuery):
+async def tariffs_back(cb: types.CallbackQuery, state: FSMContext):
+	await state.clear()
 	await cb.message.answer("Тарифы и оплата:", reply_markup=tariffs_kb(cb.from_user.id))
 	await cb.answer()
 
