@@ -187,21 +187,66 @@ async def buy_plan(cb: types.CallbackQuery):
 @router.callback_query(lambda c: c.data.startswith("confirm_buy_"))
 async def confirm_buy_plan(cb: types.CallbackQuery):
 	plan_code = cb.data.split("_", 2)[2]
-	
-	try:
-		pid, url = create_payment(cb.from_user.id, plan_code)
-	except Exception as e:
-		await cb.message.answer(f"Не удалось создать платёж: {e}")
-		await cb.answer()
-		return
-	
+
+	# Просим покупателя выбрать способ получения чека
 	kb = InlineKeyboardMarkup(inline_keyboard=[
-	    [InlineKeyboardButton(text="💳 Оплатить", url=url)],
-	    [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"checkpay_{pid}")],
+	    [InlineKeyboardButton(text="📱 Отправить телефон", callback_data=f"send_phone_{plan_code}")],
+	    [InlineKeyboardButton(text="✉️ Отправить email", callback_data=f"send_email_{plan_code}")],
 	    [InlineKeyboardButton(text="⬅️ Назад", callback_data="tariffs_back")],
 	])
-	await cb.message.answer(f"Счёт на тариф «{plan_code}» создан. После оплаты нажми 'Проверить'.", reply_markup=kb)
+	await cb.message.answer(
+	    "Для выдачи чека укажи контакт: телефон (SMS со ссылкой на чек) или email.",
+	    reply_markup=kb
+	)
 	await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("send_phone_"))
+async def _send_phone_flow(cb: types.CallbackQuery):
+	plan_code = cb.data.split("_", 2)[2]
+	await cb.message.answer("Пришли номер в формате +7XXXXXXXXXX")
+	
+	@router.message(lambda m: True)
+	async def _on_phone(m: types.Message):
+		phone = (m.text or "").strip()
+		if not phone.startswith("+7") or not phone[1:].isdigit() or len(phone) not in (12, 11):
+			await m.answer("Номер должен быть в формате +7XXXXXXXXXX. Отправь заново.")
+			return
+		try:
+			pid, url = create_payment(m.from_user.id, plan_code, customer_phone=phone)
+		except Exception as e:
+			await m.answer(f"Не удалось создать платёж: {e}")
+			return
+		kb = InlineKeyboardMarkup(inline_keyboard=[
+		    [InlineKeyboardButton(text="💳 Оплатить", url=url)],
+		    [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"checkpay_{pid}")],
+		    [InlineKeyboardButton(text="⬅️ Назад", callback_data="tariffs_back")],
+		])
+		await m.answer(f"Счёт на тариф «{plan_code}» создан. После оплаты нажми 'Проверить'.", reply_markup=kb)
+
+
+@router.callback_query(lambda c: c.data.startswith("send_email_"))
+async def _send_email_flow(cb: types.CallbackQuery):
+	plan_code = cb.data.split("_", 2)[2]
+	await cb.message.answer("Пришли email для чека (например, name@example.com)")
+	
+	@router.message(lambda m: True)
+	async def _on_email(m: types.Message):
+		email = (m.text or "").strip()
+		if "@" not in email or "." not in email.split("@")[-1]:
+			await m.answer("Похоже, это не email. Отправь правильный адрес.")
+			return
+		try:
+			pid, url = create_payment(m.from_user.id, plan_code, customer_email=email)
+		except Exception as e:
+			await m.answer(f"Не удалось создать платёж: {e}")
+			return
+		kb = InlineKeyboardMarkup(inline_keyboard=[
+		    [InlineKeyboardButton(text="💳 Оплатить", url=url)],
+		    [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"checkpay_{pid}")],
+		    [InlineKeyboardButton(text="⬅️ Назад", callback_data="tariffs_back")],
+		])
+		await m.answer(f"Счёт на тариф «{plan_code}» создан. После оплаты нажми 'Проверить'.", reply_markup=kb)
 
 
 @router.callback_query(lambda c: c.data.startswith("checkpay_"))

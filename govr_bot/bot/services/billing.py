@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from datetime import datetime
+import uuid
 
 from bot.services.answer_db import DB_FILE, get_conn
 
@@ -55,20 +56,40 @@ def _ensure_yookassa_configured():
 		raise RuntimeError("Не установлен пакет yookassa. Установи: pip install yookassa") from e
 
 
-def create_payment(user_id: int, plan_code: str) -> tuple[str, str]:
-	"""Создаёт платёж и возвращает (payment_id, confirmation_url)."""
+def create_payment(user_id: int, plan_code: str, *, customer_phone: str | None = None, customer_email: str | None = None) -> tuple[str, str]:
+	"""Создаёт платёж и возвращает (payment_id, confirmation_url).
+
+	Для самозанятого требуется чек (receipt). Нужен телефон или email покупателя.
+	"""
 	_ensure_yookassa_configured()
 	from yookassa import Payment  # type: ignore
 
 	amount = PRICES[plan_code]
 	description = f"ChemistryBot: тариф {plan_code} для user {user_id}"
+	if not customer_phone and not customer_email:
+		raise ValueError("Нужен телефон или email покупателя для чека")
+
+	receipt = {
+		"customer": ({"phone": customer_phone} if customer_phone else {"email": customer_email}),
+		"items": [{
+			"description": f"ChemistryBot: тариф {plan_code}",
+			"quantity": "1.00",
+			"amount": {"value": f"{float(amount):.2f}", "currency": "RUB"},
+			"payment_subject": "service",
+			"payment_mode": "full_prepayment",
+			"vat_code": 1,
+		}],
+	}
+
+	idempotence_key = str(uuid.uuid4())
 	payment = Payment.create({
-	    "amount": {"value": f"{amount}.00", "currency": "RUB"},
+	    "amount": {"value": f"{float(amount):.2f}", "currency": "RUB"},
+	    "receipt": receipt,
 	    "confirmation": {"type": "redirect", "return_url": RETURN_URL},
 	    "capture": True,
 	    "description": description,
 	    "metadata": {"user_id": user_id, "plan_code": plan_code},
-	})
+	}, idempotence_key)
 	pid = payment.id
 	url = payment.confirmation.confirmation_url
 	
