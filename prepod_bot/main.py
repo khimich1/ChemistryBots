@@ -39,6 +39,14 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[LOG] delete_webhook error: {e}")
 
+        # Запуск фонового оповещателя онлайн-активности
+        try:
+            from handlers import online as online_handlers
+            asyncio.create_task(online_handlers.start_notifier(bot))
+            print("[LOG] Online notifier started")
+        except Exception as e:
+            print(f"[LOG] start_notifier error: {e}")
+
         await dp.start_polling(bot)
 
     try:

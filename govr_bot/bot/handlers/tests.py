@@ -1,6 +1,7 @@
 from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramBadRequest
 import html  # Стандартная библиотека для экранирования HTML
 import re
 
@@ -616,10 +617,12 @@ async def restart_test(cb: CallbackQuery):
                     message_id=grid_id, 
                     reply_markup=kb
                 )
-            except (AttributeError, KeyError) as e:
-                # Игнорируем ошибку "message is not modified"
+            except TelegramBadRequest as e:
+                # Игнорируем "message is not modified", остальное логируем
                 if "message is not modified" not in str(e).lower():
                     log_error(e, f"Error updating grid markup for user {cb.from_user.id}", user_id=cb.from_user.id)
+            except (AttributeError, KeyError) as e:
+                log_error(e, f"Error updating grid markup for user {cb.from_user.id}", user_id=cb.from_user.id)
         else:
             sent = await cb.message.answer(f"Тест {test_type}. Выбери номер задания или нажми «Начать заново»:", reply_markup=kb)
             user_test_state[cb.from_user.id]["grid_msg_id"] = sent.message_id
@@ -852,6 +855,9 @@ async def show_hint(cb: CallbackQuery):
         try:
             left = max(0, 10 - used_map[test_type])
             await cb.message.edit_reply_markup(reply_markup=get_stop_test_kb(q_id, hints_left=left))
+        except TelegramBadRequest as e:
+            if "message is not modified" not in str(e).lower():
+                log_error(e, f"BadRequest updating reply markup in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
         except (ValueError, TypeError) as e:
             log_error(e, f"Data error updating reply markup in show_hint for user {cb.from_user.id}", user_id=cb.from_user.id)
         except (AttributeError, KeyError) as e:
@@ -918,10 +924,11 @@ async def check_test_answer(m: types.Message):
                     message_id=grid_msg_id, 
                     reply_markup=kb
                 )
-            except (AttributeError, KeyError) as e:
-                # Игнорируем ошибку "message is not modified"
+            except TelegramBadRequest as e:
                 if "message is not modified" not in str(e).lower():
                     log_error(e, f"Error updating grid markup after answer for user {m.from_user.id}", user_id=m.from_user.id)
+            except (AttributeError, KeyError) as e:
+                log_error(e, f"Error updating grid markup after answer for user {m.from_user.id}", user_id=m.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error updating grid in check_test_answer for user {m.from_user.id}", user_id=m.from_user.id)
     except (AttributeError, KeyError) as e:
@@ -1058,10 +1065,11 @@ async def check_mistake_answer(m: types.Message):
                         message_id=grid_msg_id, 
                         reply_markup=kb
                     )
-                except (AttributeError, KeyError) as e:
-                    # Игнорируем ошибку "message is not modified"
+                except TelegramBadRequest as e:
                     if "message is not modified" not in str(e).lower():
                         log_error(e, f"Error updating grid markup in mistake mode for user {m.from_user.id}", user_id=m.from_user.id)
+                except (AttributeError, KeyError) as e:
+                    log_error(e, f"Error updating grid markup in mistake mode for user {m.from_user.id}", user_id=m.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error updating grid in check_mistake_answer for user {m.from_user.id}", user_id=m.from_user.id)
     except (AttributeError, KeyError) as e:

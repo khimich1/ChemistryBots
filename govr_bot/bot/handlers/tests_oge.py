@@ -5,6 +5,7 @@ import base64
 import io
 from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
 
 from bot.handlers.menu import main_kb
 from bot.utils import user_learning_state  # для проверки состояния учебника
@@ -595,8 +596,7 @@ async def restart_test(cb: CallbackQuery):
                     message_id=grid_id, 
                     reply_markup=kb
                 )
-            except Exception as e:
-                # Игнорируем ошибку "message is not modified"
+            except TelegramBadRequest as e:
                 if "message is not modified" not in str(e).lower():
                     log_error(e, f"Error updating grid markup for user {cb.from_user.id}")
         else:
@@ -743,8 +743,7 @@ async def check_test_answer(m: types.Message):
                     message_id=grid_msg_id, 
                     reply_markup=kb
                 )
-            except Exception as e:
-                # Игнорируем ошибку "message is not modified"
+            except TelegramBadRequest as e:
                 if "message is not modified" not in str(e).lower():
                     log_error(e, f"Error updating grid markup after answer for user {m.from_user.id}")
     except Exception as e:
@@ -809,8 +808,9 @@ async def show_hint(cb: CallbackQuery):
         try:
             left = max(0, 10 - used_map[test_type])
             await cb.message.edit_reply_markup(reply_markup=get_stop_test_kb(q_id, hints_left=left))
-        except Exception:
-            pass
+        except TelegramBadRequest as e:
+            if "message is not modified" not in str(e).lower():
+                log_error(e, f"BadRequest updating reply markup in show_hint for user {cb.from_user.id}")
     else:
         await cb.message.answer("Для этого задания нет подсказки.")
     await cb.answer()
@@ -1240,8 +1240,7 @@ async def check_mistake_answer(m: types.Message):
                         message_id=grid_msg_id, 
                         reply_markup=kb
                     )
-                except Exception as e:
-                    # Игнорируем ошибку "message is not modified"
+                except TelegramBadRequest as e:
                     if "message is not modified" not in str(e).lower():
                         log_error(e, f"Error updating grid markup in mistake mode for user {m.from_user.id}")
     except Exception as e:

@@ -382,3 +382,47 @@ def set_hide_reason(user_id: int, reason: Optional[str]) -> None:
                 (user_id, reason),
             )
         conn.commit()
+
+
+# =========================
+# Новые утилиты для оповещений преподавателя
+# =========================
+
+def get_activity_updates_since(since_ts: str) -> List[Dict[str, Any]]:
+    """
+    Возвращает список событий из test_activity, произошедших строго ПОСЛЕ since_ts.
+    Учитываем как старт вопроса (started_at), так и ответ (answered_at).
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = _safe_fetchall(
+            conn,
+            """
+            SELECT user_id, test_type, question_id, started_at, answered_at, user_answer, is_correct
+            FROM test_activity
+            WHERE (COALESCE(started_at, '') > ?)
+               OR (TRIM(COALESCE(answered_at, '')) <> '' AND answered_at > ?)
+            ORDER BY COALESCE(answered_at, started_at)
+            """,
+            (since_ts, since_ts)
+        )
+    out: List[Dict[str, Any]] = []
+    for user_id, t, q, s, a, ua, ic in rows:
+        out.append({
+            "user_id": user_id,
+            "test_type": t,
+            "question_id": q,
+            "started_at": s,
+            "answered_at": a,
+            "user_answer": ua,
+            "is_correct": ic,
+        })
+    return out
+
+
+def get_user_label(user_id: int) -> str:
+    """
+    Удобная подпись ученика: full_name → username → ID.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        full_name, username = get_identity(conn, user_id)
+        return (full_name or username or f"ID {user_id}")

@@ -7,6 +7,14 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.exceptions import TelegramNetworkError, TelegramAPIError
+
+# На Windows используем WindowsSelectorEventLoopPolicy, чтобы избежать
+# ошибок закрытия цикла при остановке (Ctrl+C)
+if sys.platform.startswith("win"):
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
 from bot.services.answer_db import init_db, init_progress_table, close_all_connections
 init_db()
 init_progress_table() 
@@ -38,13 +46,19 @@ from bot.utils_pkg_new.rate_limiter import cleanup_rate_limiters
 bot_instance = None
 dp_instance = None
 cleanup_task = None
+shutdown_requested = False
 
 def signal_handler(signum, frame):
     """Обработчик сигналов для graceful shutdown"""
     print(f"\nПолучен сигнал {signum}. Завершаем работу бота...")
-    if bot_instance:
-        asyncio.create_task(shutdown_bot())
-    sys.exit(0)
+    global shutdown_requested
+    shutdown_requested = True
+    try:
+        loop = asyncio.get_event_loop()
+        if bot_instance:
+            loop.create_task(shutdown_bot())
+    except Exception:
+        pass
 
 async def shutdown_bot():
     """Graceful shutdown бота"""
@@ -140,7 +154,7 @@ async def main():
     max_retries = 5
     retry_delay = 5
     
-    while True:
+    while not shutdown_requested:
         try:
             await dp_instance.start_polling(bot_instance, polling_timeout=30)
         except TelegramNetworkError as e:
