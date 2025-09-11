@@ -645,22 +645,65 @@ async def send_next_test_question(user_id, message_obj, is_callback=False):
         user_test_state.pop(user_id, None)
         await message_obj.answer("Тест завершён! Возвращаюсь в меню.")
         return
-    q = get_question_by_id(q_ids[idx])
+    
+    # Используем новую функцию для получения вопроса с изображением
+    from bot.services.test_sql import get_question_with_image
+    q = get_question_with_image(q_ids[idx])
+    
+    if not q:
+        await message_obj.answer("Ошибка: вопрос не найден.")
+        return
+        
     log_question_started(user_id, state["type"], q["id"])  # --- ЛОГИРОВАНИЕ СТАРТА ---
-    options = q['options'].split('\n')
+    
+    # Формируем текст вопроса
     formatted_q = _format_question_text(q['question'])
     msg = (
         f"Вопрос {idx+1} из {len(q_ids)} (Тест {state['type']})\n\n"
-        f"{formatted_q}\n\n" +
-        "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) +
-        "\n\nВведите номер(а) ответа (например: 2 или 13):"
+        f"{formatted_q}\n\n"
     )
+    
+    # Добавляем варианты ответов, если они есть
+    if q['options']:
+        options = q['options'].split('\n')
+        msg += "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) + "\n\n"
+    
+    msg += "Введите номер(а) ответа (например: 2 или 13):"
+    
     # Подсказки: максимум 10 на 30 вопросов одного теста
     # Считаем, сколько подсказок уже использовано в текущем тесте
     used_hints = user_test_state.get(user_id, {}).get("used_hints", {}).get(state["type"], 0)
     hints_left = max(0, 10 - used_hints)
     kb = get_stop_test_kb(q['id'], hints_left=hints_left)
-    sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
+    # Отправляем сообщение с изображением, если оно есть
+    if q.get('image'):
+        try:
+            # Отправляем изображение с подписью
+            from aiogram.types import BufferedInputFile
+            
+            # Создаём BufferedInputFile из байтов изображения
+            image_bytes = q['image']['data']
+            photo_file = BufferedInputFile(
+                file=image_bytes,
+                filename=q['image'].get('filename', 'question.png')
+            )
+            
+            sent_q = await message_obj.answer_photo(
+                photo=photo_file,
+                caption=_to_html_with_code(msg),
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        except Exception as e:
+            # Если не удалось отправить изображение, отправляем обычное сообщение
+            from bot.utils_pkg_new.logger import log_error
+            log_error(e, f"Failed to send image for question {q['id']}", user_id=user_id)
+            sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    else:
+        # Отправляем обычное сообщение без изображения
+        sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
     # Запомним id сообщения-вопроса, чтобы удалить его при переходе «Далее»
     user_test_state[user_id]["last_question_msg_id"] = sent_q.message_id
 
@@ -990,20 +1033,63 @@ async def send_next_mistake_question(user_id, message_obj):
         await message_obj.answer("Все ошибки в этом тесте исправлены! 👍")
         return
     q_id = q_ids[idx]
-    q = get_question_by_id(q_id)
+    
+    # Используем новую функцию для получения вопроса с изображением
+    from bot.services.test_sql import get_question_with_image
+    q = get_question_with_image(q_id)
+    
+    if not q:
+        await message_obj.answer("Ошибка: вопрос не найден.")
+        return
+        
     log_question_started(user_id, state["type"], q_id)  # --- ЛОГИРОВАНИЕ СТАРТА ---
-    options = q['options'].split('\n')
+    
+    # Формируем текст вопроса
     formatted_q = _format_question_text(q['question'])
     msg = (
         f"Ошибка {idx+1} из {len(q_ids)} (Тест {state['type']})\n\n"
-        f"{formatted_q}\n\n" +
-        "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) +
-        "\n\nПовтори попытку: введи номер(а) ответа:"
+        f"{formatted_q}\n\n"
     )
+    
+    # Добавляем варианты ответов, если они есть
+    if q['options']:
+        options = q['options'].split('\n')
+        msg += "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) + "\n\n"
+    
+    msg += "Повтори попытку: введи номер(а) ответа:"
+    
     used_hints = user_test_state.get(user_id, {}).get("used_hints", {}).get(state["type"], 0)
     hints_left = max(0, 10 - used_hints)
     kb = get_stop_test_kb(q_id, hints_left=hints_left)
-    sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
+    # Отправляем сообщение с изображением, если оно есть
+    if q.get('image'):
+        try:
+            # Отправляем изображение с подписью
+            from aiogram.types import BufferedInputFile
+            
+            # Создаём BufferedInputFile из байтов изображения
+            image_bytes = q['image']['data']
+            photo_file = BufferedInputFile(
+                file=image_bytes,
+                filename=q['image'].get('filename', 'question.png')
+            )
+            
+            sent_q = await message_obj.answer_photo(
+                photo=photo_file,
+                caption=_to_html_with_code(msg),
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        except Exception as e:
+            # Если не удалось отправить изображение, отправляем обычное сообщение
+            from bot.utils_pkg_new.logger import log_error
+            log_error(e, f"Failed to send image for mistake question {q_id}", user_id=user_id)
+            sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    else:
+        # Отправляем обычное сообщение без изображения
+        sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
     user_test_state[user_id]["last_question_msg_id"] = sent_q.message_id
 
 # --- Проверка ответа пользователя на ошибочный вопрос ---

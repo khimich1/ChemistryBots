@@ -47,8 +47,8 @@ LOGO_PATH      = os.path.join(FONTS_DIR, "Logo_Low.png")      # путь к ло
 # БД ответов (test_answers.db) хранится в общем каталоге shared
 DB_ANSWERS     = os.path.join(_REPO_ROOT, "shared", "test_answers.db")
 
-# БД вопросов тестов (tests1.db) — можно переопределить через .env
-DB_TESTS       = os.getenv("TESTS_DB_PATH") or os.path.join(_REPO_ROOT, "shared", "tests1.db")
+# БД тестов ЕГЭ — можно переопределить через .env
+DB_TESTS       = os.getenv("TESTS_DB_EGE") or os.path.join(_REPO_ROOT, "shared", "test_ege.db")
 
 # ───────── Шрифты ─────────
 def _register_fonts():
@@ -859,7 +859,7 @@ def _get_full_name_for_report(user_id: int, *, fallback_fullname: str | None = N
 
 def _detect_questions_per_test() -> int:
     """
-    Максимальное количество вопросов на один тип теста по базе tests1.db.
+    Максимальное количество вопросов на один тип теста по базе ЕГЭ.
     Если база/таблица недоступны — вернём 19 (стандарт ЕГЭ по химии).
     """
     try:
@@ -875,7 +875,7 @@ def _detect_questions_per_test() -> int:
 
 def _detect_num_test_types() -> int:
     """
-    Количество уникальных типов тестов по базе tests1.db.
+    Количество уникальных типов тестов по базе ЕГЭ.
     Если база/таблица недоступны — вернём 28.
     """
     try:
@@ -886,4 +886,6 @@ def _detect_num_test_types() -> int:
             return int(row[0] or 28)
     except Exception:
         return 28
+
+
 

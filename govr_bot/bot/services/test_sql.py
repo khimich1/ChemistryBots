@@ -5,17 +5,17 @@ from dotenv import load_dotenv
 # Загружаем .env и корректно определяем путь к базе с тестами
 load_dotenv()
 
-# База с вопросами тестов (таблица `tests`).
-# 1) Если задано в .env (TESTS_DB_PATH) — используем его
-# 2) Иначе берём дефолт: ChemistryBots/shared/tests1.db
+# База с тестами ЕГЭ (таблица `tests`).
+# 1) Если задано в .env (TESTS_DB_EGE) — используем его
+# 2) Иначе берём дефолт: ChemistryBots/shared/test_ege.db
 _THIS_DIR = os.path.dirname(__file__)                             # govr_bot/bot/services
 _PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
-DB_FILE = os.getenv("TESTS_DB_PATH") or os.path.join(_PROJECT_ROOT, "shared", "tests1.db")
+DB_FILE = os.getenv("TESTS_DB_EGE") or os.path.join(_PROJECT_ROOT, "shared", "test_ege.db")
 
 
 def _ensure_issue_columns():
     """
-    Гарантирует наличие столбцов для жалоб в таблице tests:
+    Гарантирует наличие столбцов для жалоб в таблице tests ЕГЭ:
       - has_issue INTEGER DEFAULT 0         (флаг скрытия вопроса до исправления)
       - issue_reason TEXT DEFAULT ''        (последняя причина)
       - issue_reported_at TEXT DEFAULT ''   (когда пожаловались)
@@ -73,7 +73,7 @@ def _detect_answer_column(conn: sqlite3.Connection) -> str:
 
 
 def _ensure_tests_bug_table() -> None:
-    """Создаёт таблицу tests_bug в tests1.db с теми же столбцами, что у tests.
+    """Создаёт таблицу tests_bug в test_ege.db с теми же столбцами, что у tests.
 
     Используем создание по схеме исходной таблицы с нулевой выборкой: CREATE TABLE ... AS SELECT * FROM tests WHERE 0.
     Повторный вызов безопасен.
@@ -114,7 +114,7 @@ def copy_question_to_tests_bug(q_id: int) -> None:
 
 def get_all_tests_types():
     """
-    Получает список уникальных типов тестов (например, 1...28)
+    Получает список уникальных типов тестов ЕГЭ (например, 1...28)
     """
     _ensure_issue_columns()
     with sqlite3.connect(DB_FILE) as conn:
@@ -126,7 +126,7 @@ def get_all_tests_types():
 
 def get_questions_by_type(test_type, limit: int = 30):
     """
-    Получает все вопросы для заданного типа теста (по порядку id)
+    Получает все вопросы для заданного типа теста ЕГЭ (по порядку id)
     Возвращает список dict-ов: id, question, options, correct_answer, explanation, hint, detailed_explanation
     Не более `limit` (по умолчанию 30) вопросов.
     """
@@ -161,7 +161,7 @@ def get_questions_by_type(test_type, limit: int = 30):
 
 def get_question_by_id(q_id):
     """
-    Получает один вопрос по его id, с detailed_explanation
+    Получает один вопрос ЕГЭ по его id, с detailed_explanation
     """
     _ensure_issue_columns()
     with sqlite3.connect(DB_FILE) as conn:
@@ -192,7 +192,7 @@ def get_question_by_id(q_id):
 
 
 def mark_question_issue(q_id: int, reason: str | None = None) -> None:
-    """Помечает вопрос как проблемный (глобально скрываем) с опциональной причиной."""
+    """Помечает вопрос ЕГЭ как проблемный (глобально скрываем) с опциональной причиной."""
     _ensure_issue_columns()
     try:
         with sqlite3.connect(DB_FILE) as conn:
@@ -211,4 +211,137 @@ def mark_question_issue(q_id: int, reason: str | None = None) -> None:
     except Exception:
         # Безопасно игнорируем, чтобы не ломать тестирование, даже если нет прав на запись
         pass
+
+
+# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С ИЗОБРАЖЕНИЯМИ =====
+
+def get_image_by_id(image_id: int) -> dict | None:
+    """
+    Получает изображение по его ID из таблицы images.
+    Возвращает словарь с данными изображения или None, если не найдено.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT id, filename, mime_type, size_bytes, data, created_at FROM images WHERE id = ?",
+                (image_id,)
+            )
+            row = c.fetchone()
+            if row:
+                return {
+                    'id': row[0],
+                    'filename': row[1],
+                    'mime_type': row[2],
+                    'size_bytes': row[3],
+                    'data': row[4],  # BLOB данные
+                    'created_at': row[5]
+                }
+            return None
+    except Exception:
+        return None
+
+
+def get_question_with_image(q_id: int) -> dict | None:
+    """
+    Получает вопрос с изображением (если есть).
+    Возвращает словарь с данными вопроса и изображения.
+    """
+    _ensure_issue_columns()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            ans_col = _detect_answer_column(conn)
+            sql = (
+                f"SELECT id, type, question, options, {ans_col} AS correct_answer, "
+                f"explanation, hint, detailed_explanation, COALESCE(has_issue,0), COALESCE(issue_reason,'') "
+                f"FROM tests WHERE id=?"
+            )
+            c.execute(sql, (q_id,))
+            row = c.fetchone()
+            
+            if not row:
+                return None
+            
+            question_data = {
+                'id': row[0],
+                'type': row[1],
+                'question': row[2],
+                'options': row[3] or "",
+                'correct_answer': row[4] or "",
+                'explanation': row[5] or "",
+                'hint': row[6] or "",
+                'detailed_explanation': row[7] or "",
+                'has_issue': bool(row[8] or 0),
+                'issue_reason': row[9] or "",
+                'image': None
+            }
+            
+            # Если в options есть ID изображения, получаем изображение
+            if question_data['options'] and question_data['options'].isdigit():
+                image_id = int(question_data['options'])
+                image_data = get_image_by_id(image_id)
+                if image_data:
+                    question_data['image'] = image_data
+                    # Очищаем options, так как теперь это ID изображения
+                    question_data['options'] = ""
+            
+            return question_data
+            
+    except Exception:
+        return None
+
+
+def get_questions_by_type_with_images(test_type, limit: int = 30) -> list[dict]:
+    """
+    Получает вопросы с изображениями для заданного типа теста.
+    Возвращает список словарей с данными вопросов и изображений.
+    """
+    _ensure_issue_columns()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            ans_col = _detect_answer_column(conn)
+            safe_limit = int(limit) if isinstance(limit, int) and limit > 0 else 30
+            sql = (
+                f"""
+                SELECT id, question, options, {ans_col} AS correct_answer, 
+                explanation, hint, detailed_explanation
+                FROM tests
+                WHERE type=? AND COALESCE(has_issue, 0)=0
+                ORDER BY id
+                LIMIT {safe_limit}
+                """
+            )
+            c.execute(sql, (test_type,))
+            questions = []
+            
+            for row in c.fetchall():
+                question_data = {
+                    'id': row[0],
+                    'question': row[1],
+                    'options': row[2] or "",
+                    'correct_answer': row[3] or "",
+                    'explanation': row[4] or "",
+                    'hint': row[5] or "",
+                    'detailed_explanation': row[6] or "",
+                    'image': None
+                }
+                
+                # Если в options есть ID изображения, получаем изображение
+                if question_data['options'] and question_data['options'].isdigit():
+                    image_id = int(question_data['options'])
+                    image_data = get_image_by_id(image_id)
+                    if image_data:
+                        question_data['image'] = image_data
+                        # Очищаем options, так как теперь это ID изображения
+                        question_data['options'] = ""
+                
+                questions.append(question_data)
+            
+            return questions
+            
+    except Exception:
+        return []
+
 
