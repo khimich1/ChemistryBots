@@ -192,14 +192,29 @@ def get_question_with_image(q_id: int) -> dict | None:
                 has_issue=bool(row[8] or 0), issue_reason=row[9] or ""
             )
             
-            # Если в options есть ID изображения, получаем изображение
-            if question_data['options'] and question_data['options'].isdigit():
-                image_id = int(question_data['options'])
-                image_data = get_image_by_id(image_id)
-                if image_data:
-                    question_data['image'] = image_data
-                    # Очищаем options, так как теперь это ID изображения
-                    question_data['options'] = ""
+            # Если в options есть ID изображения(ий), получаем изображения
+            if question_data['options']:
+                # Проверяем, содержит ли options только числа и запятые
+                options_clean = question_data['options'].replace(' ', '').replace(',', '')
+                if options_clean.isdigit():
+                    # Парсим ID изображений (могут быть через запятую)
+                    image_ids = [int(x.strip()) for x in question_data['options'].split(',') if x.strip().isdigit()]
+                    if image_ids:
+                        images = []
+                        for image_id in image_ids:
+                            image_data = get_image_by_id(image_id)
+                            if image_data:
+                                images.append(image_data)
+                        
+                        if images:
+                            # Если одно изображение - сохраняем как раньше для совместимости
+                            if len(images) == 1:
+                                question_data['image'] = images[0]
+                            else:
+                                # Если несколько изображений - сохраняем как список
+                                question_data['images'] = images
+                            # Очищаем options, так как теперь это ID изображений
+                            question_data['options'] = ""
             
             return question_data
     except Exception:
@@ -237,14 +252,29 @@ def get_questions_by_type_with_images(test_type, limit: int = 30) -> list[dict]:
                     detailed_explanation=row[6] or "",
                 )
                 
-                # Если в options есть ID изображения, получаем изображение
-                if question_data['options'] and question_data['options'].isdigit():
-                    image_id = int(question_data['options'])
-                    image_data = get_image_by_id(image_id)
-                    if image_data:
-                        question_data['image'] = image_data
-                        # Очищаем options, так как теперь это ID изображения
-                        question_data['options'] = ""
+                # Если в options есть ID изображения(ий), получаем изображения
+                if question_data['options']:
+                    # Проверяем, содержит ли options только числа и запятые
+                    options_clean = question_data['options'].replace(' ', '').replace(',', '')
+                    if options_clean.isdigit():
+                        # Парсим ID изображений (могут быть через запятую)
+                        image_ids = [int(x.strip()) for x in question_data['options'].split(',') if x.strip().isdigit()]
+                        if image_ids:
+                            images = []
+                            for image_id in image_ids:
+                                image_data = get_image_by_id(image_id)
+                                if image_data:
+                                    images.append(image_data)
+                            
+                            if images:
+                                # Если одно изображение - сохраняем как раньше для совместимости
+                                if len(images) == 1:
+                                    question_data['image'] = images[0]
+                                else:
+                                    # Если несколько изображений - сохраняем как список
+                                    question_data['images'] = images
+                                # Очищаем options, так как теперь это ID изображений
+                                question_data['options'] = ""
                 
                 questions.append(question_data)
             

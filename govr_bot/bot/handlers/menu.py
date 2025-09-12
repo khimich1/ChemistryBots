@@ -1,6 +1,6 @@
 from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.filters.callback_data import CallbackData
@@ -439,7 +439,15 @@ async def how_bot_works(m: types.Message):
         "🎯 <b>Совет:</b> Занимайся регулярно, даже по 15-20 минут в день. "
         "Лучше немного, но каждый день, чем много, но редко!"
     )
-    msg = await m.answer(text, reply_markup=main_kb)
+    
+    # Создаём inline клавиатуру с кнопкой "Назад"
+    back_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_from_instructions")]
+        ]
+    )
+    
+    msg = await m.answer(text, reply_markup=back_kb, parse_mode="HTML")
     message_manager.add_message(m.from_user.id, msg.message_id)
 
 # Дублируем справку на команду /help
@@ -727,3 +735,19 @@ async def handle_task_solver_callback(callback: types.CallbackQuery, callback_da
         except Exception:
             pass
         await state.set_state(TaskSolverStates.waiting_photo)
+
+# ==== Обработчик кнопки "Назад" из инструкций ====
+@router.callback_query(lambda c: c.data == "back_from_instructions")
+async def back_from_instructions(cb: CallbackQuery):
+    """Удаляет все сообщения и показывает главное меню"""
+    # Очищаем все сообщения пользователя
+    await message_manager.delete_user_messages(cb.bot, cb.from_user.id, cb.message.chat.id)
+    
+    # Отправляем главное меню
+    sent = await cb.bot.send_message(
+        chat_id=cb.message.chat.id,
+        text="Главное меню:",
+        reply_markup=main_kb
+    )
+    message_manager.add_message(cb.from_user.id, sent.message_id)
+    await cb.answer()
