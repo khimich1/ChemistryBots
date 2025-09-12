@@ -100,10 +100,23 @@ def tests_instruction_text() -> str:
 # =========================
 def get_tests_types_kb(with_menu: bool = False, include_back: bool = False):
     types = get_all_tests_types()
-    keyboard = [
-        [InlineKeyboardButton(text=f"Тест {t}", callback_data=f"choose_test_{t}")]
-        for t in types if t not in (None, '')
-    ]
+    
+    # Создаем кнопки в 3 столбика
+    keyboard = []
+    for i in range(0, len(types), 3):
+        row = []
+        # Первая кнопка в ряду
+        if i < len(types) and types[i] not in (None, ''):
+            row.append(InlineKeyboardButton(text=f"Тест {types[i]}", callback_data=f"choose_test_{types[i]}"))
+        # Вторая кнопка в ряду (если есть)
+        if i + 1 < len(types) and types[i + 1] not in (None, ''):
+            row.append(InlineKeyboardButton(text=f"Тест {types[i + 1]}", callback_data=f"choose_test_{types[i + 1]}"))
+        # Третья кнопка в ряду (если есть)
+        if i + 2 < len(types) and types[i + 2] not in (None, ''):
+            row.append(InlineKeyboardButton(text=f"Тест {types[i + 2]}", callback_data=f"choose_test_{types[i + 2]}"))
+        if row:  # Добавляем ряд только если в нем есть кнопки
+            keyboard.append(row)
+    
     # --- Кнопка "Работа над ошибками"
     keyboard.append([InlineKeyboardButton(text="💡 Работа над ошибками", callback_data="work_on_mistakes")])
     if include_back:
@@ -310,6 +323,7 @@ async def start_test(cb: CallbackQuery):
             "idx": idx,
             "q_ids": q_ids,
             "grid_msg_id": sent.message_id,
+            "answered": False,  # Сбрасываем флаг answered при начале теста
         })
         await cb.answer()
         return
@@ -324,7 +338,8 @@ async def start_test(cb: CallbackQuery):
     user_test_state[cb.from_user.id] = {
         "type": test_type,
         "idx": 0,
-        "q_ids": [q["id"] for q in questions]
+        "q_ids": [q["id"] for q in questions],
+        "answered": False,  # Сбрасываем флаг answered при начале теста
     }
     clear_test_progress(cb.from_user.id, test_type)
     # Показать сетку перед началом и сохранить её id
@@ -430,6 +445,8 @@ async def go_next_question(cb: CallbackQuery):
         except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting last question message for user {cb.from_user.id}", user_id=cb.from_user.id)
         st["idx"] += 1
+        # Сбрасываем флаг answered для нового вопроса
+        st["answered"] = False
         await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
         await cb.answer()
         return
@@ -445,6 +462,8 @@ async def go_next_question(cb: CallbackQuery):
         except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting last mistake question message for user {cb.from_user.id}", user_id=cb.from_user.id)
         st["idx"] += 1
+        # Сбрасываем флаг answered для нового вопроса
+        st["answered"] = False
         await send_next_mistake_question(cb.from_user.id, cb.message)
         await cb.answer()
         return
@@ -488,6 +507,7 @@ async def jump_to_question(cb: CallbackQuery):
         "q_ids": q_ids,
         "grid_msg_id": prev.get("grid_msg_id"),
         "used_hints": prev.get("used_hints", {}),
+        "answered": False,  # Сбрасываем флаг answered при переходе к вопросу
     }
     await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
     await cb.answer()
@@ -696,22 +716,65 @@ async def send_next_test_question(user_id, message_obj, is_callback=False):
         sent_end = await message_obj.answer("Тест завершён! Возвращаюсь в меню.")
         message_manager.add_message(user_id, sent_end.message_id)
         return
-    q = get_question_by_id(q_ids[idx])
+    
+    # Используем новую функцию для получения вопроса с изображением
+    from bot.services.test_sql import get_question_with_image
+    q = get_question_with_image(q_ids[idx])
+    
+    if not q:
+        await message_obj.answer("Ошибка: вопрос не найден.")
+        return
+        
     log_question_started(user_id, state["type"], q["id"])  # --- ЛОГИРОВАНИЕ СТАРТА ---
-    options = q['options'].split('\n')
+    
+    # Формируем текст вопроса
     formatted_q = _format_question_text(q['question'])
     msg = (
         f"Вопрос {idx+1} из {len(q_ids)} (Тест {state['type']})\n\n"
-        f"{formatted_q}\n\n" +
-        "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) +
-        "\n\nВведите номер(а) ответа (например: 2 или 13):"
+        f"{formatted_q}\n\n"
     )
+    
+    # Добавляем варианты ответов, если они есть
+    if q['options']:
+        options = q['options'].split('\n')
+        msg += "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) + "\n\n"
+    
+    msg += "Введите номер(а) ответа (например: 2 или 13):"
+    
     # Подсказки: максимум 10 на 30 вопросов одного теста
     # Считаем, сколько подсказок уже использовано в текущем тесте
     used_hints = user_test_state.get(user_id, {}).get("used_hints", {}).get(state["type"], 0)
     hints_left = max(0, 10 - used_hints)
     kb = get_stop_test_kb(q['id'], hints_left=hints_left)
-    sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
+    # Отправляем сообщение с изображением, если оно есть
+    if q.get('image'):
+        try:
+            # Отправляем изображение с подписью
+            from aiogram.types import BufferedInputFile
+            
+            # Создаём BufferedInputFile из байтов изображения
+            image_bytes = q['image']['data']
+            photo_file = BufferedInputFile(
+                file=image_bytes,
+                filename=q['image'].get('filename', 'question.png')
+            )
+            
+            sent_q = await message_obj.answer_photo(
+                photo=photo_file,
+                caption=_to_html_with_code(msg),
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        except Exception as e:
+            # Если не удалось отправить изображение, отправляем обычное сообщение
+            from bot.utils_pkg_new.logger import log_error
+            log_error(e, f"Failed to send image for question {q['id']}", user_id=user_id)
+            sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    else:
+        # Отправляем обычное сообщение без изображения
+        sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
     # Запомним id сообщения-вопроса, чтобы удалить его при переходе «Далее»
     user_test_state[user_id]["last_question_msg_id"] = sent_q.message_id
     message_manager.add_message(user_id, sent_q.message_id)
@@ -936,10 +999,19 @@ async def check_test_answer(m: types.Message):
     idx = state["idx"]
     q_ids = state["q_ids"]
     q = get_question_by_id(q_ids[idx])
+    
+    # Проверяем, не отвечал ли уже пользователь на этот вопрос
+    if state.get("answered", False):
+        await m.answer("❌ Вы уже ответили на этот вопрос. Используйте кнопки «Объяснение» или «Далее».")
+        return
+    
     user_answer = ''.join(filter(str.isdigit, m.text))
     correct = ''.join(filter(str.isdigit, str(q.get("correct_answer", ""))))
     is_correct = user_answer == correct
     log_question_answered(m.from_user.id, q["id"], m.text, is_correct)  # --- ЛОГИРОВАНИЕ ОТВЕТА ---
+    
+    # Отмечаем, что пользователь ответил на вопрос
+    user_test_state[m.from_user.id]["answered"] = True
 
     save_test_answer(
         m.from_user.id,
@@ -1067,20 +1139,63 @@ async def send_next_mistake_question(user_id, message_obj):
         message_manager.add_message(user_id, sent_done.message_id)
         return
     q_id = q_ids[idx]
-    q = get_question_by_id(q_id)
+    
+    # Используем новую функцию для получения вопроса с изображением
+    from bot.services.test_sql import get_question_with_image
+    q = get_question_with_image(q_id)
+    
+    if not q:
+        await message_obj.answer("Ошибка: вопрос не найден.")
+        return
+        
     log_question_started(user_id, state["type"], q_id)  # --- ЛОГИРОВАНИЕ СТАРТА ---
-    options = q['options'].split('\n')
+    
+    # Формируем текст вопроса
     formatted_q = _format_question_text(q['question'])
     msg = (
         f"Ошибка {idx+1} из {len(q_ids)} (Тест {state['type']})\n\n"
-        f"{formatted_q}\n\n" +
-        "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) +
-        "\n\nПовтори попытку: введи номер(а) ответа:"
+        f"{formatted_q}\n\n"
     )
+    
+    # Добавляем варианты ответов, если они есть
+    if q['options']:
+        options = q['options'].split('\n')
+        msg += "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) + "\n\n"
+    
+    msg += "Повтори попытку: введи номер(а) ответа:"
+    
     used_hints = user_test_state.get(user_id, {}).get("used_hints", {}).get(state["type"], 0)
     hints_left = max(0, 10 - used_hints)
     kb = get_stop_test_kb(q_id, hints_left=hints_left)
-    sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
+    # Отправляем сообщение с изображением, если оно есть
+    if q.get('image'):
+        try:
+            # Отправляем изображение с подписью
+            from aiogram.types import BufferedInputFile
+            
+            # Создаём BufferedInputFile из байтов изображения
+            image_bytes = q['image']['data']
+            photo_file = BufferedInputFile(
+                file=image_bytes,
+                filename=q['image'].get('filename', 'question.png')
+            )
+            
+            sent_q = await message_obj.answer_photo(
+                photo=photo_file,
+                caption=_to_html_with_code(msg),
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        except Exception as e:
+            # Если не удалось отправить изображение, отправляем обычное сообщение
+            from bot.utils_pkg_new.logger import log_error
+            log_error(e, f"Failed to send image for mistake question {q_id}", user_id=user_id)
+            sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    else:
+        # Отправляем обычное сообщение без изображения
+        sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
     user_test_state[user_id]["last_question_msg_id"] = sent_q.message_id
     message_manager.add_message(user_id, sent_q.message_id)
 

@@ -188,10 +188,23 @@ async def _send_base64_image_as_photo_async(bot, chat_id: int, base64_text: str,
 # ── клавиатуры ────────────────────────────────────────────────────────
 def get_tests_types_kb(with_menu: bool = False, include_back: bool = False) -> InlineKeyboardMarkup:
     types_list = get_all_tests_types()
-    keyboard = [
-        [InlineKeyboardButton(text=f"Тест {t}", callback_data=f"{CALLBACK_PREFIX}_choose_test_{t}")]
-        for t in types_list if t not in (None, "")
-    ]
+    
+    # Создаем кнопки в 3 столбика
+    keyboard = []
+    for i in range(0, len(types_list), 3):
+        row = []
+        # Первая кнопка в ряду
+        if i < len(types_list) and types_list[i] not in (None, ""):
+            row.append(InlineKeyboardButton(text=f"Тест {types_list[i]}", callback_data=f"{CALLBACK_PREFIX}_choose_test_{types_list[i]}"))
+        # Вторая кнопка в ряду (если есть)
+        if i + 1 < len(types_list) and types_list[i + 1] not in (None, ""):
+            row.append(InlineKeyboardButton(text=f"Тест {types_list[i + 1]}", callback_data=f"{CALLBACK_PREFIX}_choose_test_{types_list[i + 1]}"))
+        # Третья кнопка в ряду (если есть)
+        if i + 2 < len(types_list) and types_list[i + 2] not in (None, ""):
+            row.append(InlineKeyboardButton(text=f"Тест {types_list[i + 2]}", callback_data=f"{CALLBACK_PREFIX}_choose_test_{types_list[i + 2]}"))
+        if row:  # Добавляем ряд только если в нем есть кнопки
+            keyboard.append(row)
+    
     # --- Кнопка "Работа над ошибками" ---
     keyboard.append([InlineKeyboardButton(text="💡 Работа над ошибками", callback_data=f"{CALLBACK_PREFIX}_work_on_mistakes")])
     if include_back:
@@ -276,7 +289,7 @@ async def start_test(cb: CallbackQuery):
             reply_markup=kb
         )
         st = user_test_state_oge.setdefault(cb.from_user.id, {})
-        st.update({"type": test_type, "idx": idx, "q_ids": q_ids, "grid_msg_id": sent.message_id})
+        st.update({"type": test_type, "idx": idx, "q_ids": q_ids, "grid_msg_id": sent.message_id, "answered": False})
         await cb.answer()
         return
 
@@ -291,6 +304,7 @@ async def start_test(cb: CallbackQuery):
         "type": test_type,
         "idx": 0,
         "q_ids": [q["id"] for q in questions],
+        "answered": False,  # Сбрасываем флаг answered при начале теста
     }
     clear_test_progress(cb.from_user.id, _t(test_type))
     grid_kb = get_test_grid_kb(cb.from_user.id, test_type, user_test_state_oge[cb.from_user.id]["q_ids"])
@@ -434,6 +448,7 @@ async def jump_to_question(cb: CallbackQuery):
         "q_ids": q_ids,
         "grid_msg_id": prev.get("grid_msg_id"),
         "used_hints": prev.get("used_hints", {}),
+        "answered": False,  # Сбрасываем флаг answered при переходе к вопросу
     }
     await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
     await cb.answer()
@@ -449,7 +464,14 @@ async def send_next_test_question(user_id, message_obj, is_callback=False):
         await message_obj.answer("Тест завершён! Возвращаюсь в меню.")
         return
     
-    q = get_question_by_id(q_ids[idx])
+    # Используем новую функцию для получения вопроса с изображением
+    from bot.services.test_sql_oge import get_question_with_image
+    q = get_question_with_image(q_ids[idx])
+    
+    if not q:
+        await message_obj.answer("Ошибка: вопрос не найден.")
+        return
+    
     log_question_started(user_id, _t(state["type"]), q["id"])  # --- ЛОГИРОВАНИЕ СТАРТА ---
     
     # Подсказки: максимум 10 на 30 вопросов одного теста
@@ -457,76 +479,47 @@ async def send_next_test_question(user_id, message_obj, is_callback=False):
     hints_left = max(0, 10 - used_hints)
     kb = get_stop_test_kb(q['id'], hints_left=hints_left)
     
-    # Обрабатываем вопрос - проверяем наличие изображений
-    question_text = q['question']
-    filename = q.get('filename', '')
+    # Формируем сообщение с вопросом
+    msg = f"Вопрос {idx+1} из {len(q_ids)} (ОГЭ. Тест {state['type']})\n\n"
+    msg += _format_question_text(q['question'])
     
-    # Проверяем, есть ли упоминание рисунка в вопросе
-    has_image_reference = any(word in question_text.lower() for word in ['рисунке', 'схеме', 'диаграмме', 'графике'])
+    # Добавляем варианты ответов, если они есть
+    if q['options']:
+        options = q['options'].split('\n')
+        msg += "\n\n" + "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
     
-    # Форматируем вопрос
-    formatted_q = _format_question_text(question_text)
+    msg += "\n\nВведите номер(а) ответа (например: 2 или 13):"
     
-    # Обрабатываем варианты ответов
-    # В базе данных варианты могут быть в одной строке, разделенные цифрами
-    options_text = q['options']
-    image_options = []
-    text_options = []
-    
-    # Ищем варианты ответов по паттерну: цифра) текст или цифра) data:image/...
-    import re
-    option_pattern = r'(\d+)\)\s*(.*?)(?=\d+\)|$)'
-    matches = re.findall(option_pattern, options_text, re.DOTALL)
-    
-    for i, (num, content) in enumerate(matches):
-        content = content.strip()
-        if not content:  # Пропускаем пустые варианты
-            continue
+    # Отправляем сообщение с изображением, если оно есть
+    if q.get('image'):
+        try:
+            # Отправляем изображение с подписью
+            from aiogram.types import BufferedInputFile
             
-        if _is_base64_image(content):
-            image_options.append((int(num), content))
-        else:
-            text_options.append(f"{num}) {content}")
+            # Создаём BufferedInputFile из байтов изображения
+            image_bytes = q['image']['data']
+            photo_file = BufferedInputFile(
+                file=image_bytes,
+                filename=q['image'].get('filename', 'question.png')
+            )
+            
+            sent_q = await message_obj.answer_photo(
+                photo=photo_file,
+                caption=_to_html_with_code(msg),
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        except Exception as e:
+            # Если не удалось отправить изображение, отправляем обычное сообщение
+            from bot.utils_pkg_new.logger import log_error
+            log_error(e, f"Failed to send image for OGE question {q['id']}", user_id=user_id)
+            sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    else:
+        # Отправляем обычное сообщение без изображения
+        sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
     
-    # Формируем полное сообщение с вопросом и вариантами ответов
-    full_message = f"Вопрос {idx+1} из {len(q_ids)} (ОГЭ. Тест {state['type']})\n\n{formatted_q}"
-    
-    # Варианты ответов добавляются ниже с нумерацией
-    
-    # Добавляем инструкцию по вводу ответа
-    if image_options or text_options:
-        full_message += "\n\nВведите номер(а) ответа (например: 2 или 13):"
-        
-        # Добавляем варианты ответов (они уже пронумерованы в БД)
-        if text_options:
-            full_message += "\n\n" + "\n".join(text_options)
-    
-    # Если есть упоминание рисунка, добавляем информацию об изображении
-    if has_image_reference and filename:
-        full_message += f"\n\n📷 [Изображение: {filename}]"
-    elif has_image_reference:
-        full_message += "\n\n📷 [Изображение отсутствует]"
-    
-    # Отправляем полное сообщение
-    html_message = _to_html_with_code(full_message)
-    safe_message = _truncate_message(html_message, 4000)
-    
-    sent_q = await message_obj.answer(safe_message, parse_mode="HTML", reply_markup=kb)
+    # Запомним id сообщения-вопроса, чтобы удалить его при переходе «Далее»
     user_test_state_oge[user_id]["last_question_msg_id"] = sent_q.message_id
-    
-    # Если сообщение было обрезано, отправляем продолжение
-    if len(html_message) > 4000:
-        remaining_text = html_message[4000:]
-        remaining_safe = _truncate_message(remaining_text, 4000)
-        await message_obj.answer(remaining_safe, parse_mode="HTML")
-    
-    # Отправляем изображения как фото (если есть)
-    for option_num, base64_img in image_options:
-        caption = f"Вариант {option_num}"
-        success = await _send_base64_image_as_photo_async(message_obj.bot, message_obj.chat.id, base64_img, caption)
-        if not success:
-            # Если не удалось отправить как фото, отправляем как текст
-            await message_obj.answer(f"Вариант {option_num}: [Изображение]")
 
 @router.callback_query(lambda c: c.data == f"{CALLBACK_PREFIX}_stop_test")
 async def stop_test(cb: CallbackQuery):
@@ -656,6 +649,8 @@ async def go_next_question(cb: CallbackQuery):
         except Exception:
             pass
         st["idx"] += 1
+        # Сбрасываем флаг answered для нового вопроса
+        st["answered"] = False
         await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
         await cb.answer()
         return
@@ -669,6 +664,8 @@ async def go_next_question(cb: CallbackQuery):
         except Exception:
             pass
         st["idx"] += 1
+        # Сбрасываем флаг answered для нового вопроса
+        st["answered"] = False
         await send_next_mistake_question(cb.from_user.id, cb.message)
         await cb.answer()
         return
@@ -689,11 +686,19 @@ async def check_test_answer(m: types.Message):
         state = safe_get_state(m.from_user.id)
         idx, q_ids, q = safe_get_question_data(state)
         
+        # Проверяем, не отвечал ли уже пользователь на этот вопрос
+        if state.get("answered", False):
+            await m.answer("❌ Вы уже ответили на этот вопрос. Используйте кнопки «Объяснение» или «Далее».")
+            return
+        
         # Валидируем ответ пользователя
         user_answer = validate_user_answer(m.text)
         correct = ''.join(filter(str.isdigit, str(q.get("correct_answer", ""))))
         is_correct = user_answer == correct
         log_question_answered(m.from_user.id, q["id"], m.text, is_correct)  # --- ЛОГИРОВАНИЕ ОТВЕТА ---
+        
+        # Отмечаем, что пользователь ответил на вопрос
+        user_test_state_oge[m.from_user.id]["answered"] = True
         
     except ValueError as e:
         await m.answer(f"❌ Ошибка: {str(e)}")
@@ -1165,20 +1170,60 @@ async def send_next_mistake_question(user_id, message_obj):
         await message_obj.answer("Все ошибки в этом тесте исправлены! 👍")
         return
     q_id = q_ids[idx]
-    q = get_question_by_id(q_id)
+    
+    # Используем новую функцию для получения вопроса с изображением
+    from bot.services.test_sql_oge import get_question_with_image
+    q = get_question_with_image(q_id)
+    
+    if not q:
+        await message_obj.answer("Ошибка: вопрос не найден.")
+        return
+    
     log_question_started(user_id, _t(state["type"]), q_id)  # --- ЛОГИРОВАНИЕ СТАРТА ---
-    options = q['options'].split('\n')
-    formatted_q = _format_question_text(q['question'])
-    msg = (
-        f"Ошибка {idx+1} из {len(q_ids)} (ОГЭ. Тест {state['type']})\n\n"
-        f"{formatted_q}\n\n" +
-        "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)]) +
-        "\n\nПовтори попытку: введи номер(а) ответа:"
-    )
+    
+    # Формируем сообщение с вопросом
+    msg = f"Ошибка {idx+1} из {len(q_ids)} (ОГЭ. Тест {state['type']})\n\n"
+    msg += _format_question_text(q['question'])
+    
+    # Добавляем варианты ответов, если они есть
+    if q['options']:
+        options = q['options'].split('\n')
+        msg += "\n\n" + "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
+    
+    msg += "\n\nПовтори попытку: введи номер(а) ответа:"
+    
     used_hints = user_test_state_oge.get(user_id, {}).get("used_hints", {}).get(state["type"], 0)
     hints_left = max(0, 10 - used_hints)
     kb = get_stop_test_kb(q_id, hints_left=hints_left)
-    sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
+    # Отправляем сообщение с изображением, если оно есть
+    if q.get('image'):
+        try:
+            # Отправляем изображение с подписью
+            from aiogram.types import BufferedInputFile
+            
+            # Создаём BufferedInputFile из байтов изображения
+            image_bytes = q['image']['data']
+            photo_file = BufferedInputFile(
+                file=image_bytes,
+                filename=q['image'].get('filename', 'question.png')
+            )
+            
+            sent_q = await message_obj.answer_photo(
+                photo=photo_file,
+                caption=_to_html_with_code(msg),
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        except Exception as e:
+            # Если не удалось отправить изображение, отправляем обычное сообщение
+            from bot.utils_pkg_new.logger import log_error
+            log_error(e, f"Failed to send image for OGE mistake question {q_id}", user_id=user_id)
+            sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    else:
+        # Отправляем обычное сообщение без изображения
+        sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
+    
     user_test_state_oge[user_id]["last_question_msg_id"] = sent_q.message_id
 
 # --- Проверка ответа пользователя на ошибочный вопрос ---
