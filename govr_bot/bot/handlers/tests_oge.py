@@ -188,10 +188,20 @@ async def _send_base64_image_as_photo_async(bot, chat_id: int, base64_text: str,
 # ── клавиатуры ────────────────────────────────────────────────────────
 def get_tests_types_kb(with_menu: bool = False, include_back: bool = False) -> InlineKeyboardMarkup:
     types_list = get_all_tests_types()
-    keyboard = [
-        [InlineKeyboardButton(text=f"Тест {t}", callback_data=f"{CALLBACK_PREFIX}_choose_test_{t}")]
-        for t in types_list if t not in (None, "")
-    ]
+    
+    # Создаем кнопки в 2 столбика
+    keyboard = []
+    for i in range(0, len(types_list), 2):
+        row = []
+        # Первая кнопка в ряду
+        if i < len(types_list) and types_list[i] not in (None, ""):
+            row.append(InlineKeyboardButton(text=f"Тест {types_list[i]}", callback_data=f"{CALLBACK_PREFIX}_choose_test_{types_list[i]}"))
+        # Вторая кнопка в ряду (если есть)
+        if i + 1 < len(types_list) and types_list[i + 1] not in (None, ""):
+            row.append(InlineKeyboardButton(text=f"Тест {types_list[i + 1]}", callback_data=f"{CALLBACK_PREFIX}_choose_test_{types_list[i + 1]}"))
+        if row:  # Добавляем ряд только если в нем есть кнопки
+            keyboard.append(row)
+    
     # --- Кнопка "Работа над ошибками" ---
     keyboard.append([InlineKeyboardButton(text="💡 Работа над ошибками", callback_data=f"{CALLBACK_PREFIX}_work_on_mistakes")])
     if include_back:

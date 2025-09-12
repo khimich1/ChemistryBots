@@ -99,10 +99,20 @@ def tests_instruction_text() -> str:
 # =========================
 def get_tests_types_kb(with_menu: bool = False, include_back: bool = False):
     types = get_all_tests_types()
-    keyboard = [
-        [InlineKeyboardButton(text=f"Тест {t}", callback_data=f"choose_test_{t}")]
-        for t in types if t not in (None, '')
-    ]
+    
+    # Создаем кнопки в 2 столбика
+    keyboard = []
+    for i in range(0, len(types), 2):
+        row = []
+        # Первая кнопка в ряду
+        if i < len(types) and types[i] not in (None, ''):
+            row.append(InlineKeyboardButton(text=f"Тест {types[i]}", callback_data=f"choose_test_{types[i]}"))
+        # Вторая кнопка в ряду (если есть)
+        if i + 1 < len(types) and types[i + 1] not in (None, ''):
+            row.append(InlineKeyboardButton(text=f"Тест {types[i + 1]}", callback_data=f"choose_test_{types[i + 1]}"))
+        if row:  # Добавляем ряд только если в нем есть кнопки
+            keyboard.append(row)
+    
     # --- Кнопка "Работа над ошибками"
     keyboard.append([InlineKeyboardButton(text="💡 Работа над ошибками", callback_data="work_on_mistakes")])
     if include_back:
