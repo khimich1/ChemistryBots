@@ -6,11 +6,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # База с вопросами тестов (таблица `tests`).
-# 1) Если задано в .env (TESTS_DB_PATH) — используем его
-# 2) Иначе берём дефолт: ChemistryBots/shared/tests1.db
+# 1) Если задано в .env (TESTS_DB_EGE) — используем его
+# 2) Иначе берём дефолт: ChemistryBots/shared/test_ege.db
 _THIS_DIR = os.path.dirname(__file__)                             # govr_bot/bot/services
 _PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
-DB_FILE = os.getenv("TESTS_DB_PATH") or os.path.join(_PROJECT_ROOT, "shared", "tests1.db")
+DB_FILE = os.getenv("TESTS_DB_EGE") or os.path.join(_PROJECT_ROOT, "shared", "test_ege.db")
 
 
 def _ensure_issue_columns():

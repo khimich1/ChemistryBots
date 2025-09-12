@@ -1,8 +1,11 @@
 import os, sqlite3
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _THIS_DIR = os.path.dirname(__file__)            # bot/services
 _PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
-DB_FILE = os.path.join(_PROJECT_ROOT, "shared", "tests_updated.db")
+DB_FILE = os.getenv("TESTS_DB_OGE") or os.path.join(_PROJECT_ROOT, "shared", "test_oge.db")
 
 def _ensure_issue_columns():
     try:
