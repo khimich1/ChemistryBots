@@ -101,9 +101,9 @@ def tests_instruction_text() -> str:
 def get_tests_types_kb(with_menu: bool = False, include_back: bool = False):
     types = get_all_tests_types()
     
-    # Создаем кнопки в 2 столбика
+    # Создаем кнопки в 3 столбика
     keyboard = []
-    for i in range(0, len(types), 2):
+    for i in range(0, len(types), 3):
         row = []
         # Первая кнопка в ряду
         if i < len(types) and types[i] not in (None, ''):
@@ -111,6 +111,9 @@ def get_tests_types_kb(with_menu: bool = False, include_back: bool = False):
         # Вторая кнопка в ряду (если есть)
         if i + 1 < len(types) and types[i + 1] not in (None, ''):
             row.append(InlineKeyboardButton(text=f"Тест {types[i + 1]}", callback_data=f"choose_test_{types[i + 1]}"))
+        # Третья кнопка в ряду (если есть)
+        if i + 2 < len(types) and types[i + 2] not in (None, ''):
+            row.append(InlineKeyboardButton(text=f"Тест {types[i + 2]}", callback_data=f"choose_test_{types[i + 2]}"))
         if row:  # Добавляем ряд только если в нем есть кнопки
             keyboard.append(row)
     
@@ -320,6 +323,7 @@ async def start_test(cb: CallbackQuery):
             "idx": idx,
             "q_ids": q_ids,
             "grid_msg_id": sent.message_id,
+            "answered": False,  # Сбрасываем флаг answered при начале теста
         })
         await cb.answer()
         return
@@ -334,7 +338,8 @@ async def start_test(cb: CallbackQuery):
     user_test_state[cb.from_user.id] = {
         "type": test_type,
         "idx": 0,
-        "q_ids": [q["id"] for q in questions]
+        "q_ids": [q["id"] for q in questions],
+        "answered": False,  # Сбрасываем флаг answered при начале теста
     }
     clear_test_progress(cb.from_user.id, test_type)
     # Показать сетку перед началом и сохранить её id
@@ -440,6 +445,8 @@ async def go_next_question(cb: CallbackQuery):
         except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting last question message for user {cb.from_user.id}", user_id=cb.from_user.id)
         st["idx"] += 1
+        # Сбрасываем флаг answered для нового вопроса
+        st["answered"] = False
         await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
         await cb.answer()
         return
@@ -455,6 +462,8 @@ async def go_next_question(cb: CallbackQuery):
         except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error deleting last mistake question message for user {cb.from_user.id}", user_id=cb.from_user.id)
         st["idx"] += 1
+        # Сбрасываем флаг answered для нового вопроса
+        st["answered"] = False
         await send_next_mistake_question(cb.from_user.id, cb.message)
         await cb.answer()
         return
@@ -498,6 +507,7 @@ async def jump_to_question(cb: CallbackQuery):
         "q_ids": q_ids,
         "grid_msg_id": prev.get("grid_msg_id"),
         "used_hints": prev.get("used_hints", {}),
+        "answered": False,  # Сбрасываем флаг answered при переходе к вопросу
     }
     await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
     await cb.answer()
@@ -989,10 +999,19 @@ async def check_test_answer(m: types.Message):
     idx = state["idx"]
     q_ids = state["q_ids"]
     q = get_question_by_id(q_ids[idx])
+    
+    # Проверяем, не отвечал ли уже пользователь на этот вопрос
+    if state.get("answered", False):
+        await m.answer("❌ Вы уже ответили на этот вопрос. Используйте кнопки «Объяснение» или «Далее».")
+        return
+    
     user_answer = ''.join(filter(str.isdigit, m.text))
     correct = ''.join(filter(str.isdigit, str(q.get("correct_answer", ""))))
     is_correct = user_answer == correct
     log_question_answered(m.from_user.id, q["id"], m.text, is_correct)  # --- ЛОГИРОВАНИЕ ОТВЕТА ---
+    
+    # Отмечаем, что пользователь ответил на вопрос
+    user_test_state[m.from_user.id]["answered"] = True
 
     save_test_answer(
         m.from_user.id,

@@ -189,9 +189,9 @@ async def _send_base64_image_as_photo_async(bot, chat_id: int, base64_text: str,
 def get_tests_types_kb(with_menu: bool = False, include_back: bool = False) -> InlineKeyboardMarkup:
     types_list = get_all_tests_types()
     
-    # Создаем кнопки в 2 столбика
+    # Создаем кнопки в 3 столбика
     keyboard = []
-    for i in range(0, len(types_list), 2):
+    for i in range(0, len(types_list), 3):
         row = []
         # Первая кнопка в ряду
         if i < len(types_list) and types_list[i] not in (None, ""):
@@ -199,6 +199,9 @@ def get_tests_types_kb(with_menu: bool = False, include_back: bool = False) -> I
         # Вторая кнопка в ряду (если есть)
         if i + 1 < len(types_list) and types_list[i + 1] not in (None, ""):
             row.append(InlineKeyboardButton(text=f"Тест {types_list[i + 1]}", callback_data=f"{CALLBACK_PREFIX}_choose_test_{types_list[i + 1]}"))
+        # Третья кнопка в ряду (если есть)
+        if i + 2 < len(types_list) and types_list[i + 2] not in (None, ""):
+            row.append(InlineKeyboardButton(text=f"Тест {types_list[i + 2]}", callback_data=f"{CALLBACK_PREFIX}_choose_test_{types_list[i + 2]}"))
         if row:  # Добавляем ряд только если в нем есть кнопки
             keyboard.append(row)
     
@@ -286,7 +289,7 @@ async def start_test(cb: CallbackQuery):
             reply_markup=kb
         )
         st = user_test_state_oge.setdefault(cb.from_user.id, {})
-        st.update({"type": test_type, "idx": idx, "q_ids": q_ids, "grid_msg_id": sent.message_id})
+        st.update({"type": test_type, "idx": idx, "q_ids": q_ids, "grid_msg_id": sent.message_id, "answered": False})
         await cb.answer()
         return
 
@@ -301,6 +304,7 @@ async def start_test(cb: CallbackQuery):
         "type": test_type,
         "idx": 0,
         "q_ids": [q["id"] for q in questions],
+        "answered": False,  # Сбрасываем флаг answered при начале теста
     }
     clear_test_progress(cb.from_user.id, _t(test_type))
     grid_kb = get_test_grid_kb(cb.from_user.id, test_type, user_test_state_oge[cb.from_user.id]["q_ids"])
@@ -444,6 +448,7 @@ async def jump_to_question(cb: CallbackQuery):
         "q_ids": q_ids,
         "grid_msg_id": prev.get("grid_msg_id"),
         "used_hints": prev.get("used_hints", {}),
+        "answered": False,  # Сбрасываем флаг answered при переходе к вопросу
     }
     await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
     await cb.answer()
@@ -644,6 +649,8 @@ async def go_next_question(cb: CallbackQuery):
         except Exception:
             pass
         st["idx"] += 1
+        # Сбрасываем флаг answered для нового вопроса
+        st["answered"] = False
         await send_next_test_question(cb.from_user.id, cb.message, is_callback=True)
         await cb.answer()
         return
@@ -657,6 +664,8 @@ async def go_next_question(cb: CallbackQuery):
         except Exception:
             pass
         st["idx"] += 1
+        # Сбрасываем флаг answered для нового вопроса
+        st["answered"] = False
         await send_next_mistake_question(cb.from_user.id, cb.message)
         await cb.answer()
         return
@@ -677,11 +686,19 @@ async def check_test_answer(m: types.Message):
         state = safe_get_state(m.from_user.id)
         idx, q_ids, q = safe_get_question_data(state)
         
+        # Проверяем, не отвечал ли уже пользователь на этот вопрос
+        if state.get("answered", False):
+            await m.answer("❌ Вы уже ответили на этот вопрос. Используйте кнопки «Объяснение» или «Далее».")
+            return
+        
         # Валидируем ответ пользователя
         user_answer = validate_user_answer(m.text)
         correct = ''.join(filter(str.isdigit, str(q.get("correct_answer", ""))))
         is_correct = user_answer == correct
         log_question_answered(m.from_user.id, q["id"], m.text, is_correct)  # --- ЛОГИРОВАНИЕ ОТВЕТА ---
+        
+        # Отмечаем, что пользователь ответил на вопрос
+        user_test_state_oge[m.from_user.id]["answered"] = True
         
     except ValueError as e:
         await m.answer(f"❌ Ошибка: {str(e)}")
