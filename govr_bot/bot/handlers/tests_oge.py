@@ -277,8 +277,11 @@ async def start_test(cb: CallbackQuery):
         prev_grid_id = prev.get("grid_msg_id")
         if prev_grid_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_grid_id)
-    except Exception:
-        pass
+    except TelegramBadRequest as e:
+        # Сообщение уже удалено или не существует - это нормально
+        log_error(e, f"Message to delete not found for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except Exception as e:
+        log_error(e, f"Unexpected error deleting previous grid message for user {cb.from_user.id}", user_id=cb.from_user.id)
 
     # попытка восстановить прогресс (ОБРАТИ: _t(test_type))
     idx, q_ids = load_test_progress(cb.from_user.id, _t(test_type))
@@ -490,29 +493,63 @@ async def send_next_test_question(user_id, message_obj, is_callback=False):
     
     msg += "\n\nВведите номер(а) ответа (например: 2 или 13):"
     
-    # Отправляем сообщение с изображением, если оно есть
-    if q.get('image'):
+    # Отправляем сообщение с изображением(ями), если есть
+    if q.get('image') or q.get('images'):
         try:
-            # Отправляем изображение с подписью
             from aiogram.types import BufferedInputFile
             
-            # Создаём BufferedInputFile из байтов изображения
-            image_bytes = q['image']['data']
-            photo_file = BufferedInputFile(
-                file=image_bytes,
-                filename=q['image'].get('filename', 'question.png')
-            )
+            # Если одно изображение (старый формат)
+            if q.get('image'):
+                image_bytes = q['image']['data']
+                photo_file = BufferedInputFile(
+                    file=image_bytes,
+                    filename=q['image'].get('filename', 'question.png')
+                )
+                
+                sent_q = await message_obj.answer_photo(
+                    photo=photo_file,
+                    caption=_to_html_with_code(msg),
+                    parse_mode="HTML",
+                    reply_markup=kb
+                )
             
-            sent_q = await message_obj.answer_photo(
-                photo=photo_file,
-                caption=_to_html_with_code(msg),
-                parse_mode="HTML",
-                reply_markup=kb
-            )
+            # Если несколько изображений (новый формат)
+            elif q.get('images'):
+                # Создаём список BufferedInputFile для всех изображений
+                photo_files = []
+                for img in q['images']:
+                    photo_file = BufferedInputFile(
+                        file=img['data'],
+                        filename=img.get('filename', 'question.png')
+                    )
+                    photo_files.append(photo_file)
+                
+                # Отправляем медиа-группу с несколькими изображениями
+                from aiogram.types import InputMediaPhoto
+                media_group = []
+                
+                # Первое изображение с подписью
+                media_group.append(InputMediaPhoto(
+                    media=photo_files[0],
+                    caption=_to_html_with_code(msg),
+                    parse_mode="HTML"
+                ))
+                
+                # Остальные изображения без подписи
+                for photo_file in photo_files[1:]:
+                    media_group.append(InputMediaPhoto(media=photo_file))
+                
+                # Отправляем медиа-группу
+                sent_messages = await message_obj.answer_media_group(media_group)
+                sent_q = sent_messages[0]  # Берём первое сообщение для сохранения ID
+                
+                # Отправляем клавиатуру отдельным сообщением
+                sent_kb = await message_obj.answer("Выберите действие:", reply_markup=kb)
+                
         except Exception as e:
             # Если не удалось отправить изображение, отправляем обычное сообщение
             from bot.utils_pkg_new.logger import log_error
-            log_error(e, f"Failed to send image for OGE question {q['id']}", user_id=user_id)
+            log_error(e, f"Failed to send image(s) for OGE question {q['id']}", user_id=user_id)
             sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
     else:
         # Отправляем обычное сообщение без изображения
