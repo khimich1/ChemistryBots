@@ -27,6 +27,7 @@ from bot.services.plan import get_user_plan_code, limits_for, consume_daily
 from bot.utils_pkg_new.logger import log_error
 from bot.utils_pkg_new.telegram_error_handler import safe_edit_message, handle_telegram_errors
 from bot.utils import user_learning_state  # для проверки состояния учебника
+from bot.utils_pkg.message_manager import message_manager
 import sqlite3
 
 router = Router()
@@ -254,8 +255,21 @@ def get_stats_kb(test_type: int) -> InlineKeyboardMarkup:
 # =========================
 @router.message(lambda m: m.text == "📝 Тесты")
 async def show_tests_types_menu(m: types.Message):
-    await m.answer(tests_instruction_text(), parse_mode="HTML")
-    await m.answer("Выбери номер теста:", reply_markup=get_tests_types_kb(with_menu=True, include_back=True))
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    # Фолбэк: подчистим несколько последних сообщений, если что-то не было отмечено
+    try:
+        base = m.message_id
+        for delta in range(0, 7):
+            try:
+                await m.bot.delete_message(chat_id=m.chat.id, message_id=base - delta)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    msg1 = await m.answer(tests_instruction_text(), parse_mode="HTML")
+    message_manager.add_message(m.from_user.id, msg1.message_id)
+    msg2 = await m.answer("Выбери номер теста:", reply_markup=get_tests_types_kb(with_menu=True, include_back=True))
+    message_manager.add_message(m.from_user.id, msg2.message_id)
 
 @router.message(Command("tests"))
 async def show_tests_menu_cmd(m: types.Message):
@@ -266,6 +280,17 @@ async def show_tests_menu_cmd(m: types.Message):
 # =========================
 @router.callback_query(lambda c: c.data.startswith("choose_test_"))
 async def start_test(cb: CallbackQuery):
+    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    # Фолбэк: подчистим несколько последних сообщений, если что-то не было отмечено
+    try:
+        base = cb.message.message_id
+        for delta in range(0, 7):
+            try:
+                await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=base - delta)
+            except Exception:
+                pass
+    except Exception:
+        pass
     try:
         test_type = int(cb.data.split("_")[-1])
     except ValueError:
@@ -287,6 +312,7 @@ async def start_test(cb: CallbackQuery):
     if idx is not None and q_ids:
         kb = get_test_grid_kb(cb.from_user.id, test_type, q_ids)
         sent = await cb.message.answer(f"Тест {test_type}. Выбери номер задания или нажми «Начать заново»:", reply_markup=kb)
+        message_manager.add_message(cb.from_user.id, sent.message_id)
         # Сохраним id сообщения-сетки и прогресс, чтобы потом обновлять цвета
         st = user_test_state.setdefault(cb.from_user.id, {})
         st.update({
@@ -301,7 +327,8 @@ async def start_test(cb: CallbackQuery):
     # --- Если прогресса нет — стандартное поведение ---
     questions = get_questions_by_type(test_type)
     if not questions:
-        await cb.message.answer("Нет вопросов для этого теста.")
+        sent_none = await cb.message.answer("Нет вопросов для этого теста.")
+        message_manager.add_message(cb.from_user.id, sent_none.message_id)
         await cb.answer()
         return
     user_test_state[cb.from_user.id] = {
@@ -314,6 +341,7 @@ async def start_test(cb: CallbackQuery):
     grid_kb = get_test_grid_kb(cb.from_user.id, test_type, user_test_state[cb.from_user.id]["q_ids"])
     sent_grid = await cb.message.answer(f"Тест {test_type}. Выбери номер задания или нажми «Начать заново»:", reply_markup=grid_kb)
     user_test_state[cb.from_user.id]["grid_msg_id"] = sent_grid.message_id
+    message_manager.add_message(cb.from_user.id, sent_grid.message_id)
     await cb.answer()
 
 @router.callback_query(lambda c: c.data.startswith("explain_"))
@@ -337,13 +365,15 @@ async def show_explanation(cb: CallbackQuery):
     q = get_question_by_id(q_id)
     explanation = q.get("explanation", "") or q.get("detailed_explanation", "")
     if explanation and explanation.strip():
-        await cb.message.answer(
+        sent = await cb.message.answer(
             _to_html_with_code(f"🧠 Объяснение:\n{explanation}"),
             parse_mode="HTML",
             reply_markup=get_next_kb(q_id)
         )
+        message_manager.add_message(cb.from_user.id, sent.message_id)
     else:
-        await cb.message.answer("Пока нет объяснения к этому заданию.")
+        sent = await cb.message.answer("Пока нет объяснения к этому заданию.")
+        message_manager.add_message(cb.from_user.id, sent.message_id)
     await cb.answer()
 
 # =========================
@@ -444,7 +474,8 @@ async def jump_to_question(cb: CallbackQuery):
     if not q_ids:
         questions = get_questions_by_type(test_type)
         if not questions:
-            await cb.message.answer("Нет вопросов для этого теста.")
+            sent = await cb.message.answer("Нет вопросов для этого теста.")
+            message_manager.add_message(cb.from_user.id, sent.message_id)
             await cb.answer()
             return
         q_ids = [q["id"] for q in questions]
@@ -495,7 +526,8 @@ async def report_question(cb: CallbackQuery):
             [InlineKeyboardButton(text="✍️ Свой вариант", callback_data=f"report_reason_{q_id}_custom")],
         ]
     )
-    await cb.message.answer("Что именно смутило в этом задании?", reply_markup=kb)
+    sent = await cb.message.answer("Что именно смутило в этом задании?", reply_markup=kb)
+    message_manager.add_message(cb.from_user.id, sent.message_id)
     await cb.answer()
 
 
@@ -649,11 +681,30 @@ async def send_next_test_question(user_id, message_obj, is_callback=False):
     state = user_test_state.get(user_id)
     if not state:
         return
+    # Перед показом нового вопроса удалим только сообщения с результатами ответов
+    # НЕ удаляем grid сообщение, так как оно может понадобиться для редактирования
+    try:
+        # Удаляем только сообщения с результатами, но сохраняем grid
+        last_result_msg_id = state.get("last_result_msg_id")
+        if last_result_msg_id:
+            try:
+                await message_obj.bot.delete_message(chat_id=message_obj.chat.id, message_id=last_result_msg_id)
+            except Exception:
+                pass
+        last_question_msg_id = state.get("last_question_msg_id") 
+        if last_question_msg_id:
+            try:
+                await message_obj.bot.delete_message(chat_id=message_obj.chat.id, message_id=last_question_msg_id)
+            except Exception:
+                pass
+    except Exception:
+        pass
     idx = state["idx"]
     q_ids = state["q_ids"]
     if idx >= len(q_ids):
         user_test_state.pop(user_id, None)
-        await message_obj.answer("Тест завершён! Возвращаюсь в меню.")
+        sent_end = await message_obj.answer("Тест завершён! Возвращаюсь в меню.")
+        message_manager.add_message(user_id, sent_end.message_id)
         return
     
     # Используем новую функцию для получения вопроса с изображением
@@ -716,6 +767,7 @@ async def send_next_test_question(user_id, message_obj, is_callback=False):
     
     # Запомним id сообщения-вопроса, чтобы удалить его при переходе «Далее»
     user_test_state[user_id]["last_question_msg_id"] = sent_q.message_id
+    message_manager.add_message(user_id, sent_q.message_id)
 
 # =========================
 # 6. Обработчик: Стоп тест (универсально для обоих режимов)
@@ -861,6 +913,9 @@ async def to_main_menu(cb: CallbackQuery):
     except (ImportError, ModuleNotFoundError) as e:
         log_error(e, f"Import error clearing flashcards state in to_main_menu for user {cb.from_user.id}", user_id=cb.from_user.id)
     
+    # Удаляем все старые сообщения перед показом главного меню
+    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    
     await cb.message.answer("Главное меню:", reply_markup=main_kb)
     await cb.answer()
 
@@ -963,6 +1018,10 @@ async def check_test_answer(m: types.Message):
     # Отправляем результат и сохраняем message_id, чтобы позже заменить на краткую строку
     sent = await m.answer(_to_html_with_code(resp), parse_mode="HTML", reply_markup=get_result_kb(q["id"]))
     user_test_state[m.from_user.id]["last_result_msg_id"] = sent.message_id
+    try:
+        message_manager.add_message(m.from_user.id, sent.message_id)
+    except Exception:
+        pass
     # Обновим сетку статусов, если она есть
     try:
         grid_msg_id = user_test_state.get(m.from_user.id, {}).get("grid_msg_id")
@@ -1038,9 +1097,27 @@ async def send_next_mistake_question(user_id, message_obj):
     state = user_test_state.get(user_id)
     idx = state["idx"]
     q_ids = state["mistake_q_ids"]
+    # Перед показом следующего ошибочного вопроса удалим только сообщения с результатами
+    try:
+        # Удаляем только сообщения с результатами ответов
+        last_result_msg_id = state.get("last_result_msg_id")
+        if last_result_msg_id:
+            try:
+                await message_obj.bot.delete_message(chat_id=message_obj.chat.id, message_id=last_result_msg_id)
+            except Exception:
+                pass
+        last_question_msg_id = state.get("last_question_msg_id") 
+        if last_question_msg_id:
+            try:
+                await message_obj.bot.delete_message(chat_id=message_obj.chat.id, message_id=last_question_msg_id)
+            except Exception:
+                pass
+    except Exception:
+        pass
     if idx >= len(q_ids):
         user_test_state.pop(user_id, None)
-        await message_obj.answer("Все ошибки в этом тесте исправлены! 👍")
+        sent_done = await message_obj.answer("Все ошибки в этом тесте исправлены! 👍")
+        message_manager.add_message(user_id, sent_done.message_id)
         return
     q_id = q_ids[idx]
     
@@ -1101,6 +1178,7 @@ async def send_next_mistake_question(user_id, message_obj):
         sent_q = await message_obj.answer(_to_html_with_code(msg), parse_mode="HTML", reply_markup=kb)
     
     user_test_state[user_id]["last_question_msg_id"] = sent_q.message_id
+    message_manager.add_message(user_id, sent_q.message_id)
 
 # --- Проверка ответа пользователя на ошибочный вопрос ---
 @router.message(lambda m: (
@@ -1144,6 +1222,10 @@ async def check_mistake_answer(m: types.Message):
     resp = "\n".join(resp_lines)
     sent = await m.answer(resp, reply_markup=get_result_kb(q_id))
     user_test_state[m.from_user.id]["last_result_msg_id"] = sent.message_id
+    try:
+        message_manager.add_message(m.from_user.id, sent.message_id)
+    except Exception:
+        pass
     # Переход к следующему вопросу ошибок — только после «Далее»
     # Обновим сетку статусов, если она показана в чате
     try:

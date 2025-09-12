@@ -6,6 +6,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.filters.callback_data import CallbackData
 
 from bot.utils import user_learning_state
+from bot.utils_pkg.message_manager import message_manager
 from bot.services.spreadsheet import fetch_user_records
 from bot.services.answer_db import (
     get_user_full_name,
@@ -78,9 +79,11 @@ main_kb = ReplyKeyboardMarkup(
 # ==== /start и возврат в меню ====
 @router.message(lambda m: (
     (m.text or "").strip().lower() in {"/start", "/menu", "меню", "в меню", "в главное меню", "⬅️ в меню"}
+    or (m.text or "").strip() == "🏠 В главное меню"
     or ("меню" in (m.text or "").lower())
 ))
 async def cmd_start(m: types.Message, state: FSMContext):
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
     # Очищаем все состояния при возврате в меню
     await state.clear()
     
@@ -106,32 +109,39 @@ async def cmd_start(m: types.Message, state: FSMContext):
     
     if subscription_status is None:
         # Ошибка API — показываем понятное сообщение, но всё равно предлагаем подписаться
-        await m.answer(
+        msg = await m.answer(
             "Не удалось проверить подписку (временная ошибка). Попробуйте позже или нажмите 'Проверить подписку' ещё раз.",
             reply_markup=build_subscribe_kb()
         )
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
     elif not subscription_status:
         # Пользователь не подписан
-        await m.answer(
+        msg = await m.answer(
             "Чтобы пользоваться ботом, подпишись на канал и нажми 'Проверить подписку'.",
             reply_markup=build_subscribe_kb()
         )
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
     full_name = get_user_full_name(m.from_user.id)
     if not full_name:
         await state.set_state(ProfileStates.waiting_full_name)
-        await m.answer(
+        msg = await m.answer(
             "Пожалуйста, напиши своё имя и фамилию в одном сообщении (например: Иван Петров).\n"
             "Это нужно для отчётов и статистики."
         )
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
 
     # Отправим мотивационное сообщение (если таблица chem_motivation есть в базе)
     mot = get_random_motivation_text()
     if mot:
         try:
-            await m.answer(mot)
+            sent = await m.answer(mot)
+            try:
+                message_manager.add_message(m.from_user.id, sent.message_id)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -146,7 +156,7 @@ async def cmd_start(m: types.Message, state: FSMContext):
     if mot:
         extra_lines.append(mot)
 
-    await m.answer(
+    sent = await m.answer(
         "👋 Привет! Я твой персональный помощник по химии.\n\n"
         "🎯 <b>Что я умею:</b>\n"
         "• 📚 <b>Теория по химии</b> — структурированные уроки по всем разделам\n"
@@ -159,6 +169,7 @@ async def cmd_start(m: types.Message, state: FSMContext):
         reply_markup=main_kb,
         parse_mode="HTML"
     )
+    message_manager.add_message(m.from_user.id, sent.message_id)
 
 @router.callback_query(lambda c: c.data == "check_sub")
 async def on_check_subscription(cb: types.CallbackQuery, state: FSMContext):
@@ -169,10 +180,11 @@ async def on_check_subscription(cb: types.CallbackQuery, state: FSMContext):
         # Ошибка API — показываем понятное сообщение
         await cb.answer("Не удалось проверить подписку (временная ошибка). Попробуйте позже.", show_alert=True)
         try:
-            await cb.message.answer(
+            sent = await cb.message.answer(
                 "Не удалось проверить подписку (временная ошибка). Попробуйте позже или нажмите 'Проверить подписку' ещё раз.",
                 reply_markup=build_subscribe_kb()
             )
+            message_manager.add_message(cb.from_user.id, sent.message_id)
         except Exception:
             pass
     elif subscription_status:
@@ -190,23 +202,27 @@ async def on_check_subscription(cb: types.CallbackQuery, state: FSMContext):
         full_name = get_user_full_name(cb.from_user.id)
         if not full_name:
             await state.set_state(ProfileStates.waiting_full_name)
-            await cb.message.answer(
+            msg = await cb.message.answer(
                 "Пожалуйста, напиши своё имя и фамилию в одном сообщении (например: Иван Петров).\n"
                 "Это нужно для отчётов и статистики."
             )
+            message_manager.add_message(cb.from_user.id, msg.message_id)
         else:
             # Очищаем все состояния при возврате в меню
             await state.clear()
-            await cb.message.answer("Спасибо за подписку! Ниже — главное меню.", reply_markup=main_kb)
+            await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+            sent = await cb.message.answer("Спасибо за подписку! Ниже — главное меню.", reply_markup=main_kb)
+            message_manager.add_message(cb.from_user.id, sent.message_id)
         await cb.answer("Подписка подтверждена ✅", show_alert=False)
     else:
         # Пользователь не подписан
         await cb.answer("Ещё не вижу подписки. Подпишись и попробуй снова.", show_alert=True)
         try:
-            await cb.message.answer(
+            sent = await cb.message.answer(
                 "Подписка всё ещё не подтверждена. Нажми ещё раз 'Проверить подписку' после подписки.",
                 reply_markup=build_subscribe_kb(),
             )
+            message_manager.add_message(cb.from_user.id, sent.message_id)
         except Exception:
             pass
 
@@ -225,11 +241,17 @@ async def set_full_name(m: types.Message, state: FSMContext):
     mot = get_random_motivation_text()
     if mot:
         try:
-            await m.answer(mot)
+            sent = await m.answer(mot)
+            try:
+                message_manager.add_message(m.from_user.id, sent.message_id)
+            except Exception:
+                pass
         except Exception:
             pass
 
-    await m.answer("Ниже — главное меню.", reply_markup=main_kb)
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    sent = await m.answer("Ниже — главное меню.", reply_markup=main_kb)
+    message_manager.add_message(m.from_user.id, sent.message_id)
 
 # ==== Подменю «Теория по химии» ====
 @router.message(lambda m: (m.text or "").strip().lower() in {
@@ -239,6 +261,7 @@ async def set_full_name(m: types.Message, state: FSMContext):
     "теория",
 })
 async def theory_menu(m: types.Message):
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
     theory_description = """**Теория по химии**
 
 **Что ты получишь:**
@@ -266,7 +289,8 @@ async def theory_menu(m: types.Message):
         ],
         resize_keyboard=True
     )
-    await m.answer(theory_description, reply_markup=kb, parse_mode="Markdown")
+    msg = await m.answer(theory_description, reply_markup=kb, parse_mode="Markdown")
+    message_manager.add_message(m.from_user.id, msg.message_id)
 
 
 
@@ -274,6 +298,7 @@ async def theory_menu(m: types.Message):
 # ==== Подменю «Тесты» из главного меню ====
 @router.message(lambda m: (m.text or "").strip().lower() == "📝 тесты")
 async def tests_entry_menu(m: types.Message):
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
     # Завершаем активную сессию теории, если была
     try:
         from bot.handlers.topics import user_learning_state
@@ -281,7 +306,8 @@ async def tests_entry_menu(m: types.Message):
     except Exception:
         pass
     from bot.handlers.tests import tests_instruction_text
-    await m.answer(tests_instruction_text(), parse_mode="HTML")
+    msg1 = await m.answer(tests_instruction_text(), parse_mode="HTML")
+    message_manager.add_message(m.from_user.id, msg1.message_id)
     kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии")],
@@ -290,10 +316,12 @@ async def tests_entry_menu(m: types.Message):
         ],
         resize_keyboard=True
     )
-    await m.answer("Выбери раздел тестов:", reply_markup=kb)
+    msg2 = await m.answer("Выбери раздел тестов:", reply_markup=kb)
+    message_manager.add_message(m.from_user.id, msg2.message_id)
 
 @router.message(lambda m: (m.text or "").strip().lower() == "🧪 тестовая часть егэ по химии")
 async def tests_open_catalog(m: types.Message):
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
     # На всякий случай тоже завершим теорию
     try:
         from bot.handlers.topics import user_learning_state
@@ -302,10 +330,12 @@ async def tests_open_catalog(m: types.Message):
         pass
     from bot.handlers.tests import get_tests_types_kb
     kb = get_tests_types_kb(with_menu=True, include_back=True)
-    await m.answer("Выбери тест:", reply_markup=kb)
+    msg = await m.answer("Выбери тест:", reply_markup=kb)
+    message_manager.add_message(m.from_user.id, msg.message_id)
 
 @router.callback_query(lambda c: c.data == "tests_go_back")
 async def tests_go_back(cb: types.CallbackQuery):
+    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     # Удаляем сообщение со списком тестов
     try:
         await cb.message.delete()
@@ -321,12 +351,14 @@ async def tests_go_back(cb: types.CallbackQuery):
         ],
         resize_keyboard=True
     )
-    await cb.message.answer("Выбери раздел тестов:", reply_markup=kb)
+    sent = await cb.message.answer("Выбери раздел тестов:", reply_markup=kb)
+    message_manager.add_message(cb.from_user.id, sent.message_id)
     await cb.answer()
 
 # Универсальная кнопка «В главное меню» для инлайн-кнопок
 @router.callback_query(lambda c: c.data == "to_main_menu")
 async def to_main_menu_cb(cb: types.CallbackQuery):
+    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     # Удаляем последнее сообщение и ещё 4 предыдущих (всего до 5)
     try:
         base = cb.message.message_id
@@ -337,7 +369,8 @@ async def to_main_menu_cb(cb: types.CallbackQuery):
                 pass
     except Exception:
         pass
-    await cb.message.answer("Главное меню:", reply_markup=main_kb)
+    sent = await cb.message.answer("Главное меню:", reply_markup=main_kb)
+    message_manager.add_message(cb.from_user.id, sent.message_id)
     await cb.answer()
 
 # ==== Отчёт (PDF) ====
@@ -351,14 +384,16 @@ async def get_report(m: types.Message):
         limit = limits_for(plan)["reports_per_month"]
         ok, _left = consume_monthly(m.from_user.id, "report", limit)
         if not ok:
-            await m.answer("В бесплатном тарифе — 1 PDF-отчёт в месяц. Оформи подписку в ‘💳 Тарифы и оплата’.")
+            msg = await m.answer("В бесплатном тарифе — 1 PDF-отчёт в месяц. Оформи подписку в ‘💳 Тарифы и оплата’.")
+            message_manager.add_message(m.from_user.id, msg.message_id)
             return
     except Exception:
         pass
 
     records = fetch_user_records(m.from_user.id)
     if not records:
-        await m.answer("Пока нет данных для отчёта — пройди темы или тесты.")
+        msg = await m.answer("Пока нет данных для отчёта — пройди темы или тесты.")
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
     pdf_path = make_report(m.from_user.id, m.from_user.full_name, records)
     await m.answer_document(FSInputFile(pdf_path), caption="Вот твой PDF-отчёт!")
@@ -404,7 +439,8 @@ async def how_bot_works(m: types.Message):
         "🎯 <b>Совет:</b> Занимайся регулярно, даже по 15-20 минут в день. "
         "Лучше немного, но каждый день, чем много, но редко!"
     )
-    await m.answer(text, reply_markup=main_kb)
+    msg = await m.answer(text, reply_markup=main_kb)
+    message_manager.add_message(m.from_user.id, msg.message_id)
 
 # Дублируем справку на команду /help
 @router.message(Command("help"))
@@ -425,6 +461,7 @@ async def resume_course(m: types.Message):
 # ==== Решатор задач ====
 @router.message(lambda m: m.text == "🔬 Решатор задач")
 async def ask_for_task_or_conspect_photo(m: types.Message, state: FSMContext):
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
     await state.set_state(TaskSolverStates.waiting_photo)
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="⬅️ В меню")]],
@@ -437,7 +474,7 @@ async def ask_for_task_or_conspect_photo(m: types.Message, state: FSMContext):
     plan_name = get_plan_name(plan_code)
     remaining, total = get_task_solver_remaining(m.from_user.id)
     
-    await m.answer(
+    msg_intro = await m.answer(
         f"🔬 <b>Решатор задач — твой ИИ-помощник</b>\n\n"
         f"💳 <b>Ваш тариф:</b> {plan_name}\n"
         f"📊 <b>Запросов в месяц:</b> {remaining}/{total}\n\n"
@@ -457,6 +494,10 @@ async def ask_for_task_or_conspect_photo(m: types.Message, state: FSMContext):
         reply_markup=kb,
         parse_mode="HTML"
     )
+    try:
+        message_manager.add_message(m.from_user.id, msg_intro.message_id)
+    except Exception:
+        pass
 
 
 @router.message(TaskSolverStates.waiting_photo)
@@ -464,7 +505,15 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
     # Возможность выйти в меню
     if (m.text or "").lower().strip() in {"⬅️ в меню", "в меню", "/menu"}:
         await state.clear()
-        await m.answer("Возвращаю в меню.", reply_markup=main_kb)
+        try:
+            await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+        except Exception:
+            pass
+        menu_msg = await m.answer("Возвращаю в меню.", reply_markup=main_kb)
+        try:
+            message_manager.add_message(m.from_user.id, menu_msg.message_id)
+        except Exception:
+            pass
         return
 
     # Обработка текстового сообщения
@@ -490,7 +539,11 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
             await state.clear()
             return
         
-        await m.answer("🔎 Анализирую текст… Подождите пару секунд")
+        tmp = await m.answer("🔎 Анализирую текст… Подождите пару секунд")
+        try:
+            message_manager.add_message(m.from_user.id, tmp.message_id)
+        except Exception:
+            pass
         try:
             # Проверяем, является ли текст химической задачей
             is_task = await is_chemistry_task(m.text)
@@ -498,14 +551,22 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
             if is_task:
                 solution = await solve_text_task(m.text)
                 if solution:
-                    await m.answer(
+                    res = await m.answer(
                         f"📝 Решение задачи:\n\n{solution}\n\n📊 Осталось запросов: {remaining}",
                         reply_markup=get_task_solver_kb()
                     )
+                    try:
+                        message_manager.add_message(m.from_user.id, res.message_id)
+                    except Exception:
+                        pass
                 else:
-                    await m.answer("Не удалось решить задачу. Попробуйте сформулировать её более чётко.")
+                    err = await m.answer("Не удалось решить задачу. Попробуйте сформулировать её более чётко.")
+                    try:
+                        message_manager.add_message(m.from_user.id, err.message_id)
+                    except Exception:
+                        pass
             else:
-                await m.answer(
+                notask = await m.answer(
                     "🔍 Это не похоже на химическую задачу.\n\n"
                     "Отправьте:\n"
                     "• 📝 Текст химической задачи — получите решение с объяснениями\n"
@@ -513,8 +574,16 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
                     "• 📸 Фото конспекта — получите аккуратно оформленный текст\n\n"
                     "⚠️ Важно: в заданиях и конспектах категорически нельзя ничего менять или добавлять!"
                 )
+                try:
+                    message_manager.add_message(m.from_user.id, notask.message_id)
+                except Exception:
+                    pass
         except Exception:
-            await m.answer("Произошла ошибка при обработке текста. Попробуйте ещё раз позже.")
+            e_msg = await m.answer("Произошла ошибка при обработке текста. Попробуйте ещё раз позже.")
+            try:
+                message_manager.add_message(m.from_user.id, e_msg.message_id)
+            except Exception:
+                pass
         finally:
             await state.clear()
         return
@@ -542,7 +611,11 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
             await state.clear()
             return
         
-        await m.answer("🔎 Анализирую фото… Подождите пару секунд")
+        tmp = await m.answer("🔎 Анализирую фото… Подождите пару секунд")
+        try:
+            message_manager.add_message(m.from_user.id, tmp.message_id)
+        except Exception:
+            pass
         try:
             # Берём самое большое превью и скачиваем через встроенный клиент aiogram
             file = await m.bot.get_file(m.photo[-1].file_id)
@@ -553,25 +626,49 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
             content_type, result = await process_image_for_task_or_conspect(img_bytes)
             
             if content_type == "НЕ_ОПРЕДЕЛЕНО":
-                await m.answer(result)
+                msg = await m.answer(result)
+                try:
+                    message_manager.add_message(m.from_user.id, msg.message_id)
+                except Exception:
+                    pass
             elif not result:
-                await m.answer("Не удалось обработать фото. Попробуйте сделать снимок чётче и без бликов.")
+                msg = await m.answer("Не удалось обработать фото. Попробуйте сделать снимок чётче и без бликов.")
+                try:
+                    message_manager.add_message(m.from_user.id, msg.message_id)
+                except Exception:
+                    pass
             else:
                 # Добавляем заголовок в зависимости от типа контента
                 if content_type == "ЗАДАЧА":
                     header = f"📝 Решение задачи:\n\n{result}\n\n📊 Осталось запросов: {remaining}"
-                    await m.answer(header, reply_markup=get_task_solver_kb())
+                    msg = await m.answer(header, reply_markup=get_task_solver_kb())
+                    try:
+                        message_manager.add_message(m.from_user.id, msg.message_id)
+                    except Exception:
+                        pass
                 else:  # КОНСПЕКТ
                     header = f"📸 Распознанный конспект:\n\n{result}\n\n📊 Осталось запросов: {remaining}"
-                    await m.answer(header, reply_markup=get_task_solver_kb())
+                    msg = await m.answer(header, reply_markup=get_task_solver_kb())
+                    try:
+                        message_manager.add_message(m.from_user.id, msg.message_id)
+                    except Exception:
+                        pass
         except Exception as e:
-            await m.answer("Произошла ошибка при обработке фото. Попробуйте ещё раз позже.")
+            msg = await m.answer("Произошла ошибка при обработке фото. Попробуйте ещё раз позже.")
+            try:
+                message_manager.add_message(m.from_user.id, msg.message_id)
+            except Exception:
+                pass
         finally:
             await state.clear()
         return
 
     # Если отправлено что-то другое
-    await m.answer("Пожалуйста, отправьте текст химической задачи или фото задачи/конспекта 📝📷")
+    msg = await m.answer("Пожалуйста, отправьте текст химической задачи или фото задачи/конспекта 📝📷")
+    try:
+        message_manager.add_message(m.from_user.id, msg.message_id)
+    except Exception:
+        pass
     await state.clear()
 
 # ==== Обработчики callback кнопок решатора ====
@@ -582,7 +679,15 @@ async def handle_task_solver_callback(callback: types.CallbackQuery, callback_da
     if callback_data.action == "main_menu":
         # Возвращаемся в главное меню
         await state.clear()
-        await callback.message.answer("Возвращаю в главное меню.", reply_markup=main_kb)
+        try:
+            await message_manager.delete_user_messages(callback.message.bot, callback.from_user.id, callback.message.chat.id)
+        except Exception:
+            pass
+        back_msg = await callback.message.answer("Возвращаю в главное меню.", reply_markup=main_kb)
+        try:
+            message_manager.add_message(callback.from_user.id, back_msg.message_id)
+        except Exception:
+            pass
         # Удаляем сообщение с кнопками
         try:
             await callback.message.delete()
@@ -610,11 +715,15 @@ async def handle_task_solver_callback(callback: types.CallbackQuery, callback_da
             pass
         
         # Отправляем сообщение для нового задания
-        await callback.message.answer(
+        msg = await callback.message.answer(
             "📝 Отправьте новую химическую задачу (текстом или фото):",
             reply_markup=ReplyKeyboardMarkup(
                 keyboard=[[KeyboardButton(text="⬅️ В меню")]],
                 resize_keyboard=True
             )
         )
+        try:
+            message_manager.add_message(callback.from_user.id, msg.message_id)
+        except Exception:
+            pass
         await state.set_state(TaskSolverStates.waiting_photo)

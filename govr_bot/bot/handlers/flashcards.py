@@ -19,6 +19,7 @@ from aiogram.types import (
 from aiogram.filters import Command
 
 from bot.handlers.menu import main_kb
+from bot.utils_pkg.message_manager import message_manager
 from bot.services.gpt_service import transcribe_audio, check_trivial_name_by_formula
 from bot.services.answer_db import (
     flashcards_get_seen_set,
@@ -356,7 +357,8 @@ async def start_practice_round(m: types.Message, category: str) -> None:
     # Берём следующую карточку по тому же принципу, что и в заучивании, чтобы не повторять лишнее
     sub, title, idx = _pick_next_for_user(user_id, category)
     if not sub:
-        await m.answer("База с веществами не найдена или пуста.", reply_markup=main_kb)
+        msg = await m.answer("База с веществами не найдена или пуста.", reply_markup=main_kb)
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
     st = user_flashcards_state.setdefault(user_id, {})
     st["mode"] = "practice"
@@ -372,6 +374,7 @@ async def start_practice_round(m: types.Message, category: str) -> None:
         f"(можно голосом или текстом)"
     )
     sent = await m.answer(text, reply_markup=_practice_kb())
+    message_manager.add_message(m.from_user.id, sent.message_id)
     st["practice_msg_id"] = sent.message_id
 
 
@@ -382,7 +385,8 @@ async def start_errors_round(m: types.Message, category: str) -> None:
         st = user_flashcards_state.setdefault(user_id, {})
         st["awaiting_practice_answer"] = False
         st.pop("practice_msg_id", None)
-        await m.answer("Ошибок пока нет — молодец!", reply_markup=_mode_select_kb())
+        msg = await m.answer("Ошибок пока нет — молодец!", reply_markup=_mode_select_kb())
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
     # Берём первую ошибку
     card_key, formula, expected_variants = errs[0]
@@ -397,6 +401,7 @@ async def start_errors_round(m: types.Message, category: str) -> None:
         f"Работа над ошибками — назови тривиальное название:\n<code>{_format_formula(formula)}</code>",
         reply_markup=_practice_kb(),
     )
+    message_manager.add_message(m.from_user.id, sent.message_id)
     st["practice_msg_id"] = sent.message_id
 
 
@@ -405,7 +410,8 @@ async def start_practice_round_cb(cb: CallbackQuery, category: str) -> None:
     user_id = cb.from_user.id
     sub, title, idx = _pick_next_for_user(user_id, category)
     if not sub:
-        await cb.message.answer("База с веществами не найдена или пуста.", reply_markup=main_kb)
+        msg = await cb.message.answer("База с веществами не найдена или пуста.", reply_markup=main_kb)
+        message_manager.add_message(cb.from_user.id, msg.message_id)
         return
     st = user_flashcards_state.setdefault(user_id, {})
     st["mode"] = "practice"
@@ -431,7 +437,8 @@ async def start_errors_round_cb(cb: CallbackQuery, category: str) -> None:
         st = user_flashcards_state.setdefault(user_id, {})
         st["awaiting_practice_answer"] = False
         st.pop("practice_msg_id", None)
-        await cb.message.answer("Ошибок пока нет — молодец!", reply_markup=_mode_select_kb())
+        msg = await cb.message.answer("Ошибок пока нет — молодец!", reply_markup=_mode_select_kb())
+        message_manager.add_message(cb.from_user.id, msg.message_id)
         return
     card_key, formula, expected_variants = errs[0]
     st = user_flashcards_state.setdefault(user_id, {})
@@ -482,15 +489,30 @@ async def practice_catch_answer(m: types.Message):
         user_id = m.from_user.id
         if user_id in user_flashcards_state:
             user_flashcards_state[user_id] = {}
-        await m.answer("Выбери режим работы с карточками:", reply_markup=cards_kb)
+        msg = await m.answer("Выбери режим работы с карточками:", reply_markup=cards_kb)
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
-    if "в главное меню" in txt.lower():
+    if "в главное меню" in txt.lower() or txt == "🏠 В главное меню":
         st["awaiting_practice_answer"] = False
         # Сбрасываем состояние при возврате в главное меню
         user_id = m.from_user.id
         if user_id in user_flashcards_state:
             user_flashcards_state[user_id] = {}
-        await m.answer("Главное меню:", reply_markup=main_kb)
+        
+        # Принудительно удаляем последние 10 сообщений (на случай, если старые не отслеживались)
+        try:
+            for i in range(1, 11):  # Удаляем 10 предыдущих сообщений
+                try:
+                    await m.bot.delete_message(chat_id=m.chat.id, message_id=m.message_id - i)
+                except Exception:
+                    pass  # Игнорируем ошибки, если сообщение уже удалено
+        except Exception:
+            pass
+        
+        # Удаляем все отслеживаемые сообщения
+        await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+        msg = await m.answer("Главное меню:", reply_markup=main_kb)
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
     if txt in {"⚗️ Неорганика", "Неорганика"}:
         st["awaiting_practice_answer"] = False
@@ -808,10 +830,11 @@ async def _show_next_formula(message: types.Message, category: str) -> None:
         title = "Органика"
 
     if not pool:
-        await message.answer(
+        msg = await message.answer(
             "База с веществами не найдена или пуста. Путь: " + EGE_DB,
             reply_markup=main_kb,
         )
+        message_manager.add_message(message.from_user.id, msg.message_id)
         return
 
     state = user_flashcards_state.setdefault(user_id, {"idx_inorg": 0, "idx_org": 0, "last": None})
@@ -820,18 +843,20 @@ async def _show_next_formula(message: types.Message, category: str) -> None:
 
     current, title, idx = _pick_next_for_user(user_id, category)
     if not current:
-        await message.answer(
+        msg = await message.answer(
             "База с веществами не найдена или пуста. Путь: " + EGE_DB,
             reply_markup=main_kb,
         )
+        message_manager.add_message(message.from_user.id, msg.message_id)
         return
     state["last"] = current
 
     total = len(INORG_ITEMS if category == "inorg" else ORG_ITEMS)
-    await message.answer(
+    msg = await message.answer(
         f"<b>{title}</b>\nФормула: <code>{_format_formula(current.formula)}</code>\n№ {idx + 1} из {total}",
         reply_markup=_make_reveal_kb(),
     )
+    message_manager.add_message(message.from_user.id, msg.message_id)
 
 
 # ====== Точки входа ======
@@ -853,8 +878,11 @@ async def open_cards_menu(m: types.Message):
         "— ⬅️ Назад — вернуться к выбору режима\n"
         "— 🏠 В главное меню — выйти в меню"
     )
-    await m.answer(guide)
-    await m.answer("Выбери режим работы с карточками:", reply_markup=cards_kb)
+    msg1 = await m.answer(guide)
+    message_manager.add_message(m.from_user.id, msg1.message_id)
+    
+    msg2 = await m.answer("Выбери режим работы с карточками:", reply_markup=cards_kb)
+    message_manager.add_message(m.from_user.id, msg2.message_id)
     # Подсказка: как посмотреть последнюю расшифровку
     # (для отладки голосовых ответов)
     # await m.answer("Подсказка: командой /last_voice можно посмотреть последнюю расшифровку ответа")
@@ -889,7 +917,8 @@ async def open_learn_menu(m: types.Message):
     # Сбрасываем состояние при выборе режима
     user_id = m.from_user.id
     user_flashcards_state[user_id] = {"mode": "learn"}
-    await m.answer("Заучивание: выбери раздел", reply_markup=_mode_select_kb())
+    msg = await m.answer("Заучивание: выбери раздел", reply_markup=_mode_select_kb())
+    message_manager.add_message(m.from_user.id, msg.message_id)
 
 
 @router.message(lambda m: m.text == "🧪 Практика")
@@ -897,7 +926,8 @@ async def open_practice_menu(m: types.Message):
     # Сбрасываем состояние при выборе режима
     user_id = m.from_user.id
     user_flashcards_state[user_id] = {"mode": "practice"}
-    await m.answer("Практика: выбери раздел", reply_markup=_mode_select_kb())
+    msg = await m.answer("Практика: выбери раздел", reply_markup=_mode_select_kb())
+    message_manager.add_message(m.from_user.id, msg.message_id)
 
 
 @router.message(lambda m: m.text == "🛠 Работа над ошибками")
@@ -905,7 +935,8 @@ async def open_errors_menu(m: types.Message):
     # Сбрасываем состояние при выборе режима
     user_id = m.from_user.id
     user_flashcards_state[user_id] = {"mode": "errors"}
-    await m.answer("Работа над ошибками: выбери раздел", reply_markup=_mode_select_kb())
+    msg = await m.answer("Работа над ошибками: выбери раздел", reply_markup=_mode_select_kb())
+    message_manager.add_message(m.from_user.id, msg.message_id)
 
 
 @router.message(lambda m: (m.text or "").strip() in {"Назад", "⬅️ Назад"})
@@ -915,7 +946,31 @@ async def nav_back(m: types.Message):
     user_id = m.from_user.id
     if user_id in user_flashcards_state:
         user_flashcards_state[user_id] = {}
-    await m.answer("Выбери режим работы с карточками:", reply_markup=cards_kb)
+    msg = await m.answer("Выбери режим работы с карточками:", reply_markup=cards_kb)
+    message_manager.add_message(m.from_user.id, msg.message_id)
+
+@router.message(lambda m: (m.text or "").strip() == "🏠 В главное меню")
+async def nav_to_main_menu(m: types.Message):
+    # Возврат в главное меню из карточек
+    # Сбрасываем состояние при возврате в главное меню
+    user_id = m.from_user.id
+    if user_id in user_flashcards_state:
+        user_flashcards_state[user_id] = {}
+    
+    # Принудительно удаляем последние 10 сообщений (на случай, если старые не отслеживались)
+    try:
+        for i in range(1, 11):  # Удаляем 10 предыдущих сообщений
+            try:
+                await m.bot.delete_message(chat_id=m.chat.id, message_id=m.message_id - i)
+            except Exception:
+                pass  # Игнорируем ошибки, если сообщение уже удалено
+    except Exception:
+        pass
+    
+    # Удаляем все отслеживаемые сообщения
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    msg = await m.answer("Главное меню:", reply_markup=main_kb)
+    message_manager.add_message(m.from_user.id, msg.message_id)
 
 
 @router.message(lambda m: m.text == "⚗️ Неорганика")
@@ -925,7 +980,8 @@ async def cards_inorg(m: types.Message):
     if mode in {"practice", "errors"}:
         from bot.services.plan import flashcards_mode_allowed
         if not flashcards_mode_allowed(m.from_user.id, mode, "inorg"):
-            await m.answer("Этот режим доступен на тарифах. Открой ‘💳 Тарифы и оплата’.")
+            msg = await m.answer("Этот режим доступен на тарифах. Открой '💳 Тарифы и оплата'.")
+            message_manager.add_message(m.from_user.id, msg.message_id)
             return
     if mode == "practice":
         await start_practice_round(m, category="inorg")
@@ -941,7 +997,8 @@ async def cards_org(m: types.Message):
     if mode in {"practice", "errors"}:
         from bot.services.plan import flashcards_mode_allowed
         if not flashcards_mode_allowed(m.from_user.id, mode, "org"):
-            await m.answer("Этот режим доступен на тарифах. Открой ‘💳 Тарифы и оплата’.")
+            msg = await m.answer("Этот режим доступен на тарифах. Открой '💳 Тарифы и оплата'.")
+            message_manager.add_message(m.from_user.id, msg.message_id)
             return
     if mode == "practice":
         await start_practice_round(m, category="org")
@@ -961,7 +1018,8 @@ async def reveal_name(cb: CallbackQuery):
     current: Optional[Substance] = st.get("last")
     if not current:
         await cb.answer()
-        await cb.message.answer("Сначала выбери раздел: Неорганика или Органика", reply_markup=cards_kb)
+        msg = await cb.message.answer("Сначала выбери раздел: Неорганика или Органика", reply_markup=cards_kb)
+        message_manager.add_message(cb.from_user.id, msg.message_id)
         return
     title = st.get("last_category_title") or "Карточки"
     text = (
@@ -989,7 +1047,8 @@ async def next_item(cb: CallbackQuery):
     category: str = st.get("last_category") or ""
     if category not in ("inorg", "org"):
         await cb.answer()
-        await cb.message.answer("Сначала выбери раздел: Неорганика или Органика", reply_markup=cards_kb)
+        msg = await cb.message.answer("Сначала выбери раздел: Неорганика или Органика", reply_markup=cards_kb)
+        message_manager.add_message(cb.from_user.id, msg.message_id)
         return
     
     idx_key = "idx_inorg" if category == "inorg" else "idx_org"
@@ -1026,7 +1085,8 @@ async def reset_cards(cb: CallbackQuery):
     category: str = st.get("last_category") or ""
     if category not in ("inorg", "org"):
         await cb.answer()
-        await cb.message.answer("Сначала выбери раздел: Неорганика или Органика", reply_markup=cards_kb)
+        msg = await cb.message.answer("Сначала выбери раздел: Неорганика или Органика", reply_markup=cards_kb)
+        message_manager.add_message(cb.from_user.id, msg.message_id)
         return
     flashcards_reset_category(cb.from_user.id, category)
     # Сброс работает для любого режима, но показываем первую карточку в текущем режиме
@@ -1055,7 +1115,21 @@ async def back_to_main_menu(cb: CallbackQuery):
     user_id = cb.from_user.id
     if user_id in user_flashcards_state:
         user_flashcards_state[user_id] = {}
-    await cb.message.answer("Главное меню:", reply_markup=main_kb)
+    
+    # Принудительно удаляем последние 10 сообщений (на случай, если старые не отслеживались)
+    try:
+        for i in range(0, 11):  # Удаляем 11 сообщений, включая текущее
+            try:
+                await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=cb.message.message_id - i)
+            except Exception:
+                pass  # Игнорируем ошибки, если сообщение уже удалено
+    except Exception:
+        pass
+    
+    # Удаляем все отслеживаемые сообщения
+    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    msg = await cb.message.answer("Главное меню:", reply_markup=main_kb)
+    message_manager.add_message(cb.from_user.id, msg.message_id)
     await cb.answer()
 
 
@@ -1097,6 +1171,7 @@ async def inline_back(cb: CallbackQuery):
     mode = st.get("mode")
     user_id = cb.from_user.id
     user_flashcards_state[user_id] = {"mode": mode} if mode else {}
-    await cb.message.answer("Выбери раздел", reply_markup=_mode_select_kb())
+    msg = await cb.message.answer("Выбери раздел", reply_markup=_mode_select_kb())
+    message_manager.add_message(cb.from_user.id, msg.message_id)
     await cb.answer()
 

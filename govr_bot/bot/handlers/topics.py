@@ -7,6 +7,7 @@ from aiogram.types import (
     BufferedInputFile,
 )
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 import random
 
 from bot.utils import (
@@ -35,6 +36,7 @@ from bot.services.gpt_service import transcribe_audio, grade_theory_answer
 from bot.services.gpt_service import generate_chunk_title
 from bot.services.answer_db import save_theory_task_answer, get_theory_stats, get_theory_stats_by_chunk
 from bot.utils_pkg_new.logger import log_error
+from bot.utils_pkg.message_manager import message_manager
 import httpx
 import difflib
 import sqlite3
@@ -89,17 +91,20 @@ def _topic_progress_dot(user_id: int, topic: str) -> str:
 # 1) Начала химии — список глав
 @router.message(lambda m: m.text == "📖 Начала химии")
 async def begin_chem(m: types.Message):
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
     buttons = []
     for i, topic in enumerate(BEGIN_CHEM_TOPICS):
         buttons.append([InlineKeyboardButton(text=f"{topic}", callback_data=f"begin_topic_{i}")])
     # Кнопка в главное меню снизу
     buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await m.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
+    sent = await m.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
+    message_manager.add_message(m.from_user.id, sent.message_id)
 
 # Выбор главы «Начала химии»
 @router.callback_query(lambda c: c.data.startswith("begin_topic_"))
 async def begin_topic_chosen(cb: types.CallbackQuery, bot):
+    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     try:
         idx = int(cb.data.split("begin_topic_")[-1])
         topic = BEGIN_CHEM_TOPICS[idx]
@@ -116,9 +121,11 @@ async def begin_topic_chosen(cb: types.CallbackQuery, bot):
 # 2) Химия элементов — СПИСОК ГЛАВ (полноценный)
 @router.message(lambda m: m.text == "⚗️ Химия элементов")
 async def element_chem(m: types.Message):
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
     from bot.services.plan import theory_allowed
     if not theory_allowed(m.from_user.id, "elements"):
-        await m.answer("Этот раздел доступен на тарифах ('Химия элементов', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
+        msg = await m.answer("Этот раздел доступен на тарифах ('Химия элементов', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
     buttons = []
     for i, topic in enumerate(ELEMENT_CHEM_TOPICS):
@@ -126,11 +133,13 @@ async def element_chem(m: types.Message):
     # Кнопка в главное меню снизу
     buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await m.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
+    msg = await m.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
+    message_manager.add_message(m.from_user.id, msg.message_id)
 
 # Выбор главы «Химия элементов»
 @router.callback_query(lambda c: c.data.startswith("element_topic_"))
 async def element_topic_chosen(cb: types.CallbackQuery, bot):
+    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     try:
         idx = int(cb.data.split("element_topic_")[-1])
         topic = ELEMENT_CHEM_TOPICS[idx]
@@ -147,9 +156,11 @@ async def element_topic_chosen(cb: types.CallbackQuery, bot):
 # 3) Органическая химия — список глав
 @router.message(lambda m: m.text == "🧬 Органическая химия")
 async def organic_chem(m: types.Message):
+    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
     from bot.services.plan import theory_allowed
     if not theory_allowed(m.from_user.id, "organic"):
-        await m.answer("Этот раздел доступен на тарифах ('Органика', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
+        msg = await m.answer("Этот раздел доступен на тарифах ('Органика', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
+        message_manager.add_message(m.from_user.id, msg.message_id)
         return
     buttons = []
     for i, topic in enumerate(LEARNING_TOPICS):
@@ -157,11 +168,13 @@ async def organic_chem(m: types.Message):
     # Кнопка в главное меню снизу
     buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await m.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=kb)
+    msg = await m.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=kb)
+    message_manager.add_message(m.from_user.id, msg.message_id)
 
 # Выбор главы «Органическая химия»
 @router.callback_query(lambda c: c.data.startswith("learn_topic_"))
 async def learn_topic_chosen(cb: types.CallbackQuery, bot):
+    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     try:
         idx = int(cb.data.split("learn_topic_")[-1])
         topic = LEARNING_TOPICS[idx]
@@ -178,6 +191,21 @@ async def learn_topic_chosen(cb: types.CallbackQuery, bot):
 # ================== Список частей выбранной главы ==================
 async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, section_prefix: str, topic_index: int) -> None:
     """Показывает кнопки частей главы с прогрессом по вопросам: correct/total."""
+    # Чистим прошлые одноразовые сообщения перед показом списка частей
+    try:
+        await message_manager.delete_user_messages(msg.bot, user_id, msg.chat.id)
+    except Exception:
+        pass
+    # Фолбэк: снесём несколько последних сообщений в чате (если менеджер чего‑то не знал)
+    try:
+        base = msg.message_id
+        for delta in range(0, 7):
+            try:
+                await msg.bot.delete_message(chat_id=msg.chat.id, message_id=base - delta)
+            except Exception:
+                pass
+    except Exception:
+        pass
     # Сколько частей всего по этой главе
     total_chunks = get_prepared_chunks_count(topic)
     if total_chunks <= 0:
@@ -246,7 +274,11 @@ async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, sec
     rows.append([InlineKeyboardButton(text="📚 К главам", callback_data=f"parts_to_chapters_{section_prefix}")])
     rows.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu_from_parts")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    await msg.answer(f"Глава: «{topic}»\nВыбери часть:", reply_markup=kb)
+    sent = await msg.answer(f"Глава: «{topic}»\nВыбери часть:", reply_markup=kb)
+    try:
+        message_manager.add_message(user_id, sent.message_id)
+    except Exception:
+        pass
 
 # Переход к нужной части — Начала химии
 @router.callback_query(lambda c: c.data.startswith("begin_part_"))
@@ -307,6 +339,13 @@ async def send_next_chunk(user_id: int, bot):
     st = user_learning_state.get(user_id)
     if not st:
         return
+    # Чистим прошлые одноразовые сообщения перед новой лекцией
+    try:
+        from bot.utils_pkg.message_manager import message_manager as _mm
+        # Попробуем удалить в приват чате user_id (в теории сообщения лекций идут в ЛС)
+        await _mm.delete_user_messages(bot, user_id, user_id)
+    except Exception:
+        pass
 
     topic = st["topic"]
     idx = st["index"]
@@ -438,6 +477,11 @@ async def send_next_chunk(user_id: int, bot):
         log_error(e, f"Data error setting last_lecture_msg_id for user {user_id}", user_id=user_id)
     except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error setting last_lecture_msg_id for user {user_id}", user_id=user_id)
+    try:
+        from bot.utils_pkg.message_manager import message_manager as _mm
+        _mm.add_message(user_id, sent_msg.message_id)
+    except Exception:
+        pass
 
 # ================== Навигация ==================
 @router.callback_query(lambda c: c.data == "learn_ok")
@@ -488,7 +532,7 @@ async def learn_audio(cb: types.CallbackQuery, bot):
     
     try:
         # Отправляем аудио как голосовое сообщение
-        await bot.send_voice(
+        sent_voice = await bot.send_voice(
             chat_id=cb.from_user.id,
             voice=BufferedInputFile(
                 audio_blob, 
@@ -497,6 +541,10 @@ async def learn_audio(cb: types.CallbackQuery, bot):
             caption=f"🔊 Аудио к фрагменту «{topic}» (часть {idx+1})"
         )
         await cb.answer("Аудио отправлено!")
+        try:
+            message_manager.add_message(cb.from_user.id, sent_voice.message_id)
+        except Exception:
+            pass
         
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error sending audio for user {cb.from_user.id}", user_id=cb.from_user.id)
@@ -508,6 +556,10 @@ async def learn_audio(cb: types.CallbackQuery, bot):
 @router.callback_query(lambda c: c.data == "learn_to_parts")
 async def learn_to_parts(cb: types.CallbackQuery, bot):
     """Закрывает текущую главу и показывает список частей выбранной темы."""
+    try:
+        await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    except Exception:
+        pass
     st = user_learning_state.get(cb.from_user.id)
     if not st:
         await cb.answer("Нет активной главы")
@@ -518,6 +570,8 @@ async def learn_to_parts(cb: types.CallbackQuery, bot):
         msg_id = st.get("last_lecture_msg_id")
         if msg_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
+    except TelegramBadRequest as e:
+        log_error(e, f"BadRequest deleting lecture message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting lecture message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (AttributeError, KeyError) as e:
@@ -527,6 +581,8 @@ async def learn_to_parts(cb: types.CallbackQuery, bot):
         if msg_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
             st.pop("last_task_msg_id", None)
+    except TelegramBadRequest as e:
+        log_error(e, f"BadRequest deleting task message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting task message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (AttributeError, KeyError) as e:
@@ -536,6 +592,8 @@ async def learn_to_parts(cb: types.CallbackQuery, bot):
         if msg_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=msg_id)
             st.pop("last_result_msg_id", None)
+    except TelegramBadRequest as e:
+        log_error(e, f"BadRequest deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (AttributeError, KeyError) as e:
@@ -614,14 +672,25 @@ async def parts_to_chapters(cb: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "to_main_menu_from_parts")
 async def to_main_menu_from_parts(cb: types.CallbackQuery):
     """Удаляет сообщение со списком частей и открывает главное меню (Reply)."""
+    # Удаляем все одноразовые сообщения в чате пользователя
+    try:
+        await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    except Exception:
+        pass
     try:
         await cb.message.delete()
+    except TelegramBadRequest as e:
+        log_error(e, f"BadRequest deleting message in to_main_menu_from_parts for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting message in to_main_menu_from_parts for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting message in to_main_menu_from_parts for user {cb.from_user.id}", user_id=cb.from_user.id)
     from bot.handlers.menu import main_kb
-    await cb.message.answer("Главное меню:", reply_markup=main_kb)
+    sent = await cb.message.answer("Главное меню:", reply_markup=main_kb)
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer()
 
 @router.callback_query(lambda c: c.data == "learn_task")
@@ -738,6 +807,8 @@ async def learn_task(cb: types.CallbackQuery):
         prev_id = st.get("last_task_msg_id")
         if prev_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=prev_id)
+    except TelegramBadRequest as e:
+        log_error(e, f"BadRequest deleting previous task message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting previous task message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (AttributeError, KeyError) as e:
@@ -748,12 +819,18 @@ async def learn_task(cb: types.CallbackQuery):
         if res_id:
             await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=res_id)
             st.pop("last_result_msg_id", None)
+    except TelegramBadRequest as e:
+        log_error(e, f"BadRequest deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (AttributeError, KeyError) as e:
         log_error(e, f"Unexpected error deleting result message for user {cb.from_user.id}", user_id=cb.from_user.id)
     sent = await cb.message.answer(text)
     st["last_task_msg_id"] = sent.message_id
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     # После показа задания скрываем кнопку «Спросить ИИ» до следующего вопроса
     try:
         st = user_learning_state.get(cb.from_user.id) or {}
@@ -889,6 +966,10 @@ async def learn_task_next(cb: types.CallbackQuery):
         log_error(e, f"Unexpected error deleting result message in learn_task_next for user {cb.from_user.id}", user_id=cb.from_user.id)
     sent = await cb.message.answer(text)
     st["last_task_msg_id"] = sent.message_id
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer("Готово")
 
 # ====== Приём текста/голоса как ответа на задание ======
@@ -959,6 +1040,10 @@ async def catch_task_answer(m: types.Message):
 
     # Сообщим пользователю, что идёт обработка ответа
     loading_msg = await m.answer("⏳ Обрабатываю ответ... подожди немного.")
+    try:
+        message_manager.add_message(m.from_user.id, loading_msg.message_id)
+    except Exception:
+        pass
 
     # Всегда используем LLM‑проверку (строковую похожесть не применяем, чтобы не засчитывать ложноположительно)
     answers = get_qa_answers(topic, idx)
@@ -1097,6 +1182,10 @@ async def catch_task_answer(m: types.Message):
             log_error(e, f"Data error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
         except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
+        try:
+            message_manager.add_message(m.from_user.id, sent.message_id)
+        except Exception:
+            pass
     else:
         # При верном ответе показываем две кнопки: Ещё вопрос (в этом разделе) и К следующему разделу (следующий кусок)
         if all_solved_here:
@@ -1144,6 +1233,10 @@ async def catch_task_answer(m: types.Message):
             log_error(e, f"Data error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
         except (AttributeError, KeyError) as e:
             log_error(e, f"Unexpected error setting last_result_msg_id for user {m.from_user.id}", user_id=m.from_user.id)
+        try:
+            message_manager.add_message(m.from_user.id, sent.message_id)
+        except Exception:
+            pass
 
 @router.callback_query(lambda c: c.data == "show_sample_answer")
 async def show_sample_answer(cb: types.CallbackQuery):
@@ -1160,7 +1253,11 @@ async def show_sample_answer(cb: types.CallbackQuery):
     if q_index is None or not answers or q_index >= len(answers):
         await cb.message.answer("Образец ответа недоступен.")
     else:
-        await cb.message.answer(f"Образец ответа: {answers[q_index]}")
+        sent = await cb.message.answer(f"Образец ответа: {answers[q_index]}")
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 # Кнопка показа ответа удалена по пожеланию
@@ -1180,7 +1277,11 @@ async def learn_to_chapters(cb: types.CallbackQuery):
         # Добавляем кнопку "В главное меню"
         buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await cb.message.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
+        sent = await cb.message.answer("Выбери главу из раздела «Начала химии»:", reply_markup=kb)
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
         await cb.answer()
         return
 
@@ -1197,7 +1298,11 @@ async def learn_to_chapters(cb: types.CallbackQuery):
     elif topic in ELEMENT_CHEM_TOPICS:
         from bot.services.plan import theory_allowed
         if not theory_allowed(cb.from_user.id, "elements"):
-            await cb.message.answer("Этот раздел доступен на тарифах ('Химия элементов', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
+            msg = await cb.message.answer("Этот раздел доступен на тарифах ('Химия элементов', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
+            try:
+                message_manager.add_message(cb.from_user.id, msg.message_id)
+            except Exception:
+                pass
             await cb.answer()
             return
         buttons = [
@@ -1207,12 +1312,20 @@ async def learn_to_chapters(cb: types.CallbackQuery):
         # Добавляем кнопку "В главное меню"
         buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await cb.message.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
+        sent = await cb.message.answer("Выбери главу из раздела «Химия элементов»:", reply_markup=kb)
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
 
     else:
         from bot.services.plan import theory_allowed
         if not theory_allowed(cb.from_user.id, "organic"):
-            await cb.message.answer("Этот раздел доступен на тарифах ('Органика', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
+            msg = await cb.message.answer("Этот раздел доступен на тарифах ('Органика', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
+            try:
+                message_manager.add_message(cb.from_user.id, msg.message_id)
+            except Exception:
+                pass
             await cb.answer()
             return
         buttons = [
@@ -1222,7 +1335,11 @@ async def learn_to_chapters(cb: types.CallbackQuery):
         # Добавляем кнопку "В главное меню"
         buttons.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await cb.message.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=kb)
+        sent = await cb.message.answer("Выбери главу из раздела «Органическая химия»:", reply_markup=kb)
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
 
     await cb.answer()
 
