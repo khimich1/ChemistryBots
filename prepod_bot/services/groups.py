@@ -1,5 +1,6 @@
 import sqlite3
 from typing import List, Dict, Any
+import os
 from config import DB_PATH
 from services.students import get_all_students
 
@@ -18,6 +19,174 @@ def _ensure_groups_table(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
 
+
+def _ensure_work_groups_table(conn: sqlite3.Connection) -> None:
+    """Создаёт таблицу рабочих групп, если её нет."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS work_groups (
+            group_no INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            added_at TEXT,
+            PRIMARY KEY (group_no, user_id)
+        )
+        """
+    )
+    conn.commit()
+
+
+def add_user_to_work_group(group_no: int, user_id: int) -> None:
+    """Добавляет пользователя в рабочую группу."""
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_work_groups_table(conn)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO work_groups (group_no, user_id, added_at)
+            VALUES (?, ?, datetime('now','localtime'))
+            ON CONFLICT(group_no, user_id) DO UPDATE SET
+                added_at = excluded.added_at
+            """,
+            (group_no, user_id),
+        )
+        conn.commit()
+
+
+def get_work_group_members(group_no: int) -> List[int]:
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_work_groups_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM work_groups WHERE group_no = ? ORDER BY user_id", (group_no,))
+        return [row[0] for row in cur.fetchall()]
+
+
+def find_user_id_by_username(username: str) -> int | None:
+    """Ищет user_id по username в базах prepod_bot (user_profiles, test_answers) и govr_bot."""
+    uname = (username or "").strip()
+    if uname.startswith("@"):
+        uname = uname[1:]
+    uname = uname.lower()
+
+    # prepod_bot
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT user_id FROM user_profiles WHERE LOWER(NULLIF(TRIM(username),'')) = ? LIMIT 1", (uname,))
+            row = cur.fetchone()
+            if row:
+                return int(row[0])
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cur.execute(
+                """
+                SELECT user_id
+                FROM test_answers
+                WHERE LOWER(NULLIF(TRIM(username),'')) = ?
+                ORDER BY answer_time DESC
+                LIMIT 1
+                """,
+                (uname,),
+            )
+            row = cur.fetchone()
+            if row:
+                return int(row[0])
+        except sqlite3.OperationalError:
+            pass
+
+    # govr_bot
+    import os
+    repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    govr_db_file = os.path.join(repo_root, "govr_bot", "bot", "services", "answers.db")
+    try:
+        with sqlite3.connect(govr_db_file) as gconn:
+            gcur = gconn.cursor()
+            gcur.execute(
+                """
+                SELECT user_id
+                FROM test_answers
+                WHERE LOWER(NULLIF(TRIM(username),'')) = ?
+                ORDER BY answer_time DESC
+                LIMIT 1
+                """,
+                (uname,),
+            )
+            row = gcur.fetchone()
+            if row:
+                return int(row[0])
+    except Exception:
+        pass
+
+    return None
+
+
+def get_all_group_numbers() -> List[int]:
+    """Возвращает все номера рабочих групп (уникальные, отсортированные)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_work_groups_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT group_no FROM work_groups ORDER BY group_no")
+        return [int(row[0]) for row in cur.fetchall()]
+
+
+async def broadcast_message_to_group_via_govr(group_no: int, text: str) -> tuple[int, int]:
+    """Отправляет сообщение всем участникам группы через govr_bot.
+    Требует переменной окружения GOVR_BOT_TOKEN (токен govr_bot).
+    Возвращает (успешно, ошибок).
+    """
+    try:
+        from aiogram import Bot
+    except Exception:
+        # aiogram точно есть, но если что — без отправки
+        return 0, len(get_work_group_members(group_no))
+
+    # Пытаемся вытащить токен govr-бота из разных имён переменных
+    token = (
+        os.getenv("BOT_TOKEN_govor")
+        or os.getenv("BOT_TOKEN_GOVOR")
+        or os.getenv("BOT_TOKEN_govr")
+        or os.getenv("BOT_TOKEN_GOVR")
+        or os.getenv("GOVR_BOT_TOKEN")
+    )
+    if not token:
+        # Попробуем прочитать .env govr_bot и взять ключ BOT_TOKEN_govor / BOT_TOKEN
+        try:
+            from dotenv import dotenv_values
+            repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+            env_path = os.path.join(repo_root, "govr_bot", ".env")
+            vals = dotenv_values(env_path)
+            if vals:
+                token = (
+                    vals.get("BOT_TOKEN_govor")
+                    or vals.get("BOT_TOKEN_GOVOR")
+                    or vals.get("BOT_TOKEN")
+                )
+        except Exception:
+            token = None
+
+    if not token:
+        return 0, len(get_work_group_members(group_no))
+
+    user_ids = get_work_group_members(group_no)
+    if not user_ids:
+        return 0, 0
+
+    bot = Bot(token=token)
+    ok = 0
+    fail = 0
+    for uid in user_ids:
+        try:
+            await bot.send_message(uid, text)
+            ok += 1
+        except Exception:
+            fail += 1
+            continue
+    try:
+        await bot.session.close()
+    except Exception:
+        pass
+    return ok, fail
 
 def get_all_students_with_plans() -> List[Dict[str, Any]]:
     """

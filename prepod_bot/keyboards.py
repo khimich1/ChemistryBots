@@ -2,14 +2,41 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 
 def get_teacher_keyboard():
     kb = [
-        [KeyboardButton(text="👨‍🎓 Ученики онлайн")],
-        [KeyboardButton(text="📈 Успеваемость")],
-        [KeyboardButton(text="🛠 Управление заданиями")],
-        [KeyboardButton(text="👥 Добавить в группу")],
-        [KeyboardButton(text="✅ Ученики в группе")],
+        [KeyboardButton(text="👨‍🎓 Ученики онлайн"), KeyboardButton(text="📈 Успеваемость")],
+        [KeyboardButton(text="🛠 Управление заданиями"), KeyboardButton(text="👥 Добавить в группу")],
+        [KeyboardButton(text="✅ Ученики в группе"), KeyboardButton(text="📚 Управление группами")],
         [KeyboardButton(text="📣 Статистика рекламы")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+
+def get_manage_groups_keyboard() -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton(text="📂 Список групп", callback_data="manage_groups_list")],
+        [InlineKeyboardButton(text="➕ Добрать в рабочие группы", callback_data="wg_add_start")],
+        [InlineKeyboardButton(text="📝 Отправить сообщение", callback_data="wg_broadcast_start")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def get_group_numbers_keyboard(group_numbers: list[int]) -> InlineKeyboardMarkup:
+    kb: list[list[InlineKeyboardButton]] = []
+    for g in group_numbers:
+        kb.append([InlineKeyboardButton(text=f"Группа {g}", callback_data=f"wg_open:{g}")])
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_back")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def get_group_members_keyboard(members: list[dict]) -> InlineKeyboardMarkup:
+    kb: list[list[InlineKeyboardButton]] = []
+    for s in members:
+        label = s.get("label") or s.get("full_name") or s.get("username") or f"ID {s.get('user_id')}"
+        if len(label) > 30:
+            label = label[:27] + "…"
+        kb.append([InlineKeyboardButton(text=label, callback_data=f"noop_member:{s.get('user_id')}")])
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_list")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def get_manage_tasks_keyboard():

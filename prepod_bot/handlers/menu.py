@@ -1,11 +1,26 @@
 from aiogram import Router, types
 from aiogram.filters import Command
-from keyboards import get_teacher_keyboard, get_students_keyboard
+from keyboards import (
+    get_teacher_keyboard,
+    get_students_keyboard,
+    get_manage_groups_keyboard,
+    get_group_numbers_keyboard,
+    get_group_members_keyboard,
+)
 from services.acquisition import get_ad_stats
 from services.students import get_all_students
-from services.groups import add_student_to_group, is_student_in_group, get_all_students_with_plans
+from services.groups import (
+    add_student_to_group,
+    is_student_in_group,
+    get_all_students_with_plans,
+    add_user_to_work_group,
+    find_user_id_by_username,
+    get_all_group_numbers,
+    get_work_group_members,
+    broadcast_message_to_group_via_govr,
+)
 from aiogram.fsm.context import FSMContext
-from states import StudentsList
+from states import StudentsList, WorkGroups
 
 router = Router()
 
@@ -77,6 +92,140 @@ async def show_group_students(message: types.Message, state: FSMContext):
         "Ученики, которые уже в группе. Листайте страницы ⬅️➡️ или используйте поиск.",
         reply_markup=keyboard,
     )
+
+
+@router.message(lambda m: m.text == "📚 Управление группами")
+async def manage_groups_menu(message: types.Message):
+    await message.answer("Выберите действие:", reply_markup=get_manage_groups_keyboard())
+
+
+@router.callback_query(lambda c: c.data == "manage_groups_back")
+async def manage_groups_back(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("Выберите действие:", reply_markup=get_manage_groups_keyboard())
+
+
+@router.callback_query(lambda c: c.data == "wg_broadcast_start")
+async def wg_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    groups = get_all_group_numbers()
+    if not groups:
+        await callback.message.answer("Группы пока не созданы. Сначала добавьте участников.")
+        return
+    await callback.message.answer("Введите номер группы, куда отправить сообщение:")
+    await state.set_state(WorkGroups.waiting_broadcast_group)
+
+
+@router.message(WorkGroups.waiting_broadcast_group)
+async def wg_broadcast_group(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    try:
+        group_no = int(text)
+    except ValueError:
+        await message.answer("Пожалуйста, введите целое число (например, 101). Попробуйте ещё раз:")
+        return
+    await state.update_data(broadcast_group=group_no)
+    await message.answer("Введите текст сообщения, оно уйдёт всем участникам группы:")
+    await state.set_state(WorkGroups.waiting_broadcast_text)
+
+
+@router.message(WorkGroups.waiting_broadcast_text)
+async def wg_broadcast_text(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Текст пуст. Отправьте текст сообщения:")
+        return
+    data = await state.get_data()
+    group_no = int(data.get("broadcast_group") or 0)
+    user_ids = get_work_group_members(group_no)
+    if not user_ids:
+        await message.answer(f"В группе {group_no} нет участников.")
+        await state.set_state(None)
+        return
+    ok, fail = await broadcast_message_to_group_via_govr(group_no, text)
+    await message.answer(f"Отправлено: {ok}. Ошибок: {fail}.")
+    await state.set_state(None)
+
+
+@router.callback_query(lambda c: c.data == "wg_add_start")
+async def wg_add_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    # Покажем список существующих групп, если есть
+    groups = get_all_group_numbers()
+    if groups:
+        try:
+            await callback.message.edit_text("Существующие группы:", reply_markup=get_group_numbers_keyboard(groups))
+        except Exception:
+            await callback.message.answer("Существующие группы:", reply_markup=get_group_numbers_keyboard(groups))
+    await callback.message.answer("Введите номер группы (целое число):")
+    await state.set_state(WorkGroups.waiting_group_number)
+
+
+@router.message(WorkGroups.waiting_group_number)
+async def wg_input_group(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    try:
+        group_no = int(text)
+    except ValueError:
+        await message.answer("Пожалуйста, введите целое число (например, 101). Попробуйте ещё раз:")
+        return
+    await state.update_data(group_no=group_no)
+    await message.answer("Теперь отправьте username ученика с @ (например, @ivan_ivanov):")
+    await state.set_state(WorkGroups.waiting_username)
+
+
+@router.message(WorkGroups.waiting_username)
+async def wg_input_username(message: types.Message, state: FSMContext):
+    username = (message.text or "").strip()
+    if not username:
+        await message.answer("Username не распознан. Отправьте в формате @username:")
+        return
+    data = await state.get_data()
+    group_no = int(data.get("group_no") or 0)
+
+    user_id = find_user_id_by_username(username)
+    if not user_id:
+        await message.answer("Не нашли такого пользователя в базе. Попросите его написать боту, затем повторите.")
+        await state.set_state(None)
+        return
+
+    add_user_to_work_group(group_no, user_id)
+    await message.answer(f"✅ Пользователь {username} (id={user_id}) добавлен в рабочую группу {group_no}.")
+    await state.set_state(None)
+
+
+@router.callback_query(lambda c: c.data == "manage_groups_list")
+async def manage_groups_list(callback: types.CallbackQuery):
+    await callback.answer()
+    groups = get_all_group_numbers()
+    if not groups:
+        await callback.message.edit_text("Группы пока не созданы. Нажмите '➕ Добрать в рабочие группы' чтобы начать.", reply_markup=get_manage_groups_keyboard())
+        return
+    try:
+        await callback.message.edit_text("Список групп:", reply_markup=get_group_numbers_keyboard(groups))
+    except Exception:
+        await callback.message.answer("Список групп:", reply_markup=get_group_numbers_keyboard(groups))
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_open:"))
+async def wg_open_group(callback: types.CallbackQuery):
+    await callback.answer()
+    try:
+        group_no = int(callback.data.split(":")[1])
+    except Exception:
+        group_no = 0
+    user_ids = get_work_group_members(group_no)
+    if not user_ids:
+        await callback.message.edit_text(f"В группе {group_no} пока нет участников.", reply_markup=get_manage_groups_keyboard())
+        return
+    # Обогатим данными (label)
+    students = get_all_students_with_plans()
+    by_id = {s["user_id"]: s for s in students}
+    members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
+    try:
+        await callback.message.edit_text(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members))
+    except Exception:
+        await callback.message.answer(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members))
 
 
 @router.callback_query(lambda c: c.data.startswith("add_to_group:"))
