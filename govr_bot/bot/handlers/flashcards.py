@@ -499,18 +499,8 @@ async def practice_catch_answer(m: types.Message):
         if user_id in user_flashcards_state:
             user_flashcards_state[user_id] = {}
         
-        # Принудительно удаляем последние 10 сообщений (на случай, если старые не отслеживались)
-        try:
-            for i in range(1, 11):  # Удаляем 10 предыдущих сообщений
-                try:
-                    await m.bot.delete_message(chat_id=m.chat.id, message_id=m.message_id - i)
-                except Exception:
-                    pass  # Игнорируем ошибки, если сообщение уже удалено
-        except Exception:
-            pass
-        
-        # Удаляем все отслеживаемые сообщения
-        await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+        # Быстрое удаление всех сообщений (оптимизированная версия)
+        await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
         msg = await m.answer("Главное меню:", reply_markup=main_kb)
         message_manager.add_message(m.from_user.id, msg.message_id)
         return
@@ -957,18 +947,8 @@ async def nav_to_main_menu(m: types.Message):
     if user_id in user_flashcards_state:
         user_flashcards_state[user_id] = {}
     
-    # Принудительно удаляем последние 10 сообщений (на случай, если старые не отслеживались)
-    try:
-        for i in range(1, 11):  # Удаляем 10 предыдущих сообщений
-            try:
-                await m.bot.delete_message(chat_id=m.chat.id, message_id=m.message_id - i)
-            except Exception:
-                pass  # Игнорируем ошибки, если сообщение уже удалено
-    except Exception:
-        pass
-    
-    # Удаляем все отслеживаемые сообщения
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    # Быстрое удаление всех сообщений (оптимизированная версия)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     msg = await m.answer("Главное меню:", reply_markup=main_kb)
     message_manager.add_message(m.from_user.id, msg.message_id)
 
@@ -1116,18 +1096,8 @@ async def back_to_main_menu(cb: CallbackQuery):
     if user_id in user_flashcards_state:
         user_flashcards_state[user_id] = {}
     
-    # Принудительно удаляем последние 10 сообщений (на случай, если старые не отслеживались)
-    try:
-        for i in range(0, 11):  # Удаляем 11 сообщений, включая текущее
-            try:
-                await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=cb.message.message_id - i)
-            except Exception:
-                pass  # Игнорируем ошибки, если сообщение уже удалено
-    except Exception:
-        pass
-    
-    # Удаляем все отслеживаемые сообщения
-    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    # Быстрое удаление всех сообщений (оптимизированная версия)
+    await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     msg = await cb.message.answer("Главное меню:", reply_markup=main_kb)
     message_manager.add_message(cb.from_user.id, msg.message_id)
     await cb.answer()

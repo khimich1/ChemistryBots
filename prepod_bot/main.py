@@ -1,15 +1,22 @@
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
 from handlers import menu, online, report, add_task
+from middlewares.admin_check import AdminCheckMiddleware
 
 print("[LOG] main.py ЗАПУЩЕН")
-print(f"[LOG] BOT_TOKEN (начало): {BOT_TOKEN[:10]}...")
+# Убираем вывод токена - это небезопасно
+print("[LOG] BOT_TOKEN загружен" if BOT_TOKEN else "[LOG] BOT_TOKEN НЕ НАЙДЕН!")
 
 bot = Bot(token=BOT_TOKEN)
 print("[LOG] Bot object создан")
 
 dp = Dispatcher()
 print("[LOG] Dispatcher создан")
+
+# Подключаем middleware для проверки прав доступа
+dp.message.middleware(AdminCheckMiddleware())
+dp.callback_query.middleware(AdminCheckMiddleware())
+print("[LOG] AdminCheckMiddleware подключен")
 
 # Подключаем все роутеры
 dp.include_router(menu.router)

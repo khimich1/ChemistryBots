@@ -21,24 +21,23 @@ def _ensure_groups_table(conn: sqlite3.Connection) -> None:
 
 def get_all_students_with_plans() -> List[Dict[str, Any]]:
     """
-    Возвращает список ВСЕХ учеников с их текущими тарифами.
-    Использует базу данных govr_bot для получения информации о тарифах.
+    Возвращает список ВСЕХ учеников из get_all_students() и ДОБАВЛЯЕТ тарифы
+    из govr_bot.user_plans. Это гарантирует, что поиск всегда увидит любого
+    ученика, даже если его нет в user_profiles.
     """
-    # Путь к базе данных govr_bot
+    # Базовый список из prepod_bot
+    students = get_all_students()
+
+    # Чтение тарифов из govr_bot
     import os
     repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    
-    # Получаем путь к базе govr_bot
     govr_db_file = os.path.join(repo_root, "govr_bot", "bot", "services", "answers.db")
-    
-    students = []
-    
+
+    user_plans: Dict[int, str] = {}
+    govr_users: Dict[int, Dict[str, Any]] = {}
     try:
-        # Подключаемся к базе govr_bot для получения тарифов
         with sqlite3.connect(govr_db_file) as govr_conn:
             govr_cur = govr_conn.cursor()
-            
-            # Создаем таблицу user_plans, если её нет
             govr_cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_plans(
@@ -49,67 +48,69 @@ def get_all_students_with_plans() -> List[Dict[str, Any]]:
                 """
             )
             govr_conn.commit()
-            
-            # Получаем ВСЕХ пользователей с их тарифами
             govr_cur.execute("SELECT user_id, plan_code FROM user_plans")
-            user_plans = {row[0]: row[1] for row in govr_cur.fetchall()}
-        
-        # Теперь получаем информацию о пользователях из prepod_bot
-        with sqlite3.connect(DB_PATH) as prepod_conn:
-            # Получаем учеников из user_profiles
-            cur = prepod_conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS user_profiles (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    full_name TEXT,
-                    created_at TEXT,
-                    hide_reason TEXT
+            user_plans = {int(row[0]): (row[1] or 'free') for row in govr_cur.fetchall()}
+
+            # Дополнительно: попробуем достать имена из test_answers govr_bot
+            try:
+                govr_cur.execute(
+                    """
+                    SELECT DISTINCT user_id,
+                           NULLIF(TRIM(username), ''),
+                           NULLIF(TRIM(full_name), '')
+                    FROM test_answers
+                    WHERE NULLIF(TRIM(COALESCE(username, '')), '') <> ''
+                       OR NULLIF(TRIM(COALESCE(full_name, '')), '') <> ''
+                    """
                 )
-            """)
-            
-            # Получаем всех учеников из user_profiles (не скрытых)
-            cur.execute("SELECT user_id, username, full_name FROM user_profiles")
-            profile_students = cur.fetchall()
-            
-            # Добавляем учеников из user_profiles
-            for user_id, username, full_name in profile_students:
-                label = full_name or username or f"ID {user_id}"
-                plan_code = user_plans.get(user_id, 'free')
-                
-                student_data = {
-                    "user_id": user_id,
-                    "full_name": full_name,
-                    "username": username,
-                    "label": label,
-                    "plan_code": plan_code,
-                    "plan_name": _get_plan_name(plan_code)
-                }
-                
-                students.append(student_data)
-            
-            # Если нет учеников в user_profiles, получаем из get_all_students()
-            if not students:
-                all_prepod_students = get_all_students()
-                for student in all_prepod_students:
-                    user_id = student["user_id"]
-                    plan_code = user_plans.get(user_id, 'free')
-                    
-                    student["plan_code"] = plan_code
-                    student["plan_name"] = _get_plan_name(plan_code)
-                    
-                    students.append(student)
-    
+                for uid, uname, fname in govr_cur.fetchall():
+                    try:
+                        uid_int = int(uid)
+                    except Exception:
+                        continue
+                    govr_users[uid_int] = {
+                        "user_id": uid_int,
+                        "username": uname,
+                        "full_name": fname,
+                        "label": (fname or uname or f"ID {uid_int}"),
+                    }
+            except Exception:
+                pass
     except Exception as e:
-        print(f"Ошибка при получении учеников с тарифами: {e}")
-        # Fallback: возвращаем всех учеников с тарифом 'free'
-        all_students = get_all_students()
-        for student in all_students:
-            student["plan_code"] = 'free'
-            student["plan_name"] = 'Бесплатный'
-            students.append(student)
-    
-    # Сортируем по имени
+        print(f"Ошибка при получении тарифов: {e}")
+        user_plans = {}
+
+    # Обогащаем данными о тарифе
+    for s in students:
+        plan_code = user_plans.get(int(s["user_id"]), 'free')
+        s["plan_code"] = plan_code
+        s["plan_name"] = _get_plan_name(plan_code)
+
+    # Добавляем пользователей из govr_bot, которых не было в базе prepod_bot
+    already = {int(s["user_id"]) for s in students}
+    for uid, info in govr_users.items():
+        if uid in already:
+            # Обновим подпись, если у нас пусто
+            for s in students:
+                if int(s["user_id"]) == uid:
+                    if not s.get("label"):
+                        s["label"] = info.get("label")
+                    if not s.get("username") and info.get("username"):
+                        s["username"] = info.get("username")
+                    if not s.get("full_name") and info.get("full_name"):
+                        s["full_name"] = info.get("full_name")
+                    break
+        else:
+            plan_code = user_plans.get(uid, 'free')
+            students.append({
+                "user_id": uid,
+                "username": info.get("username"),
+                "full_name": info.get("full_name"),
+                "label": info.get("label") or f"ID {uid}",
+                "plan_code": plan_code,
+                "plan_name": _get_plan_name(plan_code),
+            })
+
     students.sort(key=lambda s: str(s.get("label", "")))
     return students
 

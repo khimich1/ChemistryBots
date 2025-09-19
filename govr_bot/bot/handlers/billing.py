@@ -23,7 +23,7 @@ class BillingStates(StatesGroup):
 def get_tariff_description(plan_code: str) -> str:
 	"""Возвращает продающее описание тарифа"""
 	descriptions = {
-		"group": """**Групповые занятия — 390 ₽/мес**
+			"group": """**Групповые занятия — 0 ₽/мес**
 
 **Что включено:**
 • Полный доступ ко всем функциям бота
@@ -36,7 +36,7 @@ def get_tariff_description(plan_code: str) -> str:
 • 5 отчётов в месяц
 
 **Преимущества группового формата:**
-• Экономия 600₽ в месяц по сравнению с самоподготовкой
+• Экономия 990₽ в месяц по сравнению с самоподготовкой
 • Поддержка преподавателя и группы
 • Мотивация от других учеников
 • Совместное решение сложных задач
@@ -131,7 +131,7 @@ def tariffs_kb(user_id: int = None) -> InlineKeyboardMarkup:
 	
 	# Показываем кнопку "Групповые" только если пользователь добавлен в группу преподавателя
 	if user_id and is_student_approved_by_teacher(user_id):
-		rows.append([InlineKeyboardButton(text="👨‍🏫 Групповые — 390 ₽/мес", callback_data="buy_group")])
+			rows.append([InlineKeyboardButton(text="👨‍🏫 Групповые — бесплатно", callback_data="buy_group")])
 	
 	# Остальные кнопки всегда показываем
 	rows.extend([
@@ -158,7 +158,7 @@ async def tariffs(m: types.Message):
 	    "• 1 отчёт/месяц\n"
 	    "• Карточки — только заучивание\n"
 	    "• 20 решений задач/месяц\n\n"
-	    "**Групповые — 390 ₽/мес**\n"
+		    "**Групповые — бесплатно**\n"
 	    "• Полный доступ ко всем функциям\n\n"
 	    "**Самоподготовка — 990 ₽/мес**\n"
 	    "• Полный доступ ко всем функциям\n\n"
@@ -178,6 +178,16 @@ async def tariffs(m: types.Message):
 @router.callback_query(lambda c: c.data.startswith("buy_"))
 async def buy_plan(cb: types.CallbackQuery):
 	plan_code = cb.data.split("_", 1)[1]
+	# Бесплатная активация для группового тарифа
+	if plan_code == "group" and PRICES.get("group", 0) == 0:
+		if not is_student_approved_by_teacher(cb.from_user.id):
+			await cb.message.answer("Тебя должен добавить преподаватель в группу, чтобы активировать бесплатный доступ.")
+			await cb.answer()
+			return
+		set_user_plan(cb.from_user.id, "group")
+		await cb.message.answer("✅ Групповой тариф активирован бесплатно. Приятной учёбы!")
+		await cb.answer()
+		return
 	
 	# Сначала показываем подробное описание тарифа
 	description = get_tariff_description(plan_code)
@@ -194,6 +204,17 @@ async def buy_plan(cb: types.CallbackQuery):
 @router.callback_query(lambda c: c.data.startswith("confirm_buy_"))
 async def confirm_buy_plan(cb: types.CallbackQuery):
 	plan_code = cb.data.split("_", 2)[2]
+
+	# Для бесплатного группового тарифа — сразу активируем (если одобрен преподавателем)
+	if plan_code == "group" and PRICES.get("group", 0) == 0:
+		if not is_student_approved_by_teacher(cb.from_user.id):
+			await cb.message.answer("Тебя должен добавить преподаватель в группу, чтобы активировать бесплатный доступ.")
+			await cb.answer()
+			return
+		set_user_plan(cb.from_user.id, "group")
+		await cb.message.answer("✅ Групповой тариф активирован бесплатно. Приятной учёбы!")
+		await cb.answer()
+		return
 
 	# Просим покупателя выбрать способ получения чека
 	kb = InlineKeyboardMarkup(inline_keyboard=[

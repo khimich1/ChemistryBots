@@ -83,7 +83,8 @@ if command -v curl >/dev/null 2>&1; then
 fi
 
 # Убедимся, что файлы БД существуют в shared (создадим пустые, если нет)
-SHARED_DIR="/home/username/Рабочий стол/my py/ChemistryBots/shared"
+# Используем относительный путь от текущей директории
+SHARED_DIR="$(dirname "$SCRIPT_DIR")/shared"
 mkdir -p "$SHARED_DIR"
 touch "$SHARED_DIR/test_answers.db" "$SHARED_DIR/tests1.db"
 echo "[run] DB files ensured in: $SHARED_DIR"

@@ -3,7 +3,9 @@ from aiogram.filters import Command
 from keyboards import get_teacher_keyboard, get_students_keyboard
 from services.acquisition import get_ad_stats
 from services.students import get_all_students
-from services.groups import add_student_to_group, is_student_in_group
+from services.groups import add_student_to_group, is_student_in_group, get_all_students_with_plans
+from aiogram.fsm.context import FSMContext
+from states import StudentsList
 
 router = Router()
 
@@ -16,9 +18,9 @@ async def cmd_start(message: types.Message):
 
 
 @router.message(lambda m: m.text == "👥 Добавить в группу")
-async def show_students_list(message: types.Message):
+async def show_students_list(message: types.Message, state: FSMContext):
     """Показывает список всех зарегистрированных учеников"""
-    students = get_all_students()
+    students = get_all_students_with_plans()
     
     if not students:
         await message.answer("Пока нет зарегистрированных учеников.")
@@ -27,8 +29,15 @@ async def show_students_list(message: types.Message):
     # Добавляем информацию о том, кто уже в группе
     for student in students:
         student["is_in_group"] = is_student_in_group(student["user_id"])
-    
-    keyboard = get_students_keyboard(students)
+
+    # Сохраняем исходный список в FSM (для фильтров/поиска)
+    await state.update_data(
+        students=students,
+        only_not_in_group=False,
+        search_query="",
+    )
+
+    keyboard = get_students_keyboard(students, page=1, page_size=30, show_plans=True, has_search=False, only_not_in_group=False)
     await message.answer(
         "Список всех зарегистрированных учеников:\n\n"
         "Нажмите на ученика, чтобы добавить его в группу для доступа к тарифу 'Групповые':",
@@ -36,14 +45,52 @@ async def show_students_list(message: types.Message):
     )
 
 
+@router.message(lambda m: m.text == "✅ Ученики в группе")
+async def show_group_students(message: types.Message, state: FSMContext):
+    """Показывает список только тех учеников, кто уже в группе"""
+    students = get_all_students_with_plans()
+
+    # Отметим статус и отфильтруем
+    for s in students:
+        s["is_in_group"] = is_student_in_group(s["user_id"])
+    students = [s for s in students if s.get("is_in_group")]
+
+    if not students:
+        await message.answer("Пока в группе никого нет.")
+        return
+
+    await state.update_data(
+        students=students,
+        only_not_in_group=False,
+        search_query="",
+    )
+
+    keyboard = get_students_keyboard(
+        students, page=1, page_size=30,
+        show_plans=True,
+        has_search=False,
+        only_not_in_group=False,
+        show_controls=True,
+        show_only_not_in_group_toggle=False,
+    )
+    await message.answer(
+        "Ученики, которые уже в группе. Листайте страницы ⬅️➡️ или используйте поиск.",
+        reply_markup=keyboard,
+    )
+
+
 @router.callback_query(lambda c: c.data.startswith("add_to_group:"))
-async def add_student_to_group_handler(callback: types.CallbackQuery):
+async def add_student_to_group_handler(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик добавления ученика в группу"""
     try:
-        user_id = int(callback.data.split(":")[1])
+        parts = callback.data.split(":")
+        # Форматы: add_to_group:<user_id> или add_to_group:<user_id>:<page>
+        user_id = int(parts[1])
+        page = int(parts[2]) if len(parts) >= 3 else 1
         
         # Получаем информацию об ученике
-        students = get_all_students()
+        data = await state.get_data()
+        students = data.get("students") or get_all_students_with_plans()
         student_info = None
         for student in students:
             if student["user_id"] == user_id:
@@ -64,9 +111,33 @@ async def add_student_to_group_handler(callback: types.CallbackQuery):
         
         student_name = student_info.get("label", f"ID {user_id}")
         await callback.answer(f"✅ {student_name} добавлен в группу! Теперь он может купить тариф 'Групповые'.")
-        
-        # Обновляем список учеников
-        await show_students_list(callback.message)
+
+        # Обновляем список учеников и клавиатуру на той же странице
+        # Обновляем кэш: заново достанем с тарифами и отметим группу
+        students = get_all_students_with_plans()
+        for s in students:
+            s["is_in_group"] = is_student_in_group(s["user_id"])
+        # Применим текущие фильтры/поиск
+        only_not_in_group = bool((await state.get_data()).get("only_not_in_group"))
+        search_query = (await state.get_data()).get("search_query") or ""
+
+        filtered = _apply_students_filters(students, only_not_in_group=only_not_in_group, search_query=search_query)
+        await state.update_data(students=students)
+        keyboard = get_students_keyboard(
+            filtered, page=page, page_size=30,
+            show_plans=True,
+            has_search=bool(search_query.strip()),
+            only_not_in_group=only_not_in_group,
+        )
+        try:
+            await callback.message.edit_reply_markup(reply_markup=keyboard)
+        except Exception:
+            # Если не удалось отредактировать (например, старое сообщение), отправим новое
+            await callback.message.answer(
+                "Список всех зарегистрированных учеников:\n\n"
+                "Нажмите на ученика, чтобы добавить его в группу для доступа к тарифу 'Групповые':",
+                reply_markup=keyboard
+            )
         
     except Exception as e:
         await callback.answer(f"Ошибка: {e}", show_alert=True)
@@ -80,6 +151,141 @@ async def back_to_main_handler(callback: types.CallbackQuery):
         "Выберите действие:",
         reply_markup=get_teacher_keyboard()
     )
+
+
+@router.callback_query(lambda c: c.data.startswith("students_page:"))
+async def students_page_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Переключение страниц списка учеников"""
+    try:
+        arg = callback.data.split(":")[1]
+        if arg == "noop":
+            await callback.answer()
+            return
+        page = int(arg)
+    except Exception:
+        page = 1
+
+    data = await state.get_data()
+    students = data.get("students") or get_all_students_with_plans()
+    if not students:
+        await callback.answer("Список пуст", show_alert=True)
+        return
+
+    for s in students:
+        s["is_in_group"] = is_student_in_group(s["user_id"])
+
+    only_not_in_group = bool(data.get("only_not_in_group"))
+    search_query = data.get("search_query") or ""
+    filtered = _apply_students_filters(students, only_not_in_group=only_not_in_group, search_query=search_query)
+    keyboard = get_students_keyboard(
+        filtered, page=page, page_size=30,
+        show_plans=True,
+        has_search=bool(search_query.strip()),
+        only_not_in_group=only_not_in_group,
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    finally:
+        # Гасим загрузку
+        await callback.answer()
+
+
+def _apply_students_filters(students: list, *, only_not_in_group: bool, search_query: str) -> list:
+    sq_raw = (search_query or "").strip().lower()
+    # Поддерживаем ввод с @ и без @
+    sq_no_at = sq_raw[1:] if sq_raw.startswith("@") else sq_raw
+    query_variants = {sq_raw, sq_no_at}
+    out = []
+    for s in students:
+        if only_not_in_group and s.get("is_in_group"):
+            continue
+        if sq_raw:
+            label = (s.get("label") or "").lower()
+            username = (s.get("username") or "").lower()
+            username_no_at = username[1:] if username.startswith("@") else username
+            full_name = (s.get("full_name") or "").lower()
+            # Совпадение по любой из форм запроса
+            if not any(q in label or q in username or q in username_no_at or q in full_name for q in query_variants):
+                continue
+        out.append(s)
+    return out
+
+
+@router.callback_query(lambda c: c.data == "students_search")
+async def students_start_search(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer("Введите часть имени или username для поиска (или отправьте пусто, чтобы сбросить):")
+    await state.set_state(StudentsList.waiting_search_query)
+
+
+@router.message(StudentsList.waiting_search_query)
+async def students_apply_search(message: types.Message, state: FSMContext):
+    query = (message.text or "").strip()
+    data = await state.get_data()
+    students = data.get("students") or get_all_students_with_plans()
+
+    for s in students:
+        s["is_in_group"] = is_student_in_group(s["user_id"])
+
+    only_not_in_group = bool(data.get("only_not_in_group"))
+    filtered = _apply_students_filters(students, only_not_in_group=only_not_in_group, search_query=query)
+    await state.update_data(search_query=query, students=students)
+
+    keyboard = get_students_keyboard(
+        filtered, page=1, page_size=30,
+        show_plans=True,
+        has_search=bool(query),
+        only_not_in_group=only_not_in_group,
+    )
+    await message.answer(
+        "Результаты поиска. Листайте страницы ⬅️➡️ или сбросьте фильтры.",
+        reply_markup=keyboard,
+    )
+    await state.set_state(None)
+
+
+@router.callback_query(lambda c: c.data == "students_toggle_filter")
+async def students_toggle_only_not_in_group(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    students = data.get("students") or get_all_students_with_plans()
+    only_not_in_group = not bool(data.get("only_not_in_group"))
+    search_query = data.get("search_query") or ""
+
+    for s in students:
+        s["is_in_group"] = is_student_in_group(s["user_id"])
+
+    filtered = _apply_students_filters(students, only_not_in_group=only_not_in_group, search_query=search_query)
+    await state.update_data(only_not_in_group=only_not_in_group, students=students)
+
+    keyboard = get_students_keyboard(
+        filtered, page=1, page_size=30,
+        show_plans=True,
+        has_search=bool(search_query.strip()),
+        only_not_in_group=only_not_in_group,
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    finally:
+        await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "students_clear")
+async def students_clear_filters(callback: types.CallbackQuery, state: FSMContext):
+    students = get_all_students_with_plans()
+    for s in students:
+        s["is_in_group"] = is_student_in_group(s["user_id"])
+    await state.update_data(students=students, search_query="", only_not_in_group=False)
+
+    keyboard = get_students_keyboard(
+        students, page=1, page_size=30,
+        show_plans=True,
+        has_search=False,
+        only_not_in_group=False,
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    finally:
+        await callback.answer()
 
 
 @router.message(lambda m: m.text == "📣 Статистика рекламы")

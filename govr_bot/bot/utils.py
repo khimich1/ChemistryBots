@@ -17,17 +17,22 @@ ALL_TOPICS = [
 BASE_DIR = os.path.dirname(__file__)
 TB_DIR = os.path.join(BASE_DIR, "textbooks")
 
-LEARNING_TOPICS = [
+# Загружаем все учебники из каталога, но в органическом разделе исключаем «Сера»
+_ALL_TEXTBOOK_TOPICS = [
     os.path.splitext(fname)[0]
     for fname in sorted(os.listdir(TB_DIR))
     if fname.lower().endswith(".json")
 ]
 
+# Доступное содержимое учебников (используется и в элементах, и в органике)
 TEXTBOOK_CONTENT: dict[str, list[str]] = {}
-for topic in LEARNING_TOPICS:
+for topic in _ALL_TEXTBOOK_TOPICS:
     path = os.path.join(TB_DIR, f"{topic}.json")
     with open(path, encoding="utf-8") as f:
         TEXTBOOK_CONTENT[topic] = json.load(f)
+
+# Темы органики (раздел «🧬 Органическая химия») — без «Сера»
+LEARNING_TOPICS = [t for t in _ALL_TEXTBOOK_TOPICS if t != "Сера"]
 
 # ====== Состояния пользователей ======
 user_learning_state: dict[int, dict[str, Any]] = {}

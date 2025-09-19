@@ -258,17 +258,9 @@ def get_stats_kb(test_type: int) -> InlineKeyboardMarkup:
 # =========================
 @router.message(lambda m: m.text == "📝 Тесты")
 async def show_tests_types_menu(m: types.Message):
+    # Удаляем только сохранённые сообщения - этого достаточно
     await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
-    # Фолбэк: подчистим несколько последних сообщений, если что-то не было отмечено
-    try:
-        base = m.message_id
-        for delta in range(0, 7):
-            try:
-                await m.bot.delete_message(chat_id=m.chat.id, message_id=base - delta)
-            except Exception:
-                pass
-    except Exception:
-        pass
+    
     msg1 = await m.answer(tests_instruction_text(), parse_mode="HTML")
     message_manager.add_message(m.from_user.id, msg1.message_id)
     msg2 = await m.answer("Выбери номер теста:", reply_markup=get_tests_types_kb(with_menu=True, include_back=True))
@@ -283,17 +275,9 @@ async def show_tests_menu_cmd(m: types.Message):
 # =========================
 @router.callback_query(lambda c: c.data.startswith("choose_test_"))
 async def start_test(cb: CallbackQuery):
+    # Удаляем только сохранённые сообщения - этого достаточно
     await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
-    # Фолбэк: подчистим несколько последних сообщений, если что-то не было отмечено
-    try:
-        base = cb.message.message_id
-        for delta in range(0, 7):
-            try:
-                await cb.message.bot.delete_message(chat_id=cb.message.chat.id, message_id=base - delta)
-            except Exception:
-                pass
-    except Exception:
-        pass
+    
     try:
         test_type = int(cb.data.split("_")[-1])
     except ValueError:
