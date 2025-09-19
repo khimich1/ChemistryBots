@@ -4,6 +4,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from bot.services.analytics import UserAnalytics
 from bot.services.answer_db import get_db_connection
+from bot.services.plan import set_user_plan, get_plan_name, FULL
 from datetime import datetime, timedelta
 import sqlite3
 
@@ -427,6 +428,200 @@ async def show_engagement_metrics(message: Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}")
 
+@router.message(Command("find_user"))
+async def find_user_by_username(message: Message):
+    """Находит пользователя по username"""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ У тебя нет доступа к этой команде")
+        return
+    
+    # Парсим команду: /find_user @username или /find_user username
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("❌ Используй: /find_user @username или /find_user username")
+        return
+    
+    username = args[1].lstrip('@')  # Убираем @ если есть
+    
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT user_id, username, full_name, created_at 
+                FROM user_profiles 
+                WHERE username = ? OR username LIKE ?
+            """, (username, f"%{username}%"))
+            users = c.fetchall()
+        
+        if not users:
+            await message.answer(f"❌ Пользователь с username '{username}' не найден")
+            return
+        
+        if len(users) == 1:
+            user_id, db_username, full_name, created_at = users[0]
+            await message.answer(
+                f"👤 **Найден пользователь:**\n\n"
+                f"🆔 ID: {user_id}\n"
+                f"📱 Username: @{db_username}\n"
+                f"👤 Имя: {full_name or 'Не указано'}\n"
+                f"📅 Зарегистрирован: {created_at}",
+                parse_mode="Markdown"
+            )
+        else:
+            # Несколько пользователей найдено
+            users_text = f"🔍 **Найдено {len(users)} пользователей с username содержащим '{username}':**\n\n"
+            for user_id, db_username, full_name, created_at in users:
+                users_text += f"• @{db_username} (ID: {user_id}) - {full_name or 'без имени'}\n"
+            
+            await message.answer(users_text, parse_mode="Markdown")
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@router.message(Command("set_plan"))
+async def set_user_plan_command(message: Message):
+    """Устанавливает тариф пользователю (для админа)"""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ У тебя нет доступа к этой команде")
+        return
+    
+    # Парсим команду: /set_plan <user_id> <plan_code>
+    args = message.text.split()
+    if len(args) != 3:
+        await message.answer(
+            "❌ Используй: /set_plan <ID пользователя> <код тарифа>\n\n"
+            "📋 Доступные тарифы:\n"
+            "• free - бесплатный\n"
+            "• group - групповой\n"
+            "• self - самоподготовка\n"
+            "• organic - органическая химия\n"
+            "• elements - химия элементов\n"
+            "• full - полный доступ\n\n"
+            "Пример: /set_plan 123456789 full"
+        )
+        return
+    
+    try:
+        user_id = int(args[1])
+        plan_code = args[2].lower()
+        
+        # Проверяем, что тариф существует
+        valid_plans = ["free", "group", "self", "organic", "elements", "full"]
+        if plan_code not in valid_plans:
+            await message.answer(
+                f"❌ Неверный код тарифа: {plan_code}\n\n"
+                "📋 Доступные тарифы: " + ", ".join(valid_plans)
+            )
+            return
+        
+        # Устанавливаем тариф
+        set_user_plan(user_id, plan_code)
+        plan_name = get_plan_name(plan_code)
+        
+        # Получаем информацию о пользователе
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT username, full_name FROM user_profiles WHERE user_id = ?", (user_id,))
+            user_info = c.fetchone()
+        
+        username = user_info[0] if user_info and user_info[0] else "не указан"
+        full_name = user_info[1] if user_info and user_info[1] else "не указано"
+        
+        await message.answer(
+            f"✅ Тариф успешно установлен!\n\n"
+            f"👤 Пользователь: {full_name} (@{username})\n"
+            f"🆔 ID: {user_id}\n"
+            f"💳 Тариф: {plan_name} ({plan_code})\n"
+            f"📅 Установлен: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+    except ValueError:
+        await message.answer("❌ ID пользователя должен быть числом")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@router.message(Command("giveaway_winners"))
+async def set_giveaway_winners_plan(message: Message):
+    """Устанавливает полный доступ победителям розыгрыша"""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ У тебя нет доступа к этой команде")
+        return
+    
+    # Сначала найдем ID пользователя @Kiber_Banka
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT user_id, full_name FROM user_profiles WHERE username = ?", ("Kiber_Banka",))
+            kiber_user = c.fetchone()
+        
+        if not kiber_user:
+            await message.answer(
+                "❌ Пользователь @Kiber_Banka не найден в базе данных.\n"
+                "Используй /find_user Kiber_Banka для поиска или проверь правильность username."
+            )
+            return
+        
+        kiber_user_id, kiber_full_name = kiber_user
+        
+        # ID победителей
+        winners = [
+            {"user_id": kiber_user_id, "name": kiber_full_name or "Иван Петров", "username": "Kiber_Banka"},
+            {"user_id": 7576596039, "name": "Сорокина София", "username": None},
+        ]
+        
+        success_count = 0
+        error_count = 0
+        results = []
+        
+        for winner in winners:
+            try:
+                # Устанавливаем полный доступ
+                set_user_plan(winner["user_id"], FULL)
+                success_count += 1
+                
+                # Отправляем уведомление победителю
+                try:
+                    await message.bot.send_message(
+                        winner["user_id"],
+                        "🎉 <b>ПОЗДРАВЛЯЕМ!</b> 🎉\n\n"
+                        "Твой выигрыш в розыгрыше активирован! 🔥✨\n\n"
+                        "🌟 <b>Теперь у тебя:</b>\n"
+                        "• Полный доступ ко всем функциям бота\n"
+                        "• Безлимитные тесты по всем темам\n"
+                        "• Неограниченные подсказки и объяснения\n"
+                        "• Все блоки: 'Начала химии', 'Органика', 'Элементы'\n"
+                        "• Безлимитные вопросы к ИИ\n"
+                        "• Безлимитные голосовые сообщения\n"
+                        "• Полные карточки с объяснениями\n"
+                        "• Неограниченные отчёты\n\n"
+                        "Наслаждайся обучением! 🚀",
+                        parse_mode="HTML"
+                    )
+                    results.append(f"✅ {winner['name']} (ID: {winner['user_id']}) - тариф установлен, уведомление отправлено")
+                except Exception as e:
+                    results.append(f"⚠️ {winner['name']} (ID: {winner['user_id']}) - тариф установлен, но уведомление не отправлено: {str(e)}")
+                    
+            except Exception as e:
+                error_count += 1
+                results.append(f"❌ {winner['name']} (ID: {winner['user_id']}) - ошибка: {str(e)}")
+        
+        # Отчет админу
+        report_text = f"""🎊 <b>АКТИВАЦИЯ ПРИЗОВ РОЗЫГРЫША</b> 🎊
+
+📊 <b>Результаты:</b>
+• Успешно: {success_count}
+• Ошибок: {error_count}
+
+📋 <b>Детали:</b>"""
+        
+        for result in results:
+            report_text += f"\n{result}"
+        
+        await message.answer(report_text, parse_mode="HTML")
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при поиске пользователей: {str(e)}")
+
 @router.message(Command("help_admin"))
 async def show_admin_help(message: Message):
     """Показывает справку по админским командам"""
@@ -445,6 +640,7 @@ async def show_admin_help(message: Message):
 
 👤 **Анализ пользователей:**
 • `/user <ID>` - информация о конкретном пользователе
+• `/find_user <username>` - найти пользователя по username
 • `/plans` - статистика по тарифам
 • `/sources` - источники пользователей (deep-links)
 • `/retention` - удержание пользователей (за 30 дней)
@@ -455,11 +651,22 @@ async def show_admin_help(message: Message):
 • `/performance` - успеваемость пользователей
 • `/engagement` - метрики вовлечённости
 
+# 🎁 **Розыгрыш:**  # Розыгрыш - закомментировано
+# • `/giveaway_stats` - статистика участников розыгрыша  # Розыгрыш - закомментировано
+# • `/giveaway_draw` - провести розыгрыш и выбрать победителей  # Розыгрыш - закомментировано
+# • `/giveaway_winners` - активировать призы победителям  # Розыгрыш - закомментировано
+
+💳 **Управление тарифами:**
+• `/set_plan <ID> <тариф>` - установить тариф пользователю
+
 💡 **Полезные советы:**
 • Используй `/stats` каждый день
 • `/retention` покажет качество удержания
 • `/patterns` поможет понять лучшее время для уведомлений
 • `/engagement` покажет, кто нуждается в мотивации
+# • `/giveaway_draw` выберет 20 победителей таблицы и 2 - подписки  # Розыгрыш - закомментировано
+# • `/giveaway_winners` активирует полный доступ победителям  # Розыгрыш - закомментировано
+• `/find_user` поможет найти ID пользователя по username
         """
     
     await message.answer(help_text, parse_mode="Markdown")

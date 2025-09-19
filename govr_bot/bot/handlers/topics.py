@@ -33,7 +33,6 @@ from bot.utils import (
 from bot.handlers.menu import main_kb
 from bot.services.gpt_service import answer_student_question
 from bot.services.gpt_service import transcribe_audio, grade_theory_answer
-from bot.services.gpt_service import generate_chunk_title
 from bot.services.answer_db import save_theory_task_answer, get_theory_stats, get_theory_stats_by_chunk
 from bot.utils_pkg_new.logger import log_error
 from bot.utils_pkg.message_manager import message_manager
@@ -91,7 +90,7 @@ def _topic_progress_dot(user_id: int, topic: str) -> str:
 # 1) Начала химии — список глав
 @router.message(lambda m: m.text == "📖 Начала химии")
 async def begin_chem(m: types.Message):
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     buttons = []
     for i, topic in enumerate(BEGIN_CHEM_TOPICS):
         buttons.append([InlineKeyboardButton(text=f"{topic}", callback_data=f"begin_topic_{i}")])
@@ -104,7 +103,8 @@ async def begin_chem(m: types.Message):
 # Выбор главы «Начала химии»
 @router.callback_query(lambda c: c.data.startswith("begin_topic_"))
 async def begin_topic_chosen(cb: types.CallbackQuery, bot):
-    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    await cb.answer()
+    await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     try:
         idx = int(cb.data.split("begin_topic_")[-1])
         topic = BEGIN_CHEM_TOPICS[idx]
@@ -121,7 +121,7 @@ async def begin_topic_chosen(cb: types.CallbackQuery, bot):
 # 2) Химия элементов — СПИСОК ГЛАВ (полноценный)
 @router.message(lambda m: m.text == "⚗️ Химия элементов")
 async def element_chem(m: types.Message):
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     from bot.services.plan import theory_allowed
     if not theory_allowed(m.from_user.id, "elements"):
         msg = await m.answer("Этот раздел доступен на тарифах ('Химия элементов', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
@@ -139,7 +139,8 @@ async def element_chem(m: types.Message):
 # Выбор главы «Химия элементов»
 @router.callback_query(lambda c: c.data.startswith("element_topic_"))
 async def element_topic_chosen(cb: types.CallbackQuery, bot):
-    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    await cb.answer()
+    await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     try:
         idx = int(cb.data.split("element_topic_")[-1])
         topic = ELEMENT_CHEM_TOPICS[idx]
@@ -156,7 +157,7 @@ async def element_topic_chosen(cb: types.CallbackQuery, bot):
 # 3) Органическая химия — список глав
 @router.message(lambda m: m.text == "🧬 Органическая химия")
 async def organic_chem(m: types.Message):
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     from bot.services.plan import theory_allowed
     if not theory_allowed(m.from_user.id, "organic"):
         msg = await m.answer("Этот раздел доступен на тарифах ('Органика', 'Самоподготовка', 'Групповые', 'Полный доступ'). Открой '💳 Тарифы и оплата'.", reply_markup=main_kb)
@@ -174,7 +175,8 @@ async def organic_chem(m: types.Message):
 # Выбор главы «Органическая химия»
 @router.callback_query(lambda c: c.data.startswith("learn_topic_"))
 async def learn_topic_chosen(cb: types.CallbackQuery, bot):
-    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    await cb.answer()
+    await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     try:
         idx = int(cb.data.split("learn_topic_")[-1])
         topic = LEARNING_TOPICS[idx]
@@ -193,13 +195,13 @@ async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, sec
     """Показывает кнопки частей главы с прогрессом по вопросам: correct/total."""
     # Чистим прошлые одноразовые сообщения перед показом списка частей
     try:
-        await message_manager.delete_user_messages(msg.bot, user_id, msg.chat.id)
+        await message_manager.delete_user_messages_fast(msg.bot, user_id, msg.chat.id)
     except Exception:
         pass
     # Фолбэк: снесём несколько последних сообщений в чате (если менеджер чего‑то не знал)
     try:
         base = msg.message_id
-        for delta in range(0, 7):
+        for delta in range(0, 2):
             try:
                 await msg.bot.delete_message(chat_id=msg.chat.id, message_id=base - delta)
             except Exception:
@@ -217,29 +219,7 @@ async def _show_topic_parts(msg: types.Message, user_id: int, topic: str, *, sec
     # Убедимся, что столбец для заголовков есть
     ensure_chunk_title_column()
 
-    # Ленивая генерация заголовков для отсутствующих (не более 5 за один показ)
-    missing: list[int] = []
-    for i in range(total_chunks):
-        if not get_chunk_title(topic, i):
-            missing.append(i)
-    to_generate = missing[:5]
-    for i in to_generate:
-        # Берём лекцию для чанка из БД или JSON
-        chunk_text = get_prepared_lecture(topic, i)
-        if not chunk_text:
-            chunk_text = (TEXTBOOK_CONTENT.get(topic, []) or [None])[i] if i < len(TEXTBOOK_CONTENT.get(topic, [])) else None
-        if not chunk_text:
-            continue
-        try:
-            title = await generate_chunk_title(topic, chunk_text)
-        except (ValueError, TypeError) as e:
-            log_error(e, f"Data error generating chunk title for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
-            title = ""
-        except (AttributeError, KeyError, httpx.RequestError) as e:
-            log_error(e, f"Unexpected error generating chunk title for topic {topic}, chunk {i}, user {user_id}", user_id=user_id)
-            title = ""
-        if title:
-            set_chunk_title(topic, i, title)
+    # Генерацию заголовков на лету убрали ради скорости
 
     # Собираем клавиатуру: по 1 кнопке в строке (чтобы было видно длинные заголовки)
     rows: list[list[InlineKeyboardButton]] = []
@@ -557,7 +537,7 @@ async def learn_audio(cb: types.CallbackQuery, bot):
 async def learn_to_parts(cb: types.CallbackQuery, bot):
     """Закрывает текущую главу и показывает список частей выбранной темы."""
     try:
-        await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+        await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     except Exception:
         pass
     st = user_learning_state.get(cb.from_user.id)
@@ -632,6 +612,9 @@ async def parts_to_chapters(cb: types.CallbackQuery):
     # Удалим сообщение со списком частей
     try:
         await cb.message.delete()
+    except TelegramBadRequest:
+        # Сообщение уже удалено — это нормальная ситуация, тихо игнорируем
+        pass
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting message in parts_to_chapters for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (AttributeError, KeyError) as e:
@@ -674,13 +657,14 @@ async def to_main_menu_from_parts(cb: types.CallbackQuery):
     """Удаляет сообщение со списком частей и открывает главное меню (Reply)."""
     # Удаляем все одноразовые сообщения в чате пользователя
     try:
-        await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+        await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     except Exception:
         pass
     try:
         await cb.message.delete()
-    except TelegramBadRequest as e:
-        log_error(e, f"BadRequest deleting message in to_main_menu_from_parts for user {cb.from_user.id}", user_id=cb.from_user.id)
+    except TelegramBadRequest:
+        # Сообщение уже удалено — это нормальная ситуация, тихо игнорируем
+        pass
     except (ValueError, TypeError) as e:
         log_error(e, f"Data error deleting message in to_main_menu_from_parts for user {cb.from_user.id}", user_id=cb.from_user.id)
     except (AttributeError, KeyError) as e:

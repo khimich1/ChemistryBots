@@ -1,4 +1,7 @@
 import os, sqlite3
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _THIS_DIR = os.path.dirname(__file__)            # bot/services
 _PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))

@@ -14,7 +14,7 @@ RETURN_URL = os.getenv("YK_RETURN_URL", "https://t.me/").strip()
 
 # Цены в рублях
 PRICES: dict[str, int] = {
-	"group": 390,
+	"group": 0,
 	"self": 990,
 	"organic": 2990,
 	"elements": 2990,

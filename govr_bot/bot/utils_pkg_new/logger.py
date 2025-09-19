@@ -100,9 +100,12 @@ def log_user_action(user_id: int, action: str, details: Dict[str, Any] = None):
 
 def log_error(error: Exception, context: str = "", user_id: int = None):
     """Логирует ошибки с контекстом"""
+    import sys
     logger = logging.getLogger("chemistry_bot.errors")
     
-    # Создаем запись с правильной обработкой исключений
+    # Получаем правильный exc_info
+    exc_info = sys.exc_info() if error else None
+    
     record = logger.makeRecord(
         "chemistry_bot.errors",
         logging.ERROR,
@@ -110,11 +113,11 @@ def log_error(error: Exception, context: str = "", user_id: int = None):
         0,
         f"Error in {context}: {str(error)}",
         (),
-        None  # Не передаем error как exc_info, чтобы избежать проблем с форматированием
+        exc_info
     )
     if user_id:
         record.user_id = user_id
-    record.details = {"context": context, "error_type": type(error).__name__, "error_message": str(error)}
+    record.details = {"context": context, "error_type": type(error).__name__}
     
     logger.handle(record)
 

@@ -1,62 +1,51 @@
-#!/bin/bash
-set -Eeuo pipefail
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Всегда работаем из директории, где лежит скрипт
-cd "$(dirname "$0")"
+# Определяем директорию скрипта и переходим в неё
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+echo "[run] Working dir: $SCRIPT_DIR"
 
-echo "🚀 [run_prepod_bot] Запуск prepod бота..."
-echo "📁 [run_prepod_bot] Рабочая папка: $(pwd)"
-
-# Включаем логирование всего вывода в файл
-LOG_DIR="logs"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/run_$(date +%Y%m%d_%H%M%S).log"
-exec > >(tee -a "$LOG_FILE") 2>&1
-ln -s -f "$(basename "$LOG_FILE")" "$LOG_DIR/latest.log" || true
-echo "📝 [run_prepod_bot] Логи: $(pwd)/$LOG_FILE (symlink: $(pwd)/$LOG_DIR/latest.log)"
-
-# Функция для показа прогресса
-show_progress() {
-    local message="$1"
-    echo "⏳ [run_prepod_bot] $message"
-}
-
-# Функция для показа успеха
-show_success() {
-    local message="$1"
-    echo "✅ [run_prepod_bot] $message"
-}
-
-# Функция для показа ошибки
-show_error() {
-    local message="$1"
-    echo "❌ [run_prepod_bot] $message"
-}
-
-# Проверяем виртуальное окружение
-show_progress "Проверяю виртуальное окружение..."
-if [ ! -d "venv" ]; then
-    show_error "Виртуальное окружение не найдено!"
-    echo "Создайте его командой:"
-    echo "  python3 -m venv venv"
-    echo "  source venv/bin/activate"
-    echo "  pip install -r requirements.txt"
-    exit 1
+# Находим доступный Python интерпретатор
+if command -v python3 >/dev/null 2>&1; then
+  PY=python3
+elif command -v python >/dev/null 2>&1; then
+  PY=python
+else
+  echo "[run] Python не найден. Установите python3."
+  exit 1
 fi
 
-source venv/bin/activate || { 
-    show_error "Не удалось активировать виртуальное окружение!"
+create_venv() {
+  echo "[run] Creating Python venv with: $PY -m venv venv"
+  if ! $PY -m venv venv 2>/tmp/venv_err.log; then
+    echo "[run] Не удалось создать venv. Подсказка для Ubuntu/Mint:"
+    echo "      sudo apt update && sudo apt install -y python3-venv"
+    echo "[run] Полный лог ошибки:"
+    cat /tmp/venv_err.log
     exit 1
+  fi
 }
-show_success "Виртуальное окружение активировано"
-echo "🐍 [run_prepod_bot] Python: $(python --version)"
 
-# Проверяем наличие .env
-show_progress "Проверяю конфигурацию..."
+# Создаём/восстанавливаем venv, если файл активатора отсутствует
+if [ ! -f "venv/bin/activate" ]; then
+  echo "[run] venv/bin/activate не найден. Пересоздаю окружение..."
+  rm -rf venv
+  create_venv
+fi
+
+# Активируем venv
+source "venv/bin/activate"
+echo "[run] Python: $(python --version)"
+
+# Обновляем pip и ставим зависимости
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# Создаём .env с шаблоном, если отсутствует
 if [ ! -f ".env" ]; then
-    show_error "Файл .env не найден!"
-    echo "Создаю шаблон .env..."
-    cat > .env <<'EOF'
+  echo "[run] Creating .env template..."
+  cat > .env <<'EOF'
 # Токен бота (обязательно)
 BOT_TOKEN=PUT_YOUR_TOKEN_HERE
 
@@ -70,71 +59,38 @@ TESTS_DB_PATH="/home/username/Рабочий стол/my py/ChemistryBots/shared
 # Необязательно: окно «онлайн» в минутах
 ONLINE_WINDOW_MINUTES=10
 EOF
-    show_error "Файл .env создан, но нужно указать BOT_TOKEN!"
-    echo "Откройте файл $(pwd)/.env и укажите реальный токен от BotFather"
-    echo "Пример: BOT_TOKEN=123456789:AA..."
-    echo "📝 [run_prepod_bot] Полный лог: $(pwd)/$LOG_FILE"
-    exit 1
+  echo "[run] .env template created at $SCRIPT_DIR/.env"
 fi
 
-# Проверяем BOT_TOKEN
-BOT_TOKEN_VAL="$(grep -E '^BOT_TOKEN=' .env | sed 's/^BOT_TOKEN=//; s/^\"//; s/\"$//')"
-if [ -z "${BOT_TOKEN_VAL:-}" ] || [[ "${BOT_TOKEN_VAL}" == "PUT_YOUR_TOKEN_HERE" ]] || [[ "${BOT_TOKEN_VAL}" == "ВАШ_ТОКЕН_ТЕЛЕГРАМ" ]]; then
-    show_error "BOT_TOKEN не задан или содержит заглушку!"
-    echo "Откройте файл $(pwd)/.env и укажите реальный токен от BotFather"
-    echo "Пример: BOT_TOKEN=123456789:AA..."
-    echo "📝 [run_prepod_bot] Полный лог: $(pwd)/$LOG_FILE"
-    exit 1
+# Проверим, что BOT_TOKEN задан и не равен плейсхолдеру
+if ! grep -qE '^BOT_TOKEN=[^#[:space:]]' .env || grep -q 'BOT_TOKEN=PUT_YOUR_TOKEN_HERE' .env; then
+  echo "[run] Please set BOT_TOKEN in $SCRIPT_DIR/.env (current is empty or placeholder)."
+  echo "[run] Edit file and set your token from @BotFather, then re-run this script."
+  exit 1
 fi
-show_success "Конфигурация проверена"
 
-# Проверяем зависимости
-show_progress "Проверяю зависимости..."
-if ! python3 -c "import aiogram" 2>/dev/null; then
-    show_error "aiogram не установлен!"
-    echo "Установите зависимости: pip install -r requirements.txt"
-    exit 1
-fi
-show_success "Зависимости проверены"
-
-# Останавливаем предыдущие запуски
-show_progress "Останавливаю предыдущие запуски бота..."
+# Остановим предыдущие запуски, чтобы избежать TelegramConflictError
+echo "[run] Stopping previous bot instances (if any)..."
 pkill -f 'prepod_bot/main.py' >/dev/null 2>&1 || true
 
-# Удаляем вебхук на всякий случай
+# Удалим вебхук на всякий случай (если когда-то включали)
 if command -v curl >/dev/null 2>&1; then
-    show_progress "Удаляю Telegram webhook..."
+  BOT_TOKEN_VAL=$(grep '^BOT_TOKEN=' .env | head -1 | cut -d= -f2- | sed "s/^['\"]//; s/['\"]$//")
+  if [ -n "$BOT_TOKEN_VAL" ] && [ "$BOT_TOKEN_VAL" != "PUT_YOUR_TOKEN_HERE" ]; then
+    echo "[run] Deleting Telegram webhook..."
     curl -s "https://api.telegram.org/bot${BOT_TOKEN_VAL}/deleteWebhook" >/dev/null || true
+  fi
 fi
 
-# Убеждаемся, что файлы БД существуют в shared
-SHARED_DIR="/home/username/Рабочий стол/my py/ChemistryBots/shared"
+# Убедимся, что файлы БД существуют в shared (создадим пустые, если нет)
+# Используем относительный путь от текущей директории
+SHARED_DIR="$(dirname "$SCRIPT_DIR")/shared"
 mkdir -p "$SHARED_DIR"
 touch "$SHARED_DIR/test_answers.db" "$SHARED_DIR/tests1.db"
-show_success "Базы данных проверены в: $SHARED_DIR"
+echo "[run] DB files ensured in: $SHARED_DIR"
 
-# Показываем прогресс загрузки
-show_progress "Загружаю бота (это может занять 10-20 секунд)..."
-echo "💡 [run_prepod_bot] Подсказка: первый запуск всегда медленнее из-за инициализации БД"
-
-# Запускаем бота с таймером
-START_TIME=$(date +%s)
-if python3 main.py "$@"; then
-    END_TIME=$(date +%s)
-    DURATION=$((END_TIME - START_TIME))
-    show_success "Бот завершился корректно за ${DURATION} секунд"
-    echo "📝 [run_prepod_bot] Лог: $(pwd)/$LOG_FILE"
-    # Пауза для сценария «двойной клик в файловом менеджере». Отключить: RUN_BOT_NO_PAUSE=1 ./run_prepod_bot.sh
-    if [ -z "${RUN_BOT_NO_PAUSE:-}" ]; then echo "Нажмите Enter, чтобы закрыть окно..."; read -r; fi
-    exit 0
-else
-    status=$?
-    END_TIME=$(date +%s)
-    DURATION=$((END_TIME - START_TIME))
-    show_error "Бот завершился с ошибкой (код $status) за ${DURATION} секунд"
-    echo "📝 [run_prepod_bot] Полный лог: $(pwd)/$LOG_FILE"
-    if [ -z "${RUN_BOT_NO_PAUSE:-}" ]; then echo "Нажмите Enter, чтобы закрыть окно..."; read -r; fi
-    exit "$status"
-fi
+# Запускаем бота
+echo "[run] Starting bot..."
+exec python main.py
 
 

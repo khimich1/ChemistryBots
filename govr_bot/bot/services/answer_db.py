@@ -182,6 +182,18 @@ def init_db():
         if "feedback" not in cols:
             c.execute("ALTER TABLE theory_task_answers ADD COLUMN feedback TEXT")
         conn.commit()
+        
+        # --- Таблица участников розыгрыша ---  # Розыгрыш - закомментировано
+        # c.execute('''  # Розыгрыш - закомментировано
+        #     CREATE TABLE IF NOT EXISTS giveaway_participants (  # Розыгрыш - закомментировано
+        #         user_id INTEGER PRIMARY KEY,  # Розыгрыш - закомментировано
+        #         username TEXT,  # Розыгрыш - закомментировано
+        #         full_name TEXT,  # Розыгрыш - закомментировано
+        #         registered_at TEXT  # Розыгрыш - закомментировано
+        #     )  # Розыгрыш - закомментировано
+        # ''')  # Розыгрыш - закомментировано
+        # conn.commit()  # Розыгрыш - закомментировано
+        
     # --- Инициализация таблицы активности вопросов ---
     init_activity_table()
 

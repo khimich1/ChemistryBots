@@ -7,7 +7,6 @@ from config import DB_PATH, TESTS_DB_PATH  # DB_PATH -> test_answers.db, TESTS_D
 
 
 def _safe_fetchone(conn: sqlite3.Connection, sql: str, params=()) -> Optional[tuple]:
-    cur = conn.cursor
     cur = conn.cursor()
     try:
         cur.execute(sql, params)

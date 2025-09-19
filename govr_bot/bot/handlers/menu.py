@@ -56,22 +56,10 @@ def get_task_solver_kb():
 # ==== Главное меню (обновлено) ====
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [
-            KeyboardButton(text="📚 Теория по химии"),
-            KeyboardButton(text="📝 Тесты"),
-        ],
-        [
-            KeyboardButton(text="🔬 Решатор задач"),
-            KeyboardButton(text="📈 Получить отчёт"),
-        ],
-        [
-            KeyboardButton(text="🃏 Карточки для запоминания"),
-            KeyboardButton(text="ℹ️ Как работает бот"),
-        ],
-        [
-            KeyboardButton(text="💳 Тарифы и оплата"),
-            KeyboardButton(text="📞 Бесплатное занятие"),
-        ],
+        [KeyboardButton(text="📚 Теория по химии"), KeyboardButton(text="📝 Тесты")],
+        [KeyboardButton(text="🔬 Решатор задач"), KeyboardButton(text="🃏 Карточки для запоминания")],
+        [KeyboardButton(text="📈 Получить отчёт"), KeyboardButton(text="ℹ️ Как работает бот")],
+        [KeyboardButton(text="💳 Тарифы и оплата"), KeyboardButton(text="📞 Бесплатное занятие")],
     ],
     resize_keyboard=True
 )
@@ -83,7 +71,7 @@ main_kb = ReplyKeyboardMarkup(
     or ("меню" in (m.text or "").lower())
 ))
 async def cmd_start(m: types.Message, state: FSMContext):
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     # Очищаем все состояния при возврате в меню
     await state.clear()
     
@@ -210,7 +198,7 @@ async def on_check_subscription(cb: types.CallbackQuery, state: FSMContext):
         else:
             # Очищаем все состояния при возврате в меню
             await state.clear()
-            await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+            await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
             sent = await cb.message.answer("Спасибо за подписку! Ниже — главное меню.", reply_markup=main_kb)
             message_manager.add_message(cb.from_user.id, sent.message_id)
         await cb.answer("Подписка подтверждена ✅", show_alert=False)
@@ -249,7 +237,7 @@ async def set_full_name(m: types.Message, state: FSMContext):
         except Exception:
             pass
 
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     sent = await m.answer("Ниже — главное меню.", reply_markup=main_kb)
     message_manager.add_message(m.from_user.id, sent.message_id)
 
@@ -261,7 +249,7 @@ async def set_full_name(m: types.Message, state: FSMContext):
     "теория",
 })
 async def theory_menu(m: types.Message):
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     theory_description = """**Теория по химии**
 
 **Что ты получишь:**
@@ -298,7 +286,7 @@ async def theory_menu(m: types.Message):
 # ==== Подменю «Тесты» из главного меню ====
 @router.message(lambda m: (m.text or "").strip().lower() == "📝 тесты")
 async def tests_entry_menu(m: types.Message):
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     # Завершаем активную сессию теории, если была
     try:
         from bot.handlers.topics import user_learning_state
@@ -321,7 +309,7 @@ async def tests_entry_menu(m: types.Message):
 
 @router.message(lambda m: (m.text or "").strip().lower() == "🧪 тестовая часть егэ по химии")
 async def tests_open_catalog(m: types.Message):
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     # На всякий случай тоже завершим теорию
     try:
         from bot.handlers.topics import user_learning_state
@@ -335,7 +323,7 @@ async def tests_open_catalog(m: types.Message):
 
 @router.callback_query(lambda c: c.data == "tests_go_back")
 async def tests_go_back(cb: types.CallbackQuery):
-    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     # Удаляем сообщение со списком тестов
     try:
         await cb.message.delete()
@@ -358,7 +346,7 @@ async def tests_go_back(cb: types.CallbackQuery):
 # Универсальная кнопка «В главное меню» для инлайн-кнопок
 @router.callback_query(lambda c: c.data == "to_main_menu")
 async def to_main_menu_cb(cb: types.CallbackQuery):
-    await message_manager.delete_user_messages(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
     # Удаляем последнее сообщение и ещё 4 предыдущих (всего до 5)
     try:
         base = cb.message.message_id
@@ -469,7 +457,7 @@ async def resume_course(m: types.Message):
 # ==== Решатор задач ====
 @router.message(lambda m: m.text == "🔬 Решатор задач")
 async def ask_for_task_or_conspect_photo(m: types.Message, state: FSMContext):
-    await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
     await state.set_state(TaskSolverStates.waiting_photo)
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="⬅️ В меню")]],
@@ -514,7 +502,7 @@ async def handle_task_or_conspect_input(m: types.Message, state: FSMContext):
     if (m.text or "").lower().strip() in {"⬅️ в меню", "в меню", "/menu"}:
         await state.clear()
         try:
-            await message_manager.delete_user_messages(m.bot, m.from_user.id, m.chat.id)
+            await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
         except Exception:
             pass
         menu_msg = await m.answer("Возвращаю в меню.", reply_markup=main_kb)
@@ -751,3 +739,10 @@ async def back_from_instructions(cb: CallbackQuery):
     )
     message_manager.add_message(cb.from_user.id, sent.message_id)
     await cb.answer()
+
+# ==== Обработчик кнопки розыгрыша ====
+# @router.message(lambda m: (m.text or "").strip() == "🎁 Розыгрыш")  # Розыгрыш - закомментировано
+# async def giveaway_button_handler(m: types.Message):
+#     """Обработчик кнопки розыгрыша в главном меню"""
+#     from bot.handlers.giveaway import register_for_giveaway
+#     await register_for_giveaway(m)
