@@ -56,6 +56,9 @@ ADMIN_IDS=
 DB_PATH="/home/username/Рабочий стол/my py/ChemistryBots/shared/test_answers.db"
 TESTS_DB_PATH="/home/username/Рабочий стол/my py/ChemistryBots/shared/tests1.db"
 
+# Путь к базе пользователей, создаваемой admin_bot (таблица teacher)
+USERS_DB="/home/username/Рабочий стол/my py/ChemistryBots/shared/users.db"
+
 # Необязательно: окно «онлайн» в минутах
 ONLINE_WINDOW_MINUTES=10
 EOF
@@ -89,8 +92,15 @@ mkdir -p "$SHARED_DIR"
 touch "$SHARED_DIR/test_answers.db" "$SHARED_DIR/tests1.db"
 echo "[run] DB files ensured in: $SHARED_DIR"
 
-# Запускаем бота
+# Запускаем бота с паузой после завершения
 echo "[run] Starting bot..."
-exec python main.py
+set +e
+python main.py
+status=$?
+set -e
+echo
+echo "[run] Bot finished with exit code: $status"
+if [ -z "${RUN_BOT_NO_PAUSE:-}" ]; then echo "Press Enter to close..."; read -r; fi
+exit "$status"
 
 

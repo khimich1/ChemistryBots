@@ -15,4 +15,8 @@ ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("
 DB_PATH = os.getenv("DB_PATH") or os.path.join(_SHARED_DIR, "test_answers.db")
 TESTS_DB_PATH = os.getenv("TESTS_DB_PATH") or os.path.join(_SHARED_DIR, "tests1.db")
 
+# Путь к базе пользователей (регистрируется через admin_bot, таблица teacher)
+# По умолчанию shared/users.db рядом с репозиторием
+USERS_DB = os.getenv("USERS_DB") or os.path.join(_SHARED_DIR, "users.db")
+
 ONLINE_WINDOW_MINUTES = int(os.getenv("ONLINE_WINDOW_MINUTES", 10))

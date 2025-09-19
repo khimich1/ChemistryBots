@@ -9,6 +9,7 @@ from keyboards import (
 )
 from services.acquisition import get_ad_stats
 from services.students import get_all_students
+from services.teachers import get_teacher_moniker
 from services.groups import (
     add_student_to_group,
     is_student_in_group,
@@ -26,8 +27,11 @@ router = Router()
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
+    tg_id = message.from_user.id
+    moniker = get_teacher_moniker(tg_id) or (message.from_user.full_name or "")
+    greeting_name = moniker.strip() or "Коллега"
     await message.answer(
-        "Привет! Я помощник преподавателя. Выберите действие:",
+        f"Здравствуйте, {greeting_name}! Выберите действие:",
         reply_markup=get_teacher_keyboard()
     )
 
