@@ -102,6 +102,7 @@ def log_error(error: Exception, context: str = "", user_id: int = None):
     """Логирует ошибки с контекстом"""
     logger = logging.getLogger("chemistry_bot.errors")
     
+    # Создаем запись с правильной обработкой исключений
     record = logger.makeRecord(
         "chemistry_bot.errors",
         logging.ERROR,
@@ -109,11 +110,11 @@ def log_error(error: Exception, context: str = "", user_id: int = None):
         0,
         f"Error in {context}: {str(error)}",
         (),
-        error
+        None  # Не передаем error как exc_info, чтобы избежать проблем с форматированием
     )
     if user_id:
         record.user_id = user_id
-    record.details = {"context": context, "error_type": type(error).__name__}
+    record.details = {"context": context, "error_type": type(error).__name__, "error_message": str(error)}
     
     logger.handle(record)
 

@@ -6,7 +6,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.exceptions import TelegramNetworkError, TelegramAPIError
+from aiogram.exceptions import TelegramNetworkError, TelegramAPIError, TelegramServerError
 
 # На Windows используем WindowsSelectorEventLoopPolicy, чтобы избежать
 # ошибок закрытия цикла при остановке (Ctrl+C)
@@ -99,9 +99,9 @@ async def set_bot_commands(bot: Bot):
         try:
             await bot.set_my_commands(commands)
             break
-        except TelegramNetworkError as e:
+        except (TelegramNetworkError, TelegramServerError) as e:
             if attempt < max_retries - 1:
-                log_error(e, f"Network error setting commands (attempt {attempt + 1})")
+                log_error(e, f"Network/Server error setting commands (attempt {attempt + 1})")
                 await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка
             else:
                 log_error(e, "Failed to set bot commands after all retries")
@@ -150,6 +150,8 @@ async def main():
     print("🚀 Бот запущен! Готов к работе с высокой нагрузкой!")
     print("📊 Ожидаемая нагрузка: 150-200 пользователей одновременно")
     print("🛡️ Rate limiting включен для защиты от спама")
+    print("⚠️  Если видишь ошибки 'Bad Gateway' - это временные проблемы серверов Telegram")
+    print("🔄 Бот автоматически переподключится через несколько секунд")
     
     max_retries = 5
     retry_delay = 5
@@ -157,8 +159,10 @@ async def main():
     while not shutdown_requested:
         try:
             await dp_instance.start_polling(bot_instance, polling_timeout=30)
-        except TelegramNetworkError as e:
-            log_error(e, "Network error during polling, retrying...")
+        except (TelegramNetworkError, TelegramServerError) as e:
+            print(f"⚠️  Проблема с серверами Telegram: {str(e)}")
+            print(f"🔄 Переподключение через {retry_delay} секунд...")
+            log_error(e, "Network/Server error during polling, retrying...")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)  # Увеличиваем задержку, но не более 60 сек
         except TelegramAPIError as e:
