@@ -55,3 +55,11 @@ build/
 
 # --- Jupyter/Notebooks кеш ---
 .ipynb_checkpoints/
+
+# --- Стартовые скрипты ---
+run_*.sh
+**/run_*.sh
+run_bot.sh
+run_bot_fast.sh
+run_prepod_bot.sh
+run_prepod_bot_fast.sh
