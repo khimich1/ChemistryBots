@@ -18,6 +18,8 @@ from services.groups import (
     get_all_group_numbers,
     get_work_group_members,
     broadcast_message_to_group_via_govr,
+    create_group_task,
+    list_group_tasks,
 )
 from aiogram.fsm.context import FSMContext
 from states import StudentsList, WorkGroups
@@ -226,6 +228,74 @@ async def wg_open_group(callback: types.CallbackQuery):
         await callback.message.edit_text(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members))
     except Exception:
         await callback.message.answer(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members))
+
+
+@router.callback_query(lambda c: c.data == "wg_tasks_start")
+async def wg_tasks_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer("Введите номер группы, для которой создаём задания:")
+    await state.set_state(WorkGroups.waiting_tasks_group)
+
+
+@router.message(WorkGroups.waiting_tasks_group)
+async def wg_tasks_group(message: types.Message, state: FSMContext):
+    try:
+        group_no = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("Пожалуйста, введите целое число (например, 1). Попробуйте ещё раз:")
+        return
+    await state.update_data(tasks_group=group_no)
+    tasks = list_group_tasks(group_no)
+    if tasks:
+        titles = "\n".join([f"• {t['title']}" for t in tasks])
+        await message.answer(f"У этой группы уже есть наборы:\n{titles}")
+    await message.answer("Введите название набора (например, Домашка 24.09):")
+    await state.set_state(WorkGroups.waiting_tasks_title)
+
+
+@router.message(WorkGroups.waiting_tasks_title)
+async def wg_tasks_title(message: types.Message, state: FSMContext):
+    title = (message.text or "").strip()
+    if not title:
+        await message.answer("Название не распознано, введите ещё раз:")
+        return
+    await state.update_data(tasks_title=title)
+    await message.answer("Выберите базу: напишите 'EGE' или 'OGE'")
+    await state.set_state(WorkGroups.waiting_tasks_exam)
+
+
+@router.message(WorkGroups.waiting_tasks_exam)
+async def wg_tasks_exam(message: types.Message, state: FSMContext):
+    exam = (message.text or "").strip().lower()
+    if exam not in {"ege", "огэ", "oge", "егэ"}:
+        await message.answer("Напишите 'EGE' или 'OGE'")
+        return
+    canonical = "ege" if exam in {"ege", "егэ"} else "oge"
+    await state.update_data(tasks_exam=canonical)
+    await message.answer("Теперь введите список ID через запятую (например: 1, 5, 10). Это значения поля id из БД соответствующего экзамена.")
+    await state.set_state(WorkGroups.waiting_tasks_ids)
+
+
+@router.message(WorkGroups.waiting_tasks_ids)
+async def wg_tasks_ids(message: types.Message, state: FSMContext):
+    ids_text = (message.text or "").strip()
+    if not ids_text:
+        await message.answer("Пустой список. Пример: 1, 5, 10")
+        return
+    # нормализуем список чисел
+    parts = [p.strip() for p in ids_text.replace(";", ",").split(",") if p.strip()]
+    if not parts or not all(p.isdigit() for p in parts):
+        await message.answer("Ожидаются только числа через запятую. Пример: 1, 5, 10")
+        return
+    data = await state.get_data()
+    group_no = int(data.get("tasks_group") or 0)
+    title = data.get("tasks_title") or "Набор"
+    exam = data.get("tasks_exam") or "ege"
+    # Сохраним в общем CSV формате ege:1, ege:5 ... или oge:...
+    items = ", ".join(f"{exam}:{p}" for p in parts)
+    create_group_task(group_no, title, items)
+    await message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(parts)})")
+    await state.set_state(None)
 
 
 @router.callback_query(lambda c: c.data.startswith("add_to_group:"))
