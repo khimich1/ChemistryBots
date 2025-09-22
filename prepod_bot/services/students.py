@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Tuple
 
-from config import DB_PATH, TESTS_DB_PATH  # DB_PATH -> test_answers.db, TESTS_DB_PATH -> tests1.db
+from config import DB_PATH, TESTS_DB_EGE, TESTS_DB_OGE  # test DBs: EGE and OGE
 
 
 def _safe_fetchone(conn: sqlite3.Connection, sql: str, params=()) -> Optional[tuple]:
@@ -40,7 +40,7 @@ def _pick_column(conn: sqlite3.Connection, table: str, candidates: List[str]) ->
 
 # =========================
 # DB_PATH (test_answers.db): test_activity, test_answers, test_progress
-# TESTS_DB_PATH (tests1.db): tests (question, options, <correct*>)
+# TESTS_DB_EGE / TESTS_DB_OGE: tests (question, options, <correct*>)
 # =========================
 
 def get_online_students(timeout_minutes: int = 10, with_names: bool = False) -> List[Dict[str, Any]]:
@@ -132,16 +132,12 @@ def get_recent_activity(user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
     ]
 
 
-def get_question_details(question_id: int) -> Dict[str, Any]:
+def _fetch_question_from_db(db_path: str, question_id: int) -> Dict[str, Any]:
     """
-    Достаём вопрос из tests1.db (таблица tests).
-    Колонки подбираем автоматически:
-      question: ['question','question_text','text','q_text']
-      options:  ['options','variants','choices','answers']
-      correct:  ['correct_ans','correct_answer','correct','right_answer','answer']
-      type:     ['type','test_type','theme','task_type']
+    Универсальный извлекатель вопроса из БД с таблицей tests, где
+    названия колонок могут отличаться. Возвращает пустой словарь если не найдено.
     """
-    with sqlite3.connect(TESTS_DB_PATH) as conn:
+    with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         q_col = _pick_column(conn, "tests", ["question", "question_text", "text", "q_text"])
         o_col = _pick_column(conn, "tests", ["options", "variants", "choices", "answers"])
@@ -171,6 +167,23 @@ def get_question_details(question_id: int) -> Dict[str, Any]:
         "correct_answer": row["correct_answer"] if "correct_answer" in row.keys() else "",
         "type": row["type"] if "type" in row.keys() else None,
     }
+
+
+def get_question_details(question_id: int) -> Dict[str, Any]:
+    """
+    Достаём вопрос сначала из EGE, если нет — пробуем OGE.
+    Колонки подбираем автоматически:
+      question: ['question','question_text','text','q_text']
+      options:  ['options','variants','choices','answers']
+      correct:  ['correct_ans','correct_answer','correct','right_answer','answer']
+      type:     ['type','test_type','theme','task_type']
+    """
+    # 1) EGE
+    res = _fetch_question_from_db(TESTS_DB_EGE, question_id)
+    if res:
+        return res
+    # 2) OGE
+    return _fetch_question_from_db(TESTS_DB_OGE, question_id)
 
 
 def _parse_id_list(ids_string: str) -> List[int]:

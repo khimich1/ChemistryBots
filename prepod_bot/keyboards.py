@@ -23,7 +23,12 @@ def get_manage_groups_keyboard() -> InlineKeyboardMarkup:
 def get_group_tasks_kb(tasks: list[dict]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for t in tasks:
-        rows.append([InlineKeyboardButton(text=t.get("title") or f"Набор {t.get('id')}", callback_data=f"wg_task_open:{t.get('id')}")])
+        title = t.get("title") or f"Набор {t.get('id')}"
+        # Одна строка, три столбца: название | 🖨 | 🗑
+        open_btn = InlineKeyboardButton(text=title, callback_data=f"wg_task_open:{t.get('id')}")
+        print_btn = InlineKeyboardButton(text="🖨", callback_data=f"wg_task_print:{t.get('id')}")
+        del_btn = InlineKeyboardButton(text="🗑", callback_data=f"wg_task_del:{t.get('id')}")
+        rows.append([open_btn, print_btn, del_btn])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -103,6 +108,18 @@ def get_variant_list_keyboard(filenames: list[str], page: int = 1, page_size: in
         nav.append(InlineKeyboardButton(text="➡️", callback_data=f"wg_variants_page:{next_page}"))
         kb.append(nav)
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="wg_variants_back")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def get_exam_pick_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора базы заданий (ЕГЭ/ОГЭ)."""
+    kb = [
+        [
+            InlineKeyboardButton(text="ЕГЭ", callback_data="wg_pick_exam:ege"),
+            InlineKeyboardButton(text="ОГЭ", callback_data="wg_pick_exam:oge"),
+        ],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_back")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def get_students_keyboard(

@@ -13,7 +13,11 @@ ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("
 
 # Если переменные окружения не заданы, используем дефолтные базы из shared/
 DB_PATH = os.getenv("DB_PATH") or os.path.join(_SHARED_DIR, "test_answers.db")
-TESTS_DB_PATH = os.getenv("TESTS_DB_PATH") or os.path.join(_SHARED_DIR, "tests1.db")
+# База с заданиями ЕГЭ/ОГЭ. Старое TESTS_DB_PATH (tests1.db) больше не используется
+# Для ЕГЭ используем TESTS_DB_EGE (дефолт: shared/test_ege.db)
+TESTS_DB_EGE = os.getenv("TESTS_DB_EGE") or os.path.join(_SHARED_DIR, "test_ege.db")
+# Для ОГЭ используем TESTS_DB_OGE (дефолт: shared/test_oge.db)
+TESTS_DB_OGE = os.getenv("TESTS_DB_OGE") or os.path.join(_SHARED_DIR, "test_oge.db")
 
 # Путь к базе пользователей (регистрируется через admin_bot, таблица teacher)
 # По умолчанию shared/users.db рядом с репозиторием

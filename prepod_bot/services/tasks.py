@@ -2,7 +2,7 @@ import os
 import sqlite3
 from datetime import datetime
 
-from config import DB_PATH, TESTS_DB_PATH
+from config import DB_PATH, TESTS_DB_EGE
 
 
 def _ensure_debug_table(conn: sqlite3.Connection) -> None:
@@ -44,7 +44,7 @@ def _ensure_tests_bug(conn: sqlite3.Connection) -> None:
 def list_problem_tasks() -> list[dict]:
     """Возвращает список заданий из таблицы tests_bug (задания в работе/на исправлении)."""
     tasks: list[dict] = []
-    with sqlite3.connect(TESTS_DB_PATH) as conn:
+    with sqlite3.connect(TESTS_DB_EGE) as conn:
         c = conn.cursor()
         _ensure_tests_bug(conn)
         ans_col = _detect_answer_column(conn, "tests_bug")
@@ -64,7 +64,7 @@ def list_problem_tasks() -> list[dict]:
 
 
 def get_task_by_id(task_id: int) -> dict | None:
-    with sqlite3.connect(TESTS_DB_PATH) as conn:
+    with sqlite3.connect(TESTS_DB_EGE) as conn:
         c = conn.cursor()
         _ensure_tests_bug(conn)
         ans_col = _detect_answer_column(conn, "tests_bug")
@@ -87,7 +87,7 @@ def get_task_by_id(task_id: int) -> dict | None:
 def update_task_field(task_id: int, field: str, new_text: str) -> None:
     if field not in {"question", "options", "correct_answer", "hint"}:
         return
-    with sqlite3.connect(TESTS_DB_PATH) as conn:
+    with sqlite3.connect(TESTS_DB_EGE) as conn:
         c = conn.cursor()
         _ensure_tests_bug(conn)
         col = field
@@ -99,7 +99,7 @@ def update_task_field(task_id: int, field: str, new_text: str) -> None:
 
 def unhide_task(task_id: int) -> None:
     # Применяем накопленные правки из tests_bug -> tests и снимаем флаг has_issue
-    with sqlite3.connect(TESTS_DB_PATH) as conn:
+    with sqlite3.connect(TESTS_DB_EGE) as conn:
         c = conn.cursor()
         _ensure_tests_bug(conn)
         # Определим имя колонки с правильным ответом в обеих таблицах
