@@ -98,7 +98,9 @@ def tests_instruction_text() -> str:
 # =========================
 # 1. Клавиатура для выбора тестов
 # =========================
-def get_tests_types_kb(with_menu: bool = False, include_back: bool = False):
+def get_tests_types_kb(with_menu: bool = False, include_back: bool = False, user_id: int = None):
+    from bot.services.teacher_access import is_student_approved_by_teacher
+    
     types = get_all_tests_types()
     
     # Создаем кнопки в 3 столбика
@@ -116,6 +118,10 @@ def get_tests_types_kb(with_menu: bool = False, include_back: bool = False):
             row.append(InlineKeyboardButton(text=f"Тест {types[i + 2]}", callback_data=f"choose_test_{types[i + 2]}"))
         if row:  # Добавляем ряд только если в нем есть кнопки
             keyboard.append(row)
+    
+    # --- Кнопка "Задания для группы" (только для студентов в группе)
+    if user_id and is_student_approved_by_teacher(user_id):
+        keyboard.append([InlineKeyboardButton(text="📂 Задания для группы", callback_data="group_assignments")])
     
     # --- Кнопка "Работа над ошибками"
     keyboard.append([InlineKeyboardButton(text="💡 Работа над ошибками", callback_data="work_on_mistakes")])
@@ -263,7 +269,7 @@ async def show_tests_types_menu(m: types.Message):
     
     msg1 = await m.answer(tests_instruction_text(), parse_mode="HTML")
     message_manager.add_message(m.from_user.id, msg1.message_id)
-    msg2 = await m.answer("Выбери номер теста:", reply_markup=get_tests_types_kb(with_menu=True, include_back=True))
+    msg2 = await m.answer("Выбери номер теста:", reply_markup=get_tests_types_kb(with_menu=True, include_back=True, user_id=m.from_user.id))
     message_manager.add_message(m.from_user.id, msg2.message_id)
 
 @router.message(Command("tests"))
@@ -828,18 +834,18 @@ async def stop_test(cb: CallbackQuery):
     if state and "mistake_q_ids" in state:
         await cb.message.answer(
             "Разбор ошибок завершён! Возвращаюсь в раздел тестов.",
-            reply_markup=get_tests_types_kb(with_menu=True)
+            reply_markup=get_tests_types_kb(with_menu=True, user_id=cb.from_user.id)
         )
     elif state:
         save_test_progress(cb.from_user.id, state["type"], state["idx"], state["q_ids"])
         await cb.message.answer(
             "Тест прерван! Выбери тест для прохождения:",
-            reply_markup=get_tests_types_kb(with_menu=True)
+            reply_markup=get_tests_types_kb(with_menu=True, user_id=cb.from_user.id)
         )
     else:
         await cb.message.answer(
             "Действие отменено. Выбери тест:",
-            reply_markup=get_tests_types_kb(with_menu=True)
+            reply_markup=get_tests_types_kb(with_menu=True, user_id=cb.from_user.id)
         )
     await cb.answer()
 
@@ -946,6 +952,408 @@ async def back_to_grid(cb: CallbackQuery):
 # =========================
 # 7. Обработчик кнопки возврата в главное меню
 # =========================
+@router.callback_query(lambda c: c.data == "group_assignments")
+async def show_group_assignments(cb: CallbackQuery):
+    """Показывает задания для группы студента"""
+    from bot.services.teacher_access import get_group_tasks_for_user, get_user_group_number
+    
+    await cb.answer()
+    
+    user_id = cb.from_user.id
+    group_no = get_user_group_number(user_id)
+    
+    if not group_no:
+        await cb.message.answer("❌ Вы не состоите в группе или произошла ошибка.")
+        return
+    
+    tasks = get_group_tasks_for_user(user_id)
+    
+    if not tasks:
+        await cb.message.answer(f"📂 <b>Задания для группы {group_no}</b>\n\nПока нет заданий от преподавателя.", parse_mode="HTML")
+        return
+    
+    # Формируем список заданий
+    tasks_text = f"📂 <b>Задания для группы {group_no}</b>\n\n"
+    keyboard = []
+    
+    for task in tasks:
+        tasks_text += f"📋 {task['title']}\n"
+        tasks_text += f"📅 Создано: {task['created_at']}\n\n"
+        
+        # Добавляем кнопку для запуска задания
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"▶️ {task['title']}", 
+                callback_data=f"start_group_task_{task['id']}"
+            )
+        ])
+    
+    # Добавляем кнопку "Назад"
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="tests_go_back")])
+    
+    await cb.message.answer(
+        tasks_text, 
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("start_group_task_"))
+async def start_group_task(cb: CallbackQuery):
+    """Запускает задание группы"""
+    from bot.services.teacher_access import get_group_tasks_for_user, get_user_group_number
+    import sqlite3
+    import os
+    
+    await cb.answer()
+    
+    try:
+        task_id = int(cb.data.split("_")[-1])
+    except ValueError:
+        await cb.message.answer("❌ Ошибка: неверный ID задания.")
+        return
+    
+    user_id = cb.from_user.id
+    tasks = get_group_tasks_for_user(user_id)
+    
+    # Находим нужное задание
+    task = None
+    for t in tasks:
+        if t['id'] == task_id:
+            task = t
+            break
+    
+    if not task:
+        await cb.message.answer("❌ Задание не найдено.")
+        return
+    
+    # Парсим items (формат: "ege:1, ege:5, oge:3")
+    items = task['items']
+    question_ids = []
+    
+    for item in items.split(','):
+        item = item.strip()
+        if ':' in item:
+            exam_type, q_id = item.split(':', 1)
+            exam_type = exam_type.strip().lower()
+            q_id = q_id.strip()
+            
+            if q_id.isdigit():
+                question_ids.append((exam_type, int(q_id)))
+    
+    if not question_ids:
+        await cb.message.answer("❌ В задании нет вопросов.")
+        return
+    
+    # Получаем вопросы из соответствующих баз данных
+    questions = []
+    
+    for exam_type, q_id in question_ids:
+        if exam_type == 'ege':
+            # База данных ЕГЭ
+            ege_db_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'shared', 'test_ege.db')
+            if os.path.exists(ege_db_path):
+                with sqlite3.connect(ege_db_path) as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT * FROM tests WHERE id = ?", (q_id,))
+                    row = cur.fetchone()
+                    if row:
+                        questions.append({
+                            'id': row[0],
+                            'question': row[2],  # question
+                            'options': row[3],   # options
+                            'correct_answer': row[4],  # correct_ans
+                            'explanation': row[5] if len(row) > 5 else '',  # explanation
+                            'hint': row[6] if len(row) > 6 else '',  # hint
+                            'exam_type': 'ege'
+                        })
+        
+        elif exam_type == 'oge':
+            # База данных ОГЭ
+            oge_db_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'shared', 'test_oge.db')
+            if os.path.exists(oge_db_path):
+                with sqlite3.connect(oge_db_path) as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT * FROM tests WHERE id = ?", (q_id,))
+                    row = cur.fetchone()
+                    if row:
+                        questions.append({
+                            'id': row[0],
+                            'question': row[2],  # question
+                            'options': row[3],   # options
+                            'correct_answer': row[4],  # correct_ans
+                            'explanation': row[5] if len(row) > 5 else '',  # explanation
+                            'hint': row[6] if len(row) > 6 else '',  # hint
+                            'exam_type': 'oge'
+                        })
+    
+    if not questions:
+        await cb.message.answer("❌ Не удалось загрузить вопросы.")
+        return
+    
+    # Сохраняем состояние теста группы
+    if user_id not in user_test_state:
+        user_test_state[user_id] = {}
+    
+    user_test_state[user_id].update({
+        'is_group_task': True,
+        'group_task_id': task_id,
+        'group_task_title': task['title'],
+        'questions': questions,
+        'current_question': 0,
+        'correct_answers': 0,
+        'total_questions': len(questions),
+        'start_time': None,
+        'grid_msg_id': None
+    })
+    
+    # Запускаем первый вопрос
+    await start_group_question(cb, user_id)
+
+
+async def start_group_question(cb: CallbackQuery, user_id: int):
+    """Показывает вопрос группового задания"""
+    state = user_test_state.get(user_id, {})
+    questions = state.get('questions', [])
+    current_question = state.get('current_question', 0)
+    
+    if current_question >= len(questions):
+        # Тест завершен
+        await finish_group_test(cb, user_id)
+        return
+    
+    question = questions[current_question]
+    
+    # Формируем текст вопроса
+    question_text = f"📋 <b>Задание группы: {state.get('group_task_title', '')}</b>\n\n"
+    question_text += f"❓ <b>Вопрос {current_question + 1} из {len(questions)}</b>\n\n"
+    question_text += f"{question['question']}\n\n"
+    
+    # Добавляем варианты ответов
+    options = question.get('options', '')
+    if options:
+        question_text += f"{options}\n\n"
+    
+    # Для OGE вопросов ученик должен вводить ответы числами
+    # Показываем инструкцию вместо кнопок
+    question_text += "\n\n💡 <b>Введите номера выбранных вариантов в одном сообщении (например: 13 или 24)</b>"
+    
+    keyboard = []
+    
+    # Кнопки управления
+    keyboard.append([InlineKeyboardButton(text="⏹️ Завершить", callback_data="stop_group_test")])
+    
+    msg = await cb.message.answer(
+        question_text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    
+    # Сохраняем ID сообщения с вопросом
+    if user_id in user_test_state:
+        user_test_state[user_id]['question_msg_id'] = msg.message_id
+
+
+async def finish_group_test(cb: CallbackQuery, user_id: int):
+    """Завершает тест группы и показывает результаты"""
+    state = user_test_state.get(user_id, {})
+    correct = state.get('correct_answers', 0)
+    total = state.get('total_questions', 0)
+    
+    # Формируем текст результатов
+    result_text = f"🎯 <b>Результаты задания группы</b>\n\n"
+    result_text += f"📋 <b>Задание:</b> {state.get('group_task_title', '')}\n"
+    result_text += f"✅ <b>Правильных ответов:</b> {correct} из {total}\n"
+    
+    percentage = (correct / total * 100) if total > 0 else 0
+    result_text += f"📊 <b>Процент:</b> {percentage:.1f}%\n\n"
+    
+    if percentage >= 80:
+        result_text += "🏆 <b>Отличный результат!</b>"
+    elif percentage >= 60:
+        result_text += "👍 <b>Хороший результат!</b>"
+    else:
+        result_text += "📚 <b>Есть над чем поработать!</b>"
+    
+    # Кнопки
+    keyboard = [
+        [InlineKeyboardButton(text="📋 К заданиям группы", callback_data="group_assignments")],
+        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")]
+    ]
+    
+    await cb.message.answer(
+        result_text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    
+    # Очищаем состояние
+    user_test_state.pop(user_id, None)
+
+
+@router.callback_query(lambda c: c.data == "stop_group_test")
+async def stop_group_test(cb: CallbackQuery):
+    """Останавливает групповой тест"""
+    await cb.answer()
+    
+    user_id = cb.from_user.id
+    state = user_test_state.get(user_id, {})
+    
+    if not state.get('is_group_task'):
+        await cb.message.answer("❌ Активного группового задания нет.")
+        return
+    
+    # Завершаем тест досрочно
+    await finish_group_test(cb, user_id)
+
+
+
+@router.message(lambda m: user_test_state.get(m.from_user.id, {}).get('is_group_task', False))
+async def handle_group_text_answer(m: types.Message):
+    """Обрабатывает текстовые ответы на вопросы группового задания"""
+    user_id = m.from_user.id
+    state = user_test_state.get(user_id, {})
+    
+    if not state.get('is_group_task'):
+        return
+    
+    answer_text = (m.text or "").strip()
+    if not answer_text:
+        await m.answer("❌ Пожалуйста, введите ответ.")
+        return
+    
+    print(f"DEBUG: Получен текстовый ответ: '{answer_text}'")
+    
+    questions = state.get('questions', [])
+    current_question = state.get('current_question', 0)
+    
+    if current_question >= len(questions):
+        await m.answer("❌ Нет активного вопроса.")
+        return
+    
+    question = questions[current_question]
+    correct_answer = question.get('correct_answer', '').strip()
+    
+    print(f"DEBUG: Правильный ответ: '{correct_answer}'")
+    
+    # Проверяем правильность ответа
+    is_correct = False
+    if correct_answer and answer_text:
+        # Для OGE правильный ответ часто содержит номера вариантов (например, "13" или "24")
+        # Проверяем, совпадает ли ответ пользователя с правильным ответом
+        if answer_text == correct_answer:
+            is_correct = True
+        # Также проверяем, содержит ли правильный ответ ответ пользователя
+        elif answer_text in correct_answer and len(answer_text) >= 2:
+            is_correct = True
+        
+        print(f"DEBUG: Результат сравнения: {is_correct}")
+    
+    # Обновляем счетчик правильных ответов
+    if is_correct:
+        state['correct_answers'] = state.get('correct_answers', 0) + 1
+    
+    # Переходим к следующему вопросу
+    state['current_question'] = current_question + 1
+    user_test_state[user_id] = state
+    
+    # Показываем результат и следующий вопрос
+    result_text = f"📋 <b>Задание группы: {state.get('group_task_title', '')}</b>\n\n"
+    
+    if is_correct:
+        result_text += "✅ <b>Правильно!</b>\n\n"
+    else:
+        result_text += f"❌ <b>Неправильно.</b>\nВаш ответ: {answer_text}\nПравильный ответ: {correct_answer}\n\n"
+    
+    if state['current_question'] < len(questions):
+        result_text += "➡️ Переходим к следующему вопросу..."
+        await m.answer(result_text, parse_mode="HTML")
+        
+        # Показываем следующий вопрос
+        await start_group_question_text(m, user_id)
+    else:
+        result_text += "🎯 Все вопросы пройдены!"
+        await m.answer(result_text, parse_mode="HTML")
+        
+        # Завершаем тест
+        await finish_group_test_text(m, user_id)
+
+
+async def start_group_question_text(m: types.Message, user_id: int):
+    """Показывает вопрос группового задания для текстового ввода"""
+    state = user_test_state.get(user_id, {})
+    questions = state.get('questions', [])
+    current_question = state.get('current_question', 0)
+    
+    if current_question >= len(questions):
+        # Тест завершен
+        await finish_group_test_text(m, user_id)
+        return
+    
+    question = questions[current_question]
+    
+    # Формируем текст вопроса
+    question_text = f"📋 <b>Задание группы: {state.get('group_task_title', '')}</b>\n\n"
+    question_text += f"❓ <b>Вопрос {current_question + 1} из {len(questions)}</b>\n\n"
+    question_text += f"{question['question']}\n\n"
+    
+    # Добавляем варианты ответов если есть
+    options = question.get('options', '')
+    if options:
+        question_text += f"{options}\n\n"
+    
+    # Для OGE вопросов ученик должен вводить ответы числами
+    question_text += "\n\n💡 <b>Введите номера выбранных вариантов в одном сообщении (например: 13 или 24)</b>"
+    
+    # Кнопки управления
+    keyboard = [
+        [InlineKeyboardButton(text="⏹️ Завершить", callback_data="stop_group_test")]
+    ]
+    
+    await m.answer(
+        question_text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+
+async def finish_group_test_text(m: types.Message, user_id: int):
+    """Завершает тест группы и показывает результаты"""
+    state = user_test_state.get(user_id, {})
+    correct = state.get('correct_answers', 0)
+    total = state.get('total_questions', 0)
+    
+    # Формируем текст результатов
+    result_text = f"🎯 <b>Результаты задания группы</b>\n\n"
+    result_text += f"📋 <b>Задание:</b> {state.get('group_task_title', '')}\n"
+    result_text += f"✅ <b>Правильных ответов:</b> {correct} из {total}\n"
+    
+    percentage = (correct / total * 100) if total > 0 else 0
+    result_text += f"📊 <b>Процент:</b> {percentage:.1f}%\n\n"
+    
+    if percentage >= 80:
+        result_text += "🏆 <b>Отличный результат!</b>"
+    elif percentage >= 60:
+        result_text += "👍 <b>Хороший результат!</b>"
+    else:
+        result_text += "📚 <b>Есть над чем поработать!</b>"
+    
+    # Кнопки
+    keyboard = [
+        [InlineKeyboardButton(text="📋 К заданиям группы", callback_data="group_assignments")],
+        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")]
+    ]
+    
+    await m.answer(
+        result_text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    
+    # Очищаем состояние
+    user_test_state.pop(user_id, None)
+
+
 @router.callback_query(lambda c: c.data == "to_main_menu")
 async def to_main_menu(cb: CallbackQuery):
     # Очищаем состояние карточек при возврате в главное меню

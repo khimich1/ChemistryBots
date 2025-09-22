@@ -35,6 +35,49 @@ def _ensure_work_groups_table(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
 
+def _ensure_group_tasks_table(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS group_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_no INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            items TEXT NOT NULL,
+            created_at TEXT
+        )
+        """
+    )
+    conn.commit()
+
+def create_group_task(group_no: int, title: str, items_csv: str) -> int:
+    """Создаёт набор заданий для группы. items_csv формат: "ege:1, oge:3, ege:5""" 
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_group_tasks_table(conn)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO group_tasks (group_no, title, items, created_at)
+            VALUES (?, ?, ?, datetime('now','localtime'))
+            """,
+            (group_no, title.strip(), items_csv.strip()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+def list_group_tasks(group_no: int) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_group_tasks_table(conn)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, items, created_at FROM group_tasks WHERE group_no=? ORDER BY id DESC",
+            (group_no,),
+        )
+        rows = cur.fetchall()
+    return [
+        {"id": r[0], "title": r[1], "items": r[2], "created_at": r[3]}
+        for r in rows
+    ]
 
 def add_user_to_work_group(group_no: int, user_id: int) -> None:
     """Добавляет пользователя в рабочую группу."""

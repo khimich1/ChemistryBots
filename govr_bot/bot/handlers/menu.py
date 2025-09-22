@@ -317,7 +317,7 @@ async def tests_open_catalog(m: types.Message):
     except Exception:
         pass
     from bot.handlers.tests import get_tests_types_kb
-    kb = get_tests_types_kb(with_menu=True, include_back=True)
+    kb = get_tests_types_kb(with_menu=True, include_back=True, user_id=m.from_user.id)
     msg = await m.answer("Выбери тест:", reply_markup=kb)
     message_manager.add_message(m.from_user.id, msg.message_id)
 

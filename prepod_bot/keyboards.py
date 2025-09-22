@@ -15,9 +15,17 @@ def get_manage_groups_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📂 Список групп", callback_data="manage_groups_list")],
         [InlineKeyboardButton(text="➕ Добрать в рабочие группы", callback_data="wg_add_start")],
         [InlineKeyboardButton(text="📝 Отправить сообщение", callback_data="wg_broadcast_start")],
+        [InlineKeyboardButton(text="🧩 Задания для группы", callback_data="wg_tasks_start")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
+
+def get_group_tasks_kb(tasks: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for t in tasks:
+        rows.append([InlineKeyboardButton(text=t.get("title") or f"Набор {t.get('id')}", callback_data=f"wg_task_open:{t.get('id')}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_group_numbers_keyboard(group_numbers: list[int]) -> InlineKeyboardMarkup:

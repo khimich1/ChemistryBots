@@ -19,3 +19,7 @@ class WorkGroups(StatesGroup):
     waiting_username = State()
     waiting_broadcast_group = State()
     waiting_broadcast_text = State()
+    waiting_tasks_group = State()
+    waiting_tasks_title = State()
+    waiting_tasks_exam = State()
+    waiting_tasks_ids = State()
