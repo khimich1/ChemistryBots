@@ -1,11 +1,16 @@
 from aiogram import Router, types
+import re
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramBadRequest
 from keyboards import (
     get_teacher_keyboard,
     get_students_keyboard,
     get_manage_groups_keyboard,
     get_group_numbers_keyboard,
     get_group_members_keyboard,
+    get_task_method_keyboard,
+    get_task_types_keyboard,
+    get_variant_list_keyboard,
 )
 from services.acquisition import get_ad_stats
 from services.students import get_all_students
@@ -20,6 +25,8 @@ from services.groups import (
     broadcast_message_to_group_via_govr,
     create_group_task,
     list_group_tasks,
+    get_question_ids_by_filename,
+    get_question_ids_by_type,
 )
 from aiogram.fsm.context import FSMContext
 from states import StudentsList, WorkGroups
@@ -272,7 +279,7 @@ async def wg_tasks_exam(message: types.Message, state: FSMContext):
         return
     canonical = "ege" if exam in {"ege", "егэ"} else "oge"
     await state.update_data(tasks_exam=canonical)
-    await message.answer("Теперь введите список ID через запятую (например: 1, 5, 10). Это значения поля id из БД соответствующего экзамена.")
+    await message.answer("Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(canonical))
     await state.set_state(WorkGroups.waiting_tasks_ids)
 
 
@@ -280,22 +287,190 @@ async def wg_tasks_exam(message: types.Message, state: FSMContext):
 async def wg_tasks_ids(message: types.Message, state: FSMContext):
     ids_text = (message.text or "").strip()
     if not ids_text:
-        await message.answer("Пустой список. Пример: 1, 5, 10")
-        return
-    # нормализуем список чисел
-    parts = [p.strip() for p in ids_text.replace(";", ",").split(",") if p.strip()]
-    if not parts or not all(p.isdigit() for p in parts):
-        await message.answer("Ожидаются только числа через запятую. Пример: 1, 5, 10")
+        await message.answer("Пустой ввод. Примеры: 1, 5, 10  |  variant: test.pdf  |  types: 1=5, 2=3")
         return
     data = await state.get_data()
     group_no = int(data.get("tasks_group") or 0)
     title = data.get("tasks_title") or "Набор"
-    exam = data.get("tasks_exam") or "ege"
+    exam = (data.get("tasks_exam") or "ege").lower()
+
+    text_low = ids_text.lower()
+    ids: list[int] = []
+
+    # 1) Вариант по имени файла
+    if text_low.startswith(("variant:", "вариант:", "filename:", "file:", "файл:")):
+        filename = ids_text.split(":", 1)[1].strip() if ":" in ids_text else ""
+        ids = get_question_ids_by_filename(exam, filename)
+        if not ids:
+            await message.answer("Не нашёл вопросы по такому имени файла. Проверьте 'variant: <filename>' и попробуйте снова.")
+            return
+
+    # 2) По типам и количеству
+    elif text_low.startswith(("types:", "type:", "типы:", "виды:")):
+        body = ids_text.split(":", 1)[1] if ":" in ids_text else ""
+        pairs = [p for p in re.split(r"[;,]", body) if p.strip()]
+        if not pairs:
+            await message.answer("Не распознал пары типов. Пример: types: 1=5, 2=3")
+            return
+        max_type = 28 if exam == "ege" else 19
+        collected: list[int] = []
+        for pair in pairs:
+            m = re.match(r"\s*(\d+)\s*[:=x×]\s*(\d+)\s*", pair)
+            if not m:
+                await message.answer("Неверный формат. Используйте: 1=5, 2=3")
+                return
+            t = int(m.group(1))
+            cnt = int(m.group(2))
+            if t < 1 or t > max_type or cnt < 1:
+                await message.answer(f"Тип должен быть 1..{max_type}, количество > 0")
+                return
+            collected.extend(get_question_ids_by_type(exam, t, cnt))
+        seen = set()
+        ids = [x for x in collected if not (x in seen or seen.add(x))]
+        if not ids:
+            await message.answer("Не удалось подобрать вопросы по указанным типам.")
+            return
+
+    # 3) Список ID
+    else:
+        parts = [p.strip() for p in re.split(r"[;,\s]+", ids_text) if p.strip()]
+        if not parts or not all(p.isdigit() for p in parts):
+            await message.answer("Ожидаются только числа через запятую. Пример: 1, 5, 10")
+            return
+        ids = [int(p) for p in parts]
+
     # Сохраним в общем CSV формате ege:1, ege:5 ... или oge:...
-    items = ", ".join(f"{exam}:{p}" for p in parts)
+    items = ", ".join(f"{exam}:{p}" for p in ids)
     create_group_task(group_no, title, items)
-    await message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(parts)})")
+    ids_str = ", ".join(str(i) for i in ids)
+    await message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {ids_str})")
     await state.set_state(None)
+
+
+# ── Новые обработчики для кнопок выбора способа/типов/варианта ─────────────
+
+@router.callback_query(lambda c: c.data.startswith("wg_tasks_method:"))
+async def wg_tasks_method(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        _, method, exam = cb.data.split(":", 2)
+    except Exception:
+        await cb.answer()
+        return
+    if method == "ids":
+        await _safe_edit_text(cb.message, "Введите IDs через запятую (например: 1, 5, 10)")
+        await cb.answer()
+        return
+    if method == "types":
+        await state.update_data(tasks_exam=exam, selected_types={})
+        await _safe_edit_text(cb.message, "Выберите типы заданий и количество:", reply_markup=get_task_types_keyboard(exam))
+        await cb.answer()
+        return
+    if method == "variant":
+        from services.groups import list_variant_filenames
+        names = list_variant_filenames(exam)
+        if not names:
+            try:
+                await cb.answer("В этой базе нет столбца filename или список пуст.", show_alert=True)
+            finally:
+                await _safe_edit_text(cb.message, "Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(exam))
+            return
+        await state.update_data(tasks_exam=exam, variants_list=names, variants_page=1)
+        await _safe_edit_text(cb.message, "Выберите вариант (filename):", reply_markup=get_variant_list_keyboard(names, 1, 10))
+        await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_pick_type:"))
+async def wg_pick_type(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        _, exam, t_str, cnt_str = cb.data.split(":", 3)
+        t = int(t_str)
+        cnt = int(cnt_str)
+    except Exception:
+        await cb.answer()
+        return
+    data = await state.get_data()
+    selected = dict(data.get("selected_types") or {})
+    selected[t] = cnt
+    await state.update_data(selected_types=selected, tasks_exam=exam)
+    await cb.answer(f"Добавлено: {t}={cnt}")
+
+
+@router.callback_query(lambda c: c.data == "wg_types_done")
+async def wg_types_done(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    exam = (data.get("tasks_exam") or "ege").lower()
+    selected: dict = data.get("selected_types") or {}
+    if not selected:
+        await cb.answer("Список пуст", show_alert=True)
+        return
+    # Собираем ID по выбранным типам
+    ids_collected: list[int] = []
+    for t, cnt in selected.items():
+        ids_collected.extend(get_question_ids_by_type(exam, int(t), int(cnt)))
+    # Уникализируем
+    seen = set()
+    ids = [x for x in ids_collected if not (x in seen or seen.add(x))]
+    if not ids:
+        await cb.answer("Не удалось подобрать вопросы", show_alert=True)
+        return
+    group_no = int(data.get("tasks_group") or 0)
+    title = data.get("tasks_title") or "Набор"
+    items = ", ".join(f"{exam}:{p}" for p in ids)
+    create_group_task(group_no, title, items)
+    await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
+    await state.set_state(None)
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data == "wg_types_back")
+async def wg_types_back(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    exam = (data.get("tasks_exam") or "ege").lower()
+    await cb.message.edit_text("Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(exam))
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_variants_page:"))
+async def wg_variants_page(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        arg = cb.data.split(":", 1)[1]
+        if arg == "noop":
+            await cb.answer()
+            return
+        page = int(arg)
+    except Exception:
+        page = 1
+    data = await state.get_data()
+    names = data.get("variants_list") or []
+    await state.update_data(variants_page=page)
+    await _safe_edit_text(cb.message, "Выберите вариант (filename):", reply_markup=get_variant_list_keyboard(names, page, 10))
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data == "wg_variants_back")
+async def wg_variants_back(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    exam = (data.get("tasks_exam") or "ege").lower()
+    await _safe_edit_text(cb.message, "Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(exam))
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_pick_variant:"))
+async def wg_pick_variant(cb: types.CallbackQuery, state: FSMContext):
+    filename = cb.data.split(":", 1)[1]
+    data = await state.get_data()
+    exam = (data.get("tasks_exam") or "ege").lower()
+    ids = get_question_ids_by_filename(exam, filename)
+    if not ids:
+        await cb.answer("Не нашёл вопросы по этому варианту", show_alert=True)
+        return
+    group_no = int(data.get("tasks_group") or 0)
+    title = data.get("tasks_title") or f"Вариант {filename}"
+    items = ", ".join(f"{exam}:{p}" for p in ids)
+    create_group_task(group_no, title, items)
+    await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
+    await state.set_state(None)
+    await cb.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith("add_to_group:"))
@@ -428,6 +603,21 @@ def _apply_students_filters(students: list, *, only_not_in_group: bool, search_q
                 continue
         out.append(s)
     return out
+
+
+async def _safe_edit_text(message_obj: types.Message, text: str, *, reply_markup=None) -> None:
+    """Безопасно правит текст сообщения: если контент не меняется, тихо игнорирует ошибку.
+    При иных ошибках отправляет новое сообщение."""
+    try:
+        await message_obj.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest:
+        # message is not modified — просто игнорируем
+        return
+    except Exception:
+        try:
+            await message_obj.answer(text, reply_markup=reply_markup)
+        except Exception:
+            pass
 
 
 @router.callback_query(lambda c: c.data == "students_search")
