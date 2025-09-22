@@ -485,3 +485,144 @@ def get_group_students() -> List[Dict[str, Any]]:
                 break
     
     return students
+
+
+# =====================
+# Helpers for selecting questions by variant (filename) or type
+# =====================
+
+def _tests_db_path_for(exam: str) -> str:
+    """Returns absolute path to tests DB for given exam: 'ege' or 'oge'."""
+    exam_norm = (exam or "").strip().lower()
+    repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    shared_dir = os.path.join(repo_root, "shared")
+    if exam_norm == "oge":
+        return os.path.join(shared_dir, "test_oge.db")
+    # default: ege
+    return os.path.join(shared_dir, "test_ege.db")
+
+
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        return any((row[1] == column) for row in cur.fetchall())
+    except Exception:
+        return False
+
+
+def get_question_ids_by_type(exam: str, task_type: int, limit: int) -> List[int]:
+    """Fetches question IDs by type from tests DB for specified exam.
+    Skips questions marked has_issue when such column exists.
+    """
+    db_path = _tests_db_path_for(exam)
+    ids: List[int] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            has_issue_col = _table_has_column(conn, "tests", "has_issue")
+            # поддержка разных имён колонки типа
+            type_col = None
+            try:
+                cur = conn.cursor()
+                cur.execute("PRAGMA table_info(tests)")
+                cols = {row[1] for row in cur.fetchall()}
+                for name in ("type", "test_type", "theme", "task_type"):
+                    if name in cols:
+                        type_col = name
+                        break
+            except Exception:
+                type_col = "type"
+            if not type_col:
+                type_col = "type"
+            cur = conn.cursor()
+            if has_issue_col:
+                cur.execute(
+                    """
+                    SELECT id FROM tests
+                    WHERE {tc}=? AND COALESCE(has_issue,0)=0
+                    ORDER BY id
+                    LIMIT ?
+                    """.replace("{tc}", type_col),
+                    (int(task_type), int(limit)),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id FROM tests
+                    WHERE {tc}=?
+                    ORDER BY id
+                    LIMIT ?
+                    """.replace("{tc}", type_col),
+                    (int(task_type), int(limit)),
+                )
+            ids = [int(r[0]) for r in cur.fetchall()]
+    except Exception:
+        ids = []
+    return ids
+
+
+def get_question_ids_by_filename(exam: str, filename: str) -> List[int]:
+    """Fetches all question IDs that belong to the same variant (same tests.filename).
+    If tests.filename column doesn't exist, returns empty list.
+    Skips has_issue when present.
+    """
+    db_path = _tests_db_path_for(exam)
+    fname = (filename or "").strip()
+    if not fname:
+        return []
+    ids: List[int] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            if not _table_has_column(conn, "tests", "filename"):
+                return []
+            has_issue_col = _table_has_column(conn, "tests", "has_issue")
+            cur = conn.cursor()
+            if has_issue_col:
+                cur.execute(
+                    """
+                    SELECT id FROM tests
+                    WHERE filename=? AND COALESCE(has_issue,0)=0
+                    ORDER BY id
+                    """,
+                    (fname,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id FROM tests
+                    WHERE filename=?
+                    ORDER BY id
+                    """,
+                    (fname,),
+                )
+            ids = [int(r[0]) for r in cur.fetchall()]
+    except Exception:
+        ids = []
+    return ids
+
+
+def list_variant_filenames(exam: str, limit: int = 300) -> List[str]:
+    """Возвращает список уникальных значений tests.filename для выбранного экзамена.
+    Если столбца filename нет — возвращает пустой список.
+    """
+    db_path = _tests_db_path_for(exam)
+    names: List[str] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            if not _table_has_column(conn, "tests", "filename"):
+                return []
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT DISTINCT filename
+                FROM tests
+                WHERE TRIM(COALESCE(filename,'')) <> ''
+                ORDER BY filename
+                LIMIT ?
+                """,
+                (int(limit),),
+            )
+            names = [str(r[0]) for r in cur.fetchall() if r and r[0]]
+    except Exception:
+        names = []
+    return names
