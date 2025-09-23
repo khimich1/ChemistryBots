@@ -4,8 +4,11 @@ from aiogram import Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from services.students import get_all_students, update_user_profile, clear_hide_reason_all, set_hide_reason
-from services.govr_report import make_pdf_report
+from services.students import (
+    get_all_students, update_user_profile, clear_hide_reason_all, set_hide_reason,
+    build_user_progress_text, build_user_summary_text,
+    build_user_progress_text_ege, build_user_progress_text_oge, build_user_flashcards_text, build_user_oral_text,
+)
 from states import EditStudent
 
 # Добавляем путь к модулю в parent_bot
@@ -76,28 +79,59 @@ async def student_selected(cb: types.CallbackQuery):
     await cb.answer()
 
 
+def _progress_menu_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 ЕГЭ", callback_data=f"prog_{user_id}_ege")],
+        [InlineKeyboardButton(text="📊 ОГЭ", callback_data=f"prog_{user_id}_oge")],
+        [InlineKeyboardButton(text="🗂 Карточки", callback_data=f"prog_{user_id}_cards")],
+        [InlineKeyboardButton(text="🗣 Устный зачёт", callback_data=f"prog_{user_id}_oral")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"student_{user_id}")],
+    ])
+
+
 @router.callback_query(lambda c: c.data and c.data.endswith("_progress"))
 async def student_progress(cb: types.CallbackQuery):
     user_id = int(cb.data.split("_", 2)[1])
-    
-    # Генерируем имя файла с использованием общего модуля
-    filename = get_filename_for_user(user_id, None, None)
-    
-    # Получаем отображаемое имя пользователя
-    display_name = get_user_display_name(user_id, None, None)
-    
-    # Сгенерируем PDF во временный файл
-    path = make_pdf_report(user_id, fullname=display_name, filename=filename)
+    # Минимальная общая сводка + меню выбора типа статистики
     try:
-        await cb.message.answer_document(document=types.FSInputFile(path), caption=f"Отчёт по ученику ID {user_id}")
+        summary = build_user_summary_text(user_id)
+        await cb.message.answer(summary, parse_mode="HTML", reply_markup=_progress_menu_kb(user_id))
     except Exception as e:
-        await cb.message.answer(f"Не удалось отправить отчёт: {e}")
-    finally:
-        try:
-            if path and os.path.exists(path):
-                os.remove(path)
-        except Exception:
-            pass
+        await cb.message.answer(f"Не удалось сформировать сводку: {e}")
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("prog_") and c.data.endswith("_ege"))
+async def show_progress_ege(cb: types.CallbackQuery):
+    user_id = int(cb.data.split("_", 2)[1])
+    # Разделяем статистику: здесь считаем только по базе ЕГЭ
+    text = build_user_progress_text_ege(user_id)
+    await cb.message.answer("<b>Статистика по тестам ЕГЭ</b>\n\n" + text, parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("prog_") and c.data.endswith("_oge"))
+async def show_progress_oge(cb: types.CallbackQuery):
+    user_id = int(cb.data.split("_", 2)[1])
+    # Статистика только по базе ОГЭ
+    text = build_user_progress_text_oge(user_id)
+    await cb.message.answer("<b>Статистика по тестам ОГЭ</b>\n\n" + text, parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("prog_") and c.data.endswith("_cards"))
+async def show_progress_cards(cb: types.CallbackQuery):
+    user_id = int(cb.data.split("_", 2)[1])
+    text = build_user_flashcards_text(user_id)
+    await cb.message.answer("<b>Статистика по карточкам</b>\n\n" + text, parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("prog_") and c.data.endswith("_oral"))
+async def show_progress_oral(cb: types.CallbackQuery):
+    user_id = int(cb.data.split("_", 2)[1])
+    text = build_user_oral_text(user_id)
+    await cb.message.answer("<b>Устный зачёт</b>\n\n" + text, parse_mode="HTML")
     await cb.answer()
 
 

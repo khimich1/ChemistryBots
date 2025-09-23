@@ -1,8 +1,10 @@
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
 from typing import Callable, Dict, Any, Awaitable
 import sqlite3
-from config import USERS_DB
+import os
+from config import USERS_DB, ADMIN_IDS
 
 class AdminCheckMiddleware(BaseMiddleware):
     async def __call__(
@@ -17,23 +19,58 @@ class AdminCheckMiddleware(BaseMiddleware):
         if not user_id:
             return
         
-        # Проверяем регистрацию в базе admin_bot (таблица teacher)
+        # 0) Пропустим по ADMIN_IDS, если задано
         try:
-            with sqlite3.connect(USERS_DB) as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT 1 FROM teacher WHERE tg_id=?", (user_id,))
-                row = cur.fetchone()
-                if row:
-                    return await handler(event, data)
+            if int(user_id) in (ADMIN_IDS or []):
+                return await handler(event, data)
         except Exception:
-            # В случае ошибки БД — безопасно запрещаем доступ
+            pass
+
+        # Проверяем регистрацию в базе admin_bot (таблица teacher)
+        def _exists_in_teacher(db_path: str) -> bool:
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1 FROM teacher WHERE tg_id=? LIMIT 1", (int(user_id),))
+                    return cur.fetchone() is not None
+            except Exception:
+                return False
+
+        try:
+            if USERS_DB and os.path.exists(USERS_DB) and _exists_in_teacher(USERS_DB):
+                return await handler(event, data)
+        except Exception:
+            pass
+
+        # Fallback: попробовать взять путь к users.db из admin_bot/.env (USERS_DB_PATH)
+        try:
+            from dotenv import dotenv_values
+            repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            admin_env_path = os.path.join(repo_root, "admin_bot", ".env")
+            vals = dotenv_values(admin_env_path) if os.path.exists(admin_env_path) else {}
+            alt_path = vals.get("USERS_DB_PATH")
+            if alt_path and os.path.exists(alt_path) and _exists_in_teacher(alt_path):
+                return await handler(event, data)
+        except Exception:
             pass
 
         # Нет в teacher — доступ запрещён
         if isinstance(event, Message):
-            await event.answer("❌ Доступ только для преподавателей, зарегистрированных через админ-бота.")
+            try:
+                await event.answer("❌ Доступ только для преподавателей, зарегистрированных через админ-бота.")
+            except TelegramBadRequest:
+                # Сообщение устарело/нельзя ответить — молча игнорируем
+                pass
         elif isinstance(event, CallbackQuery):
-            await event.answer("❌ Доступ только для преподавателей, зарегистрированных через админ-бота.", show_alert=True)
+            try:
+                await event.answer("❌ Доступ только для преподавателей, зарегистрированных через админ-бота.", show_alert=True)
+            except TelegramBadRequest:
+                # Просроченный callback — попробуем отправить новое сообщение в чат
+                try:
+                    if event.message:
+                        await event.message.answer("❌ Доступ только для преподавателей, зарегистрированных через админ-бота.")
+                except Exception:
+                    pass
         return
         
         # Если админ - пропускаем дальше
