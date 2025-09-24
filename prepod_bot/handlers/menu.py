@@ -437,7 +437,10 @@ async def wg_tasks_method(cb: types.CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     if method == "testlist":
-        await state.update_data(tasks_exam=exam, ids_selected=[], ids_list=[], current_type=None, ids_page=1)
+        # Не сбрасываем уже выбранные ID, чтобы можно было возвращаться назад и добирать задания
+        prev = await state.get_data()
+        prev_selected = list(prev.get("ids_selected") or [])
+        await state.update_data(tasks_exam=exam, ids_selected=prev_selected, ids_list=[], current_type=None, ids_page=1)
         await _safe_edit_text(cb.message, "Выбери тест:", reply_markup=get_test_types_list_keyboard(exam))
         await cb.answer()
         return
@@ -514,8 +517,17 @@ async def wg_pick_test(cb: types.CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     ids = get_question_ids_by_type(exam, t, 200)
-    await state.update_data(tasks_exam=exam, current_type=t, ids_list=ids, ids_selected=[], ids_page=1)
-    await _safe_edit_text(cb.message, "Выберите задания этого типа:", reply_markup=get_type_ids_keyboard(ids, exam=exam, task_type=t, selected=set(), page=1))
+    # Не сбрасываем уже выбранные ids, чтобы можно было собирать набор из нескольких типов
+    prev_data = await state.get_data()
+    prev_selected = list(prev_data.get("ids_selected") or [])
+    await state.update_data(tasks_exam=exam, current_type=t, ids_list=ids, ids_selected=prev_selected, ids_page=1)
+    # Подсветим уже выбранные ID именно этого типа
+    selected_for_current_type = {qid for qid in prev_selected if qid in ids}
+    await _safe_edit_text(
+        cb.message,
+        "Выберите задания этого типа:",
+        reply_markup=get_type_ids_keyboard(ids, exam=exam, task_type=t, selected=selected_for_current_type, page=1)
+    )
     await cb.answer()
 
 
