@@ -54,13 +54,25 @@ ADMIN_IDS=
 
 # Пути к БД в общей папке shared (оставьте как есть, если базы лежат там)
 DB_PATH="/home/username/Рабочий стол/my py/ChemistryBots/shared/test_answers.db"
-TESTS_DB_PATH="/home/username/Рабочий стол/my py/ChemistryBots/shared/tests1.db"
+# Рекомендуется использовать отдельные БД для ЕГЭ и ОГЭ
+TESTS_DB_EGE="/home/username/Рабочий стол/my py/ChemistryBots/shared/test_ege.db"
+TESTS_DB_OGE="/home/username/Рабочий стол/my py/ChemistryBots/shared/test_oge.db"
 
 # Путь к базе пользователей, создаваемой admin_bot (таблица teacher)
 USERS_DB="/home/username/Рабочий стол/my py/ChemistryBots/shared/users.db"
 
+# Подсказка-ссылка для deep-link (используется в статистике рекламы)
+# Пример: https://t.me/ИмяБота?start=ads1
+DEEPLINK_HINT="https://t.me/ИмяБота?start=ads1"
+
 # Необязательно: окно «онлайн» в минутах
 ONLINE_WINDOW_MINUTES=10
+
+# Ресурсы PDF/шрифтов
+FONTS_DIR="/home/username/Рабочий стол/my py/ChemistryBots/shared/Fonts"
+FONT_REGULAR="$FONTS_DIR/LiberationSerif-Regular.ttf"
+FONT_BOLD="$FONTS_DIR/LiberationSerif-Bold.ttf"
+PDF_BASE_IMAGE="$FONTS_DIR/PDF_base.png"
 EOF
   echo "[run] .env template created at $SCRIPT_DIR/.env"
 fi

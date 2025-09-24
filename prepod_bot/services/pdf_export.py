@@ -1,6 +1,7 @@
 import os
 import re
 from typing import List, Tuple
+from config import FONTS_DIR, FONT_REGULAR, FONT_BOLD, PDF_BASE_IMAGE, TESTS_DB_EGE, TESTS_DB_OGE
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import base64
@@ -8,13 +9,12 @@ import sqlite3
 
 # Пути к ресурсам
 REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-FONTS_DIR = os.path.join(REPO_ROOT, "shared", "Fonts")
-BASE_IMG = os.path.join(FONTS_DIR, "PDF_base.png")
+BASE_IMG = PDF_BASE_IMAGE
 
 
 def _load_fonts() -> Tuple[ImageFont.FreeTypeFont, ImageFont.FreeTypeFont]:
-    regular_path = os.path.join(FONTS_DIR, "LiberationSerif-Regular.ttf")
-    bold_path = os.path.join(FONTS_DIR, "LiberationSerif-Bold.ttf")
+    regular_path = FONT_REGULAR
+    bold_path = FONT_BOLD
     try:
         # Ещё уменьшили основной шрифт внутри рамки
         f_regular = ImageFont.truetype(regular_path, 18)
@@ -223,7 +223,7 @@ def render_questions_to_pdf(output_path: str, pages: List[dict]) -> str:
             return None
 
         def _fetch_image_from_db(exam_local: str, qid_local: int, options_text: str) -> Image.Image | None:
-            db_path = os.path.join(REPO_ROOT, "shared", "test_ege.db" if (exam_local or "").lower()=="ege" else "test_oge.db")
+            db_path = TESTS_DB_EGE if (exam_local or "").lower()=="ege" else TESTS_DB_OGE
             try:
                 with sqlite3.connect(db_path) as conn:
                     cur = conn.cursor()

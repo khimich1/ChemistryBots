@@ -37,6 +37,7 @@ from services.groups import (
     get_question_ids_by_type,
 )
 from aiogram.fsm.context import FSMContext
+from config import DEEPLINK_HINT
 from states import StudentsList, WorkGroups
 from services.pdf_export import render_questions_to_pdf
 
@@ -1107,6 +1108,6 @@ async def show_ads_stats(message: types.Message):
 
     # Подсказка, если много строк без метки
     if any(tag == "(без метки)" for tag, *_ in data):
-        lines.append("Пользователи без метки заходили не по deep-link. Используйте ссылку вида https://t.me/ИмяБота?start=ads1")
+        lines.append(f"Пользователи без метки заходили не по deep-link. Используйте ссылку вида {DEEPLINK_HINT}")
 
     await message.answer("\n".join(lines), parse_mode="HTML")
