@@ -1,7 +1,7 @@
 import sqlite3
 from typing import List, Dict, Any
 import os
-from config import DB_PATH
+from config import DB_PATH, TESTS_DB_EGE, TESTS_DB_OGE
 from services.students import get_all_students
 
 
@@ -78,6 +78,36 @@ def list_group_tasks(group_no: int) -> list[dict]:
         {"id": r[0], "title": r[1], "items": r[2], "created_at": r[3]}
         for r in rows
     ]
+
+def delete_group_task(task_id: int) -> int | None:
+    """Удаляет набор заданий по id.
+    Возвращает номер группы, к которой принадлежал набор, либо None, если не найден.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_group_tasks_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT group_no FROM group_tasks WHERE id=?", (int(task_id),))
+        row = cur.fetchone()
+        if not row:
+            return None
+        group_no = int(row[0])
+        cur.execute("DELETE FROM group_tasks WHERE id=?", (int(task_id),))
+        conn.commit()
+        return group_no
+
+def get_group_task_by_id(task_id: int) -> dict | None:
+    """Возвращает одну запись group_tasks по id или None."""
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_group_tasks_table(conn)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, group_no, title, items, created_at FROM group_tasks WHERE id=?",
+            (int(task_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": int(row[0]), "group_no": int(row[1]), "title": row[2], "items": row[3], "created_at": row[4]}
 
 def add_user_to_work_group(group_no: int, user_id: int) -> None:
     """Добавляет пользователя в рабочую группу."""
@@ -492,14 +522,12 @@ def get_group_students() -> List[Dict[str, Any]]:
 # =====================
 
 def _tests_db_path_for(exam: str) -> str:
-    """Returns absolute path to tests DB for given exam: 'ege' or 'oge'."""
+    """Возвращает путь к БД заданий для 'ege' или 'oge' из config.py."""
     exam_norm = (exam or "").strip().lower()
-    repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    shared_dir = os.path.join(repo_root, "shared")
     if exam_norm == "oge":
-        return os.path.join(shared_dir, "test_oge.db")
+        return TESTS_DB_OGE
     # default: ege
-    return os.path.join(shared_dir, "test_ege.db")
+    return TESTS_DB_EGE
 
 
 def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:

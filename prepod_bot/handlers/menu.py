@@ -7,13 +7,19 @@ from keyboards import (
     get_students_keyboard,
     get_manage_groups_keyboard,
     get_group_numbers_keyboard,
+    get_group_pick_keyboard,
     get_group_members_keyboard,
     get_task_method_keyboard,
     get_task_types_keyboard,
     get_variant_list_keyboard,
+    get_group_tasks_kb,
+    get_exam_pick_keyboard,
+    get_test_types_list_keyboard,
+    get_type_ids_keyboard,
 )
 from services.acquisition import get_ad_stats
 from services.students import get_all_students
+from services.teachers import get_teacher_moniker
 from services.groups import (
     add_student_to_group,
     is_student_in_group,
@@ -25,18 +31,25 @@ from services.groups import (
     broadcast_message_to_group_via_govr,
     create_group_task,
     list_group_tasks,
+    delete_group_task,
+    get_group_task_by_id,
     get_question_ids_by_filename,
     get_question_ids_by_type,
 )
 from aiogram.fsm.context import FSMContext
+from config import DEEPLINK_HINT
 from states import StudentsList, WorkGroups
+from services.pdf_export import render_questions_to_pdf
 
 router = Router()
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
+    tg_id = message.from_user.id
+    moniker = get_teacher_moniker(tg_id) or (message.from_user.full_name or "")
+    greeting_name = moniker.strip() or "Коллега"
     await message.answer(
-        "Привет! Я помощник преподавателя. Выберите действие:",
+        f"Здравствуйте, {greeting_name}! Выберите действие:",
         reply_markup=get_teacher_keyboard()
     )
 
@@ -121,7 +134,12 @@ async def wg_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
     if not groups:
         await callback.message.answer("Группы пока не созданы. Сначала добавьте участников.")
         return
-    await callback.message.answer("Введите номер группы, куда отправить сообщение:")
+    # Покажем кнопки выбора группы
+    try:
+        await callback.message.edit_text("Выберите группу для отправки сообщения:", reply_markup=get_group_pick_keyboard(groups, prefix="pick_broadcast_group"))
+    except Exception:
+        await callback.message.answer("Выберите группу для отправки сообщения:", reply_markup=get_group_pick_keyboard(groups, prefix="pick_broadcast_group"))
+    # Оставим старый способ ввода числа как резервный
     await state.set_state(WorkGroups.waiting_broadcast_group)
 
 
@@ -135,6 +153,18 @@ async def wg_broadcast_group(message: types.Message, state: FSMContext):
         return
     await state.update_data(broadcast_group=group_no)
     await message.answer("Введите текст сообщения, оно уйдёт всем участникам группы:")
+    await state.set_state(WorkGroups.waiting_broadcast_text)
+
+
+@router.callback_query(lambda c: c.data.startswith("pick_broadcast_group:"))
+async def pick_broadcast_group(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        group_no = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    await state.update_data(broadcast_group=group_no)
+    await _safe_edit_text(cb.message, f"Группа {group_no} выбрана. Введите текст сообщения, оно уйдёт всем участникам группы:")
     await state.set_state(WorkGroups.waiting_broadcast_text)
 
 
@@ -166,7 +196,11 @@ async def wg_add_start(callback: types.CallbackQuery, state: FSMContext):
             await callback.message.edit_text("Существующие группы:", reply_markup=get_group_numbers_keyboard(groups))
         except Exception:
             await callback.message.answer("Существующие группы:", reply_markup=get_group_numbers_keyboard(groups))
-    await callback.message.answer("Введите номер группы (целое число):")
+    # Предложим выбрать группу кнопками для добавления ученика
+    try:
+        await callback.message.answer("Выберите группу, куда добавить ученика:", reply_markup=get_group_pick_keyboard(groups or [], prefix="pick_add_group"))
+    except Exception:
+        pass
     await state.set_state(WorkGroups.waiting_group_number)
 
 
@@ -180,6 +214,18 @@ async def wg_input_group(message: types.Message, state: FSMContext):
         return
     await state.update_data(group_no=group_no)
     await message.answer("Теперь отправьте username ученика с @ (например, @ivan_ivanov):")
+    await state.set_state(WorkGroups.waiting_username)
+
+
+@router.callback_query(lambda c: c.data.startswith("pick_add_group:"))
+async def pick_add_group(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        group_no = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    await state.update_data(group_no=group_no)
+    await _safe_edit_text(cb.message, f"Группа {group_no} выбрана. Теперь отправьте username ученика с @ (например, @ivan_ivanov):")
     await state.set_state(WorkGroups.waiting_username)
 
 
@@ -240,7 +286,14 @@ async def wg_open_group(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "wg_tasks_start")
 async def wg_tasks_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await callback.message.answer("Введите номер группы, для которой создаём задания:")
+    groups = get_all_group_numbers()
+    if not groups:
+        await callback.message.answer("Группы пока не созданы. Сначала добавьте участников.")
+        return
+    try:
+        await callback.message.edit_text("Выберите группу, для которой создаём задания:", reply_markup=get_group_pick_keyboard(groups, prefix="pick_tasks_group"))
+    except Exception:
+        await callback.message.answer("Выберите группу, для которой создаём задания:", reply_markup=get_group_pick_keyboard(groups, prefix="pick_tasks_group"))
     await state.set_state(WorkGroups.waiting_tasks_group)
 
 
@@ -254,9 +307,32 @@ async def wg_tasks_group(message: types.Message, state: FSMContext):
     await state.update_data(tasks_group=group_no)
     tasks = list_group_tasks(group_no)
     if tasks:
-        titles = "\n".join([f"• {t['title']}" for t in tasks])
-        await message.answer(f"У этой группы уже есть наборы:\n{titles}")
+        try:
+            await message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+        except Exception:
+            # На случай, если редактирование/отправка с клавиатурой не удалось — покажем текстом и следом клавиатуру
+            await message.answer("У этой группы уже есть наборы:")
+            await message.answer("Выберите набор:", reply_markup=get_group_tasks_kb(tasks))
     await message.answer("Введите название набора (например, Домашка 24.09):")
+    await state.set_state(WorkGroups.waiting_tasks_title)
+
+
+@router.callback_query(lambda c: c.data.startswith("pick_tasks_group:"))
+async def pick_tasks_group(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        group_no = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    await state.update_data(tasks_group=group_no)
+    # Показать уже имеющиеся наборы
+    tasks = list_group_tasks(group_no)
+    if tasks:
+        try:
+            await _safe_edit_text(cb.message, "У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+        except Exception:
+            await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+    await cb.message.answer("Введите название набора (например, Домашка 24.09):")
     await state.set_state(WorkGroups.waiting_tasks_title)
 
 
@@ -267,20 +343,21 @@ async def wg_tasks_title(message: types.Message, state: FSMContext):
         await message.answer("Название не распознано, введите ещё раз:")
         return
     await state.update_data(tasks_title=title)
-    await message.answer("Выберите базу: напишите 'EGE' или 'OGE'")
+    await message.answer("Выберите базу:", reply_markup=get_exam_pick_keyboard())
     await state.set_state(WorkGroups.waiting_tasks_exam)
 
 
 @router.message(WorkGroups.waiting_tasks_exam)
 async def wg_tasks_exam(message: types.Message, state: FSMContext):
+    # Если пользователь всё же напишет текстом, поддержим старый способ
     exam = (message.text or "").strip().lower()
-    if exam not in {"ege", "огэ", "oge", "егэ"}:
-        await message.answer("Напишите 'EGE' или 'OGE'")
-        return
-    canonical = "ege" if exam in {"ege", "егэ"} else "oge"
-    await state.update_data(tasks_exam=canonical)
-    await message.answer("Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(canonical))
-    await state.set_state(WorkGroups.waiting_tasks_ids)
+    if exam in {"ege", "егэ", "oge", "огэ"}:
+        canonical = "ege" if exam in {"ege", "егэ"} else "oge"
+        await state.update_data(tasks_exam=canonical)
+        await message.answer("Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(canonical))
+        await state.set_state(WorkGroups.waiting_tasks_ids)
+    else:
+        await message.answer("Выберите базу:", reply_markup=get_exam_pick_keyboard())
 
 
 @router.message(WorkGroups.waiting_tasks_ids)
@@ -360,23 +437,14 @@ async def wg_tasks_method(cb: types.CallbackQuery, state: FSMContext):
         await _safe_edit_text(cb.message, "Введите IDs через запятую (например: 1, 5, 10)")
         await cb.answer()
         return
-    if method == "types":
-        await state.update_data(tasks_exam=exam, selected_types={})
-        await _safe_edit_text(cb.message, "Выберите типы заданий и количество:", reply_markup=get_task_types_keyboard(exam))
+    if method == "testlist":
+        # Не сбрасываем уже выбранные ID, чтобы можно было возвращаться назад и добирать задания
+        prev = await state.get_data()
+        prev_selected = list(prev.get("ids_selected") or [])
+        await state.update_data(tasks_exam=exam, ids_selected=prev_selected, ids_list=[], current_type=None, ids_page=1)
+        await _safe_edit_text(cb.message, "Выбери тест:", reply_markup=get_test_types_list_keyboard(exam))
         await cb.answer()
         return
-    if method == "variant":
-        from services.groups import list_variant_filenames
-        names = list_variant_filenames(exam)
-        if not names:
-            try:
-                await cb.answer("В этой базе нет столбца filename или список пуст.", show_alert=True)
-            finally:
-                await _safe_edit_text(cb.message, "Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(exam))
-            return
-        await state.update_data(tasks_exam=exam, variants_list=names, variants_page=1)
-        await _safe_edit_text(cb.message, "Выберите вариант (filename):", reply_markup=get_variant_list_keyboard(names, 1, 10))
-        await cb.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith("wg_pick_type:"))
@@ -422,11 +490,309 @@ async def wg_types_done(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+@router.callback_query(lambda c: c.data.startswith("wg_pick_exam:"))
+async def wg_pick_exam(cb: types.CallbackQuery, state: FSMContext):
+    canonical = (cb.data.split(":", 1)[1] or "ege").lower()
+    if canonical not in {"ege", "oge"}:
+        canonical = "ege"
+    await state.update_data(tasks_exam=canonical)
+    await _safe_edit_text(cb.message, "Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(canonical))
+    await state.set_state(WorkGroups.waiting_tasks_ids)
+    await cb.answer()
+
+
 @router.callback_query(lambda c: c.data == "wg_types_back")
 async def wg_types_back(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     exam = (data.get("tasks_exam") or "ege").lower()
     await cb.message.edit_text("Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(exam))
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_pick_test:"))
+async def wg_pick_test(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        _, exam, t_str = cb.data.split(":", 2)
+        t = int(t_str)
+    except Exception:
+        await cb.answer()
+        return
+    ids = get_question_ids_by_type(exam, t, 200)
+    # Не сбрасываем уже выбранные ids, чтобы можно было собирать набор из нескольких типов
+    prev_data = await state.get_data()
+    prev_selected = list(prev_data.get("ids_selected") or [])
+    await state.update_data(tasks_exam=exam, current_type=t, ids_list=ids, ids_selected=prev_selected, ids_page=1)
+    # Подсветим уже выбранные ID именно этого типа
+    selected_for_current_type = {qid for qid in prev_selected if qid in ids}
+    await _safe_edit_text(
+        cb.message,
+        "Выберите задания этого типа:",
+        reply_markup=get_type_ids_keyboard(ids, exam=exam, task_type=t, selected=selected_for_current_type, page=1)
+    )
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_toggle_id:"))
+async def wg_toggle_id(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        _, exam, t_str, id_str, page_str = cb.data.split(":", 4)
+        t = int(t_str)
+        qid = int(id_str)
+        page = int(page_str)
+    except Exception:
+        await cb.answer()
+        return
+    data = await state.get_data()
+    ids_selected = set(data.get("ids_selected") or [])
+    if qid in ids_selected:
+        ids_selected.remove(qid)
+    else:
+        ids_selected.add(qid)
+    ids_list = list(data.get("ids_list") or [])
+    await state.update_data(ids_selected=list(ids_selected))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=get_type_ids_keyboard(ids_list, exam=exam, task_type=t, selected=ids_selected, page=page))
+    finally:
+        await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_ids_page:"))
+async def wg_ids_page(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        _, exam, t_str, page_str = cb.data.split(":", 3)
+        t = int(t_str)
+        page = int(page_str)
+    except Exception:
+        await cb.answer()
+        return
+    data = await state.get_data()
+    ids_list = list(data.get("ids_list") or [])
+    ids_selected = set(data.get("ids_selected") or [])
+    await state.update_data(ids_page=page)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=get_type_ids_keyboard(ids_list, exam=exam, task_type=t, selected=ids_selected, page=page))
+    finally:
+        await cb.answer()
+
+
+@router.callback_query(lambda c: c.data == "wg_ids_done")
+async def wg_ids_done(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    exam = (data.get("tasks_exam") or "ege").lower()
+    group_no = int(data.get("tasks_group") or 0)
+    title = data.get("tasks_title") or "Набор"
+    ids_selected = list(data.get("ids_selected") or [])
+    if not ids_selected:
+        await cb.answer("Ничего не выбрано", show_alert=True)
+        return
+    items = ", ".join(f"{exam}:{i}" for i in ids_selected)
+    create_group_task(group_no, title, items)
+    await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids_selected))})")
+    await state.set_state(None)
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data == "wg_methods_back")
+async def wg_methods_back(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    exam = (data.get("tasks_exam") or "ege").lower()
+    await _safe_edit_text(cb.message, "Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(exam))
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data == "wg_ids_back")
+async def wg_ids_back(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    exam = (data.get("tasks_exam") or "ege").lower()
+    await _safe_edit_text(cb.message, "Выбери тест:", reply_markup=get_test_types_list_keyboard(exam))
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_task_del:"))
+async def wg_task_delete(cb: types.CallbackQuery):
+    """Удаляет набор заданий и обновляет список кнопок.
+    Формат callback_data: wg_task_del:<task_id>
+    """
+    try:
+        task_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer("Не понимаю id", show_alert=True)
+        return
+    group_no = delete_group_task(task_id)
+    if group_no is None:
+        await cb.answer("Набор не найден", show_alert=True)
+        return
+    tasks = list_group_tasks(group_no)
+    try:
+        # Обновим только клавиатуру у того же сообщения
+        await cb.message.edit_reply_markup(reply_markup=get_group_tasks_kb(tasks))
+    except Exception:
+        # Если не получилось — отправим новое сообщение с клавиатурой
+        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+    await cb.answer("Удалено")
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_task_print:"))
+async def wg_task_print(cb: types.CallbackQuery):
+    """Генерирует PDF из выбранного набора заданий (по одному на лист)."""
+    try:
+        task_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer("Не понимаю id", show_alert=True)
+        return
+    task = get_group_task_by_id(task_id)
+    if not task:
+        await cb.answer("Набор не найден", show_alert=True)
+        return
+    # Разбираем items: "ege:1, oge:3, ege:5"
+    items_raw = task.get("items") or ""
+    pairs = [p.strip() for p in items_raw.split(",") if p.strip()]
+    questions: list[dict] = []
+    # Получаем тексты из соответствующих БД через helpers из services.groups
+    from services.groups import _tests_db_path_for  # type: ignore
+    import sqlite3
+    for pair in pairs:
+        try:
+            exam, sid = pair.split(":", 1)
+            qid = int(sid.strip())
+            db_path = _tests_db_path_for(exam.strip().lower())
+        except Exception:
+            continue
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                # Подбор имён колонок
+                def pick(colnames: list[str]) -> str | None:
+                    try:
+                        cur.execute("PRAGMA table_info(tests)")
+                        cols = {r[1] for r in cur.fetchall()}
+                    except Exception:
+                        return None
+                    for name in colnames:
+                        if name in cols:
+                            return name
+                    return None
+                q_col = pick(["question", "question_text", "text", "q_text"]) or "question"
+                o_col = pick(["options", "variants", "choices", "answers"]) or None
+                t_col = pick(["type", "test_type", "theme", "task_type"]) or None
+                fields = [f"{q_col} AS question"]
+                if o_col:
+                    fields.append(f"{o_col} AS options")
+                if t_col:
+                    fields.append(f"{t_col} AS ttype")
+                sql = f"SELECT {', '.join(fields)} FROM tests WHERE id=?"
+                cur.execute(sql, (qid,))
+                row = cur.fetchone()
+                if row:
+                    questions.append({
+                        "title": f"Задание №{qid}",
+                        "question": row["question"] if "question" in row.keys() else "",
+                        "options": row["options"] if (o_col and "options" in row.keys()) else "",
+                        "type": int(row["ttype"]) if (t_col and "ttype" in row.keys() and str(row["ttype"]).isdigit()) else None,
+                        "exam": exam.strip().lower(),
+                        "qid": qid,
+                    })
+        except Exception:
+            continue
+    if not questions:
+        await cb.answer("Не удалось собрать задания", show_alert=True)
+        return
+    # Генерация PDF
+    import tempfile, os
+    tmp_dir = tempfile.mkdtemp(prefix="grp_pdf_")
+    out_path = os.path.join(tmp_dir, f"group_set_{task_id}.pdf")
+    pdf_path = render_questions_to_pdf(out_path, questions)
+    # Отправляем файл
+    try:
+        from aiogram.types import FSInputFile
+        await cb.message.answer_document(FSInputFile(pdf_path), caption=f"📄 {task.get('title')}")
+    except Exception:
+        await cb.answer("PDF создан, но не удалось отправить", show_alert=True)
+        return
+    await cb.answer("PDF готов")
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_task_open:"))
+async def wg_task_open(cb: types.CallbackQuery):
+    """Показывает состав набора: для каждого элемента выводит экзамен, тип и ID."""
+    try:
+        task_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer("Не понимаю id", show_alert=True)
+        return
+    task = get_group_task_by_id(task_id)
+    if not task:
+        await cb.answer("Набор не найден", show_alert=True)
+        return
+    # Разбираем items и достаём тип из БД соответствующего экзамена
+    items_raw = task.get("items") or ""
+    pairs = [p.strip() for p in items_raw.split(",") if p.strip()]
+    lines: list[str] = []
+    # Заголовок
+    lines.append(f"Состав набора ‘{task.get('title') or task_id}’ (группа {task.get('group_no')}):")
+    lines.append("<pre>")
+    try:
+        from services.groups import _tests_db_path_for  # type: ignore
+        import sqlite3
+        for pair in pairs:
+            try:
+                exam, sid = pair.split(":", 1)
+                qid = int(sid.strip())
+                db_path = _tests_db_path_for(exam.strip().lower())
+            except Exception:
+                continue
+            ttype: int | None = None
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    cur = conn.cursor()
+                    # Определим имя колонки типа
+                    cur.execute("PRAGMA table_info(tests)")
+                    cols = {r[1] for r in cur.fetchall()}
+                    type_col = "type"
+                    for name in ("type", "test_type", "theme", "task_type"):
+                        if name in cols:
+                            type_col = name
+                            break
+                    cur.execute(f"SELECT {type_col} FROM tests WHERE id=?", (qid,))
+                    row = cur.fetchone()
+                    if row and str(row[0]).isdigit():
+                        ttype = int(row[0])
+            except Exception:
+                ttype = None
+            exam_up = (exam or "").strip().upper()
+            lines.append(f"{exam_up}: тип {ttype if ttype is not None else '?'}  •  id {qid}")
+    except Exception:
+        # Если что-то пошло не так — хотя бы отобразим id
+        for pair in pairs:
+            try:
+                exam, sid = pair.split(":", 1)
+                qid = int(sid.strip())
+            except Exception:
+                continue
+            lines.append(f"{(exam or '').upper()}: id {qid}")
+    lines.append("</pre>")
+    # Кнопка назад к списку наборов этой группы
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[[types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"wg_tasks_list:{task.get('group_no')}")]]
+    )
+    await cb.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_tasks_list:"))
+async def wg_tasks_list(cb: types.CallbackQuery):
+    """Возвращает список наборов для указанной группы (после просмотра состава)."""
+    try:
+        group_no = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer()
+        return
+    tasks = list_group_tasks(group_no)
+    try:
+        await cb.message.edit_text("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+    except Exception:
+        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
     await cb.answer()
 
 
@@ -742,6 +1108,6 @@ async def show_ads_stats(message: types.Message):
 
     # Подсказка, если много строк без метки
     if any(tag == "(без метки)" for tag, *_ in data):
-        lines.append("Пользователи без метки заходили не по deep-link. Используйте ссылку вида https://t.me/ИмяБота?start=ads1")
+        lines.append(f"Пользователи без метки заходили не по deep-link. Используйте ссылку вида {DEEPLINK_HINT}")
 
     await message.answer("\n".join(lines), parse_mode="HTML")

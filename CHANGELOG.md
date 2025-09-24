@@ -1,5 +1,160 @@
 # 📋 Журнал изменений ChemistryBots
 
+## 🚀 Версия 2.5 — PDF для групповых заданий и улучшения сборщика
+
+**Дата:** 22 сентября 2025  
+**Статус:** ✅ Завершено
+
+### 🎯 Основные изменения
+
+- **prepod_bot: печать наборов заданий для групп ("сборщик домашки")**
+  - В списке наборов появился значок «🖨»: генерация красивого PDF на основе шаблона `shared/Fonts/PDF_base.png`.
+  - Новый модуль `prepod_bot/services/pdf_export.py` с функцией `render_questions_to_pdf()`.
+  - Поддержка переноса строк, многостраничных документов, химических индексов (H₂SO₄) и верхних индексов (`^2`).
+  - Автоматическое масштабирование картинок; поиск изображений по плейсхолдерам `[рисунок0001]`/`[OGE0001]`, а также извлечение картинок из БД (BLOB) при наличии.
+- **Отправка изображений в групповых заданиях (govr_bot)**
+  - Вопросы групп теперь отправляются с изображениями (одно фото или медиа‑группа), с отдельной отправкой клавиатуры при группе.
+  - Используются сервисы `get_question_with_image()` для ЕГЭ/ОГЭ.
+- **Управление наборами**
+  - Удаление набора по кнопке «🗑» с мгновенным обновлением клавиатуры в том же сообщении.
+  - Открытие и печать набора через компактную трёхкнопочную строку: «Название | 🖨 | 🗑».
+- **Выбор базы заданий**
+  - Вместо текстового ввода добавлена inline‑клавиатура выбора «ЕГЭ/ОГЭ».
+- **Конфигурация БД тестов**
+  - Старое `TESTS_DB_PATH` заменено на `TESTS_DB_EGE` и `TESTS_DB_OGE`. Значения читаются из `.env` или берутся из `shared/`.
+- **Ресурсы**
+  - Добавлены шрифты `LiberationSerif` (Regular/Bold/Italic/BoldItalic) в `shared/Fonts/` и перенесён логотип `Logo_Low.png` в ту же папку.
+
+### 📁 Изменённые файлы
+
+- `govr_bot/bot/handlers/tests.py` — отправка изображений в групповых вопросах (фото/медиа‑группа), разбор ЕГЭ/ОГЭ через сервисы, сохранение `question_msg_id`.
+- `prepod_bot/config.py` — новые переменные `TESTS_DB_EGE`, `TESTS_DB_OGE` вместо `TESTS_DB_PATH`.
+- `prepod_bot/handlers/menu.py` — печать набора в PDF (`wg_task_print:<id>`), удаление набора (`wg_task_del:<id>`), выбор базы (`wg_pick_exam:ege|oge`), улучшение UX списка наборов.
+- `prepod_bot/keyboards.py` — клавиатуры `get_group_tasks_kb()` (кнопки 🖨 и 🗑) и новая `get_exam_pick_keyboard()`.
+- `prepod_bot/services/groups.py` — `delete_group_task()`, `get_group_task_by_id()`, обновлён `_tests_db_path_for()` под `TESTS_DB_EGE/OGE`.
+- `prepod_bot/services/pdf_export.py` — НОВЫЙ модуль рендеринга PDF.
+- `prepod_bot/services/students.py` — `get_question_details()` теперь ищет сперва в ЕГЭ, затем в ОГЭ.
+- `prepod_bot/services/tasks.py` — переход на `TESTS_DB_EGE`.
+- `shared/Fonts/*` — добавлены шрифты и шаблон `PDF_base.png`, логотип перенесён из `govr_bot/Fonts/`.
+- `shared/filename_generator.py` — форматирование (без функциональных изменений).
+
+### 🔧 Технические детали
+
+#### PDF‑генератор (`prepod_bot/services/pdf_export.py`)
+- Отрисовка на шаблоне `PDF_base.png` с шрифтами `LiberationSerif`.
+- Поддержка химических индексов: нижние индексы после букв и верхние индексы через символ `^`.
+- Поиск картинок: по имени файла в репозитории (совпадение кода), по ID из `options`, или извлечение из БД (таблицы `images`/`pictures`/`tests.image`).
+- Масштабирование изображений и перенос на новую страницу при нехватке места.
+
+#### Callback data / роуты
+- `wg_pick_exam:<ege|oge>` — выбор базы заданий.
+- `wg_task_del:<id>` — удаление набора.
+- `wg_task_print:<id>` — создание PDF из набора.
+
+#### Переменные окружения
+```env
+TESTS_DB_EGE=/home/username/Рабочий стол/my py/ChemistryBots/shared/test_ege.db
+TESTS_DB_OGE=/home/username/Рабочий стол/my py/ChemistryBots/shared/test_oge.db
+```
+
+### 🧪 Тестирование
+
+- Создание набора → печать PDF → отправка файла в чат.
+- Удаление набора с обновлением inline‑клавиатуры без нового сообщения.
+- Отправка группового вопроса с одним изображением и с медиа‑группой (ЕГЭ/ОГЭ).
+- Выбор базы заданий через inline‑кнопки.
+- Проверка путей БД из `.env` и fallback в `shared/`.
+
+### ⚠️ Известные ограничения
+
+- Очень большие PDF могут превышать лимит Telegram (≈20 МБ) — файл может не отправиться.
+- Для медиа‑группы клавиатура отправляется отдельным сообщением (ограничение Telegram API).
+
+---
+
+## 🚀 Версия 2.4 — Управление группами в prepod_bot
+
+**Дата:** 19 сентября 2025  
+**Статус:** ✅ Завершено
+
+### 🎯 Основные изменения
+
+- **prepod_bot: управление группами**
+  - Добавлен новый раздел в меню преподавателя: «📚 Управление группами».
+  - Три действия: «📂 Список групп», «➕ Добрать в рабочие группы», «📝 Отправить сообщение».
+  - Главное меню преподавателя обновлено на двухколоночную раскладку с новыми кнопками.
+- **Добор в рабочие группы**
+  - Диалог: ввод номера группы → ввод `@username`.
+  - Хранение в таблице `work_groups(group_no, user_id, added_at)` базы `shared/test_answers.db`.
+  - Поиск `user_id` по `username` с поддержкой ввода с `@`/без `@`; источники: `prepod_bot` (`user_profiles`, `test_answers`) и `govr_bot`.
+- **Список групп**
+  - Кнопки «Группа X»; просмотр участников с человеческими именами (обогащение из `govr_bot`).
+  - Отдельная клавиатура для списка участников.
+- **Рассылка в группу**
+  - Отправка сообщений всем участникам выбранной группы через `govr_bot`.
+  - Поиск токена: `BOT_TOKEN_govor`/`BOT_TOKEN_GOVOR`/`BOT_TOKEN_govr`/`BOT_TOKEN_GOVR`/`GOVR_BOT_TOKEN` или чтение `govr_bot/.env` (`BOT_TOKEN`).
+- **Список учеников и добор в группу (подписка «Групповые»)**
+  - Пагинация, поиск по имени/username, фильтр «только без группы», индикация тарифа (сокращения «Беспл.», «Групп.» и т.п.).
+  - Статусная иконка: ✅ уже в группе, ➕ добавить.
+
+### 📁 Изменённые файлы
+
+- `prepod_bot/keyboards.py` — новые клавиатуры: `get_manage_groups_keyboard`, `get_group_numbers_keyboard`, `get_group_members_keyboard`, обновление `get_teacher_keyboard`, `get_students_keyboard` с пагинацией/поиском.
+- `prepod_bot/handlers/menu.py` — новый раздел «Управление группами», добавлены обработчики: список групп, открытие группы, добор по username, рассылка по группе, навигация и поиск/фильтры по ученикам.
+- `prepod_bot/states.py` — новые FSM-состояния: `StudentsList.waiting_search_query`, `WorkGroups.waiting_group_number`, `waiting_username`, `waiting_broadcast_group`, `waiting_broadcast_text`.
+- `prepod_bot/services/groups.py` — новая таблица `work_groups`, таблица `teacher_groups`, интеграция с `govr_bot` (`answers.db`, `user_plans`), функция рассылки `broadcast_message_to_group_via_govr`, поиск `user_id` по `username`, агрегатор `get_all_students_with_plans()`.
+- `prepod_bot/handlers/groups.py` — упрощённое меню «Сформировать группы» (совместимость; основной функционал — в `handlers/menu.py`).
+- `prepod_bot/config.py` — подтверждение путей к БД через `shared/` и `.env`.
+
+### 🔧 Технические детали
+
+#### База данных
+
+```sql
+-- Таблица участников рабочих групп
+CREATE TABLE IF NOT EXISTS work_groups (
+    group_no INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    added_at TEXT,
+    PRIMARY KEY (group_no, user_id)
+);
+
+-- Таблица принадлежности к группе преподавателя
+CREATE TABLE IF NOT EXISTS teacher_groups (
+    user_id   INTEGER PRIMARY KEY,
+    added_at  TEXT,
+    teacher_id INTEGER
+);
+```
+
+#### FSM
+
+```python
+class StudentsList(StatesGroup):
+    waiting_search_query = State()
+
+class WorkGroups(StatesGroup):
+    waiting_group_number = State()
+    waiting_username = State()
+    waiting_broadcast_group = State()
+    waiting_broadcast_text = State()
+```
+
+#### Callback data / роуты
+
+- Управление группами: `manage_groups_list`, `manage_groups_back`, `wg_open:<num>`, `wg_add_start`, `wg_broadcast_start`.
+- Работа со списком учеников: `add_to_group:<user_id>[:page]`, `students_page:<n>`, `students_search`, `students_clear`, `students_toggle_filter`, `back_to_main`.
+
+### 🧪 Тестирование
+
+- Проверены сценарии: поиск по username с `@`/без, пагинация 30 строк/страница, добор в группу, открытие состава группы, рассылка в группу через `govr_bot` (учёт ошибок доставки), обновление клавиатур по месту без пересоздания сообщений.
+
+### ⚠️ Известные ограничения
+
+- При очень больших выборках inline-клавиатуры могут быть велики; для этого включена пагинация и фильтры (page=30). Ошибка Telegram «reply markup is too long» не воспроизводится на тестовых данных.
+
+---
+
 ## 🚀 Версия 2.3 - Поддержка множественных изображений и улучшение UX
 
 **Дата:** 12 сентября 2025  

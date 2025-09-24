@@ -1045,47 +1045,35 @@ async def start_group_task(cb: CallbackQuery):
         await cb.message.answer("❌ В задании нет вопросов.")
         return
     
-    # Получаем вопросы из соответствующих баз данных
+    # Получаем вопросы из соответствующих сервисов с поддержкой изображений
     questions = []
     
     for exam_type, q_id in question_ids:
-        if exam_type == 'ege':
-            # База данных ЕГЭ
-            ege_db_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'shared', 'test_ege.db')
-            if os.path.exists(ege_db_path):
-                with sqlite3.connect(ege_db_path) as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT * FROM tests WHERE id = ?", (q_id,))
-                    row = cur.fetchone()
-                    if row:
-                        questions.append({
-                            'id': row[0],
-                            'question': row[2],  # question
-                            'options': row[3],   # options
-                            'correct_answer': row[4],  # correct_ans
-                            'explanation': row[5] if len(row) > 5 else '',  # explanation
-                            'hint': row[6] if len(row) > 6 else '',  # hint
-                            'exam_type': 'ege'
-                        })
-        
-        elif exam_type == 'oge':
-            # База данных ОГЭ
-            oge_db_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'shared', 'test_oge.db')
-            if os.path.exists(oge_db_path):
-                with sqlite3.connect(oge_db_path) as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT * FROM tests WHERE id = ?", (q_id,))
-                    row = cur.fetchone()
-                    if row:
-                        questions.append({
-                            'id': row[0],
-                            'question': row[2],  # question
-                            'options': row[3],   # options
-                            'correct_answer': row[4],  # correct_ans
-                            'explanation': row[5] if len(row) > 5 else '',  # explanation
-                            'hint': row[6] if len(row) > 6 else '',  # hint
-                            'exam_type': 'oge'
-                        })
+        try:
+            if exam_type == 'ege':
+                from bot.services.test_sql import get_question_with_image as get_ege_question
+                q = get_ege_question(int(q_id))
+            elif exam_type == 'oge':
+                from bot.services.test_sql_oge import get_question_with_image as get_oge_question
+                q = get_oge_question(int(q_id))
+            else:
+                q = None
+            
+            if q:
+                questions.append({
+                    'id': q.get('id'),
+                    'question': q.get('question', ''),
+                    'options': q.get('options', ''),
+                    'correct_answer': q.get('correct_answer', ''),
+                    'explanation': q.get('explanation', ''),
+                    'hint': q.get('hint', ''),
+                    'exam_type': exam_type,
+                    'image': q.get('image'),
+                    'images': q.get('images')
+                })
+        except Exception as e:
+            from bot.utils_pkg_new.logger import log_error
+            log_error(e, f"Failed to load question {q_id} for exam_type {exam_type}", user_id=user_id)
     
     if not questions:
         await cb.message.answer("❌ Не удалось загрузить вопросы.")
@@ -1142,16 +1130,57 @@ async def start_group_question(cb: CallbackQuery, user_id: int):
     
     # Кнопки управления
     keyboard.append([InlineKeyboardButton(text="⏹️ Завершить", callback_data="stop_group_test")])
+    kb_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    msg = await cb.message.answer(
-        question_text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
-    
-    # Сохраняем ID сообщения с вопросом
-    if user_id in user_test_state:
-        user_test_state[user_id]['question_msg_id'] = msg.message_id
+    # Отправляем изображение(я), если есть, как в обычных тестах
+    try:
+        if question.get('image') or question.get('images'):
+            from aiogram.types import BufferedInputFile, InputMediaPhoto
+            # Одно изображение
+            if question.get('image'):
+                image_bytes = question['image']['data']
+                photo_file = BufferedInputFile(
+                    file=image_bytes,
+                    filename=question['image'].get('filename', 'question.png')
+                )
+                sent_q = await cb.message.answer_photo(
+                    photo=photo_file,
+                    caption=question_text,
+                    parse_mode="HTML",
+                    reply_markup=kb_markup
+                )
+            else:
+                # Несколько изображений
+                photo_files = []
+                for img in question.get('images', []):
+                    photo_files.append(BufferedInputFile(file=img['data'], filename=img.get('filename', 'question.png')))
+                media_group = []
+                media_group.append(InputMediaPhoto(media=photo_files[0], caption=question_text, parse_mode="HTML"))
+                for pf in photo_files[1:]:
+                    media_group.append(InputMediaPhoto(media=pf))
+                sent_messages = await cb.message.answer_media_group(media_group)
+                sent_q = sent_messages[0]
+                # Клавиатура отдельным сообщением
+                sent_kb = await cb.message.answer("Выберите действие:", reply_markup=kb_markup)
+                message_manager.add_message(user_id, sent_kb.message_id)
+        else:
+            sent_q = await cb.message.answer(
+                question_text,
+                parse_mode="HTML",
+                reply_markup=kb_markup
+            )
+        # Сохраняем ID сообщения с вопросом
+        if user_id in user_test_state:
+            user_test_state[user_id]['question_msg_id'] = sent_q.message_id
+    except Exception:
+        # Фоллбек на текст
+        sent_q = await cb.message.answer(
+            question_text,
+            parse_mode="HTML",
+            reply_markup=kb_markup
+        )
+        if user_id in user_test_state:
+            user_test_state[user_id]['question_msg_id'] = sent_q.message_id
 
 
 async def finish_group_test(cb: CallbackQuery, user_id: int):
@@ -1309,12 +1338,33 @@ async def start_group_question_text(m: types.Message, user_id: int):
     keyboard = [
         [InlineKeyboardButton(text="⏹️ Завершить", callback_data="stop_group_test")]
     ]
+    kb_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    await m.answer(
-        question_text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+    # Отправка изображения(ий), если есть
+    try:
+        if question.get('image') or question.get('images'):
+            from aiogram.types import BufferedInputFile, InputMediaPhoto
+            if question.get('image'):
+                image_bytes = question['image']['data']
+                photo_file = BufferedInputFile(
+                    file=image_bytes,
+                    filename=question['image'].get('filename', 'question.png')
+                )
+                await m.answer_photo(photo=photo_file, caption=question_text, parse_mode="HTML", reply_markup=kb_markup)
+            else:
+                photo_files = []
+                for img in question.get('images', []):
+                    photo_files.append(BufferedInputFile(file=img['data'], filename=img.get('filename', 'question.png')))
+                media_group = [InputMediaPhoto(media=photo_files[0], caption=question_text, parse_mode="HTML")]
+                for pf in photo_files[1:]:
+                    media_group.append(InputMediaPhoto(media=pf))
+                await m.answer_media_group(media_group)
+                # Клавиатура отдельным сообщением
+                await m.answer("Выберите действие:", reply_markup=kb_markup)
+        else:
+            await m.answer(question_text, parse_mode="HTML", reply_markup=kb_markup)
+    except Exception:
+        await m.answer(question_text, parse_mode="HTML", reply_markup=kb_markup)
 
 
 async def finish_group_test_text(m: types.Message, user_id: int):

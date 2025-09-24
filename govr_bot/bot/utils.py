@@ -130,14 +130,23 @@ def get_prepared_lecture(topic, idx):
     """
     import sqlite3
 
-    with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
-        c = conn.cursor()
-        c.execute(
-            "SELECT lecture FROM prepared_lectures WHERE topic=? AND chunk_idx=?",
-            (topic, idx),
-        )
-        row = c.fetchone()
-        return row[0] if row else None
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            # Проверяем, существует ли таблица
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='prepared_lectures'")
+            if not c.fetchone():
+                return None
+            
+            c.execute(
+                "SELECT lecture FROM prepared_lectures WHERE topic=? AND chunk_idx=?",
+                (topic, idx),
+            )
+            row = c.fetchone()
+            return row[0] if row else None
+    except Exception:
+        # Если база данных недоступна или повреждена, возвращаем None
+        return None
 
 
 def ensure_chunk_title_column() -> None:
@@ -325,12 +334,21 @@ def get_prepared_chunks_count(topic: str) -> int:
     """
     import sqlite3
 
-    with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
-        c = conn.cursor()
-        c.execute("SELECT MAX(chunk_idx) FROM prepared_lectures WHERE topic=?", (topic,))
-        row = c.fetchone()
-        if row and row[0] is not None:
-            return int(row[0]) + 1
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            # Проверяем, существует ли таблица
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='prepared_lectures'")
+            if not c.fetchone():
+                return 0
+            
+            c.execute("SELECT MAX(chunk_idx) FROM prepared_lectures WHERE topic=?", (topic,))
+            row = c.fetchone()
+            if row and row[0] is not None:
+                return int(row[0]) + 1
+            return 0
+    except Exception:
+        # Если база данных недоступна или повреждена, возвращаем 0
         return 0
 
 
@@ -341,20 +359,29 @@ def get_audio_from_db(topic: str, chunk_idx: int) -> tuple[bytes, str, int] | No
     """
     import sqlite3
 
-    with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
-        c = conn.cursor()
-        c.execute(
-            """
-            SELECT tts_audio, tts_audio_format, duration_ms 
-            FROM prepared_lectures 
-            WHERE topic=? AND chunk_idx=? AND tts_audio IS NOT NULL AND tts_audio != ''
-            """,
-            (topic, chunk_idx),
-        )
-        row = c.fetchone()
-        if row:
-            audio_blob, audio_format, duration_ms = row
-            return audio_blob, (audio_format or 'ogg'), int(duration_ms or 0)
+    try:
+        with sqlite3.connect(PREPARED_LECTURES_DB) as conn:
+            c = conn.cursor()
+            # Проверяем, существует ли таблица
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='prepared_lectures'")
+            if not c.fetchone():
+                return None
+            
+            c.execute(
+                """
+                SELECT tts_audio, tts_audio_format, duration_ms 
+                FROM prepared_lectures 
+                WHERE topic=? AND chunk_idx=? AND tts_audio IS NOT NULL AND tts_audio != ''
+                """,
+                (topic, chunk_idx),
+            )
+            row = c.fetchone()
+            if row:
+                audio_blob, audio_format, duration_ms = row
+                return audio_blob, (audio_format or 'ogg'), int(duration_ms or 0)
+            return None
+    except Exception:
+        # Если база данных недоступна или повреждена, возвращаем None
         return None
 
 
