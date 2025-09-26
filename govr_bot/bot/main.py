@@ -27,7 +27,7 @@ from bot.handlers.flashcards import router as flashcards_router
 from bot.handlers.billing import router as billing_router
 from bot.services.plan import init_billing_tables
 from bot.handlers.admin import router as admin_router
-# from bot.handlers.giveaway import router as giveaway_router  # Розыгрыш - закомментировано
+# from bot.handlers.giveaway import router as giveaway_router  # Розыгрыш отключен
 
 # --- Конфиг и токен ---
 from dotenv import load_dotenv
@@ -113,13 +113,14 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="report", description="Получить отчёт"),
         BotCommand(command="resume", description="Продолжить курс"),
         BotCommand(command="tests", description="Пройти тесты"),
-        # BotCommand(command="giveaway", description="🎁 Участвовать в розыгрыше"),  # Розыгрыш - закомментировано
+        # BotCommand(command="giveaway", description="🎁 Участвовать в розыгрыше"),  # Розыгрыш отключен
         BotCommand(command="stats", description="📊 Статистика бота (админ)"),
         BotCommand(command="stats_clean", description="📊 Статистика без админов (админ)"),
         BotCommand(command="help_admin", description="🛠️ Справка по админским командам"),
         BotCommand(command="retention_week", description="📈 Удержание за неделю (админ)"),
-        # BotCommand(command="giveaway_stats", description="🎁 Статистика розыгрыша (админ)"),  # Розыгрыш - закомментировано
-        # BotCommand(command="giveaway_draw", description="🎊 Провести розыгрыш (админ)"),  # Розыгрыш - закомментировано
+        # BotCommand(command="giveaway_stats", description="🎁 Статистика розыгрыша (админ)"),  # Розыгрыш отключен
+        # BotCommand(command="giveaway_draw", description="🎊 Провести розыгрыш (админ)"),      # Розыгрыш отключен
+        # BotCommand(command="giveaway_draw_today", description="🎊 Розыгрыш среди сегодняшних (админ)"),  # Розыгрыш отключен
     ]
     
     max_retries = 1  # Только одна попытка для быстрого запуска
@@ -169,7 +170,7 @@ async def main():
     dp_instance.include_router(tests_oge.router) # ОГЭ тесты
     dp_instance.include_router(flashcards_router)
     dp_instance.include_router(admin_router)     # Админские команды
-    # dp_instance.include_router(giveaway_router)  # Розыгрыш - закомментировано
+    # dp_instance.include_router(giveaway_router)  # Розыгрыш отключен
 
     # --- Установка команд (не критично, если не получится) ---
     print("🔧 Устанавливаем команды бота...")

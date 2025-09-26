@@ -3,9 +3,8 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 def get_teacher_keyboard():
     kb = [
         [KeyboardButton(text="👨‍🎓 Ученики онлайн"), KeyboardButton(text="📈 Успеваемость")],
-        [KeyboardButton(text="🛠 Управление заданиями"), KeyboardButton(text="👥 Добавить в группу")],
-        [KeyboardButton(text="✅ Ученики в группе"), KeyboardButton(text="📚 Управление группами")],
-        [KeyboardButton(text="📣 Статистика рекламы")]
+        [KeyboardButton(text="🛠 Управление заданиями"), KeyboardButton(text="👥 Добавить ученика")],
+        [KeyboardButton(text="📚 Управление группами")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -257,9 +256,10 @@ def get_students_keyboard(
                 text=("🔎 Поиск" if not has_search else "🔎 Поиск: вкл"),
                 callback_data="students_search"
             ),
+            # Если сейчас идёт поиск — показываем Сброс, иначе — быстрый переход к списку учеников в группе
             InlineKeyboardButton(
-                text=("🧹 Сброс" if has_search else "↻ Обновить"),
-                callback_data="students_clear"
+                text=("🧹 Сброс" if has_search else "✅ Ученики в группе"),
+                callback_data=("students_clear" if has_search else "students_show_group_only")
             ),
         ]
         if show_only_not_in_group_toggle:

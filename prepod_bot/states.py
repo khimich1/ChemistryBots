@@ -23,3 +23,7 @@ class WorkGroups(StatesGroup):
     waiting_tasks_title = State()
     waiting_tasks_exam = State()
     waiting_tasks_ids = State()
+
+
+class ReportSearch(StatesGroup):
+    waiting_query = State()

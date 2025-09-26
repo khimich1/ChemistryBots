@@ -1,6 +1,7 @@
 from aiogram import Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import StateFilter
 
 from keyboards import get_manage_tasks_keyboard, get_teacher_keyboard
 from services.tasks import (
@@ -13,13 +14,15 @@ from states import EditTask
 
 router = Router()
 
-@router.message(lambda m: m.text == "🛠 Управление заданиями")
-async def manage_tasks_menu(message: types.Message):
+@router.message(StateFilter('*'), lambda m: m.text == "🛠 Управление заданиями")
+async def manage_tasks_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("Выберите действие:", reply_markup=get_manage_tasks_keyboard())
 
 
-@router.message(lambda m: m.text == "⬅️ Назад")
-async def manage_back(message: types.Message):
+@router.message(StateFilter('*'), lambda m: m.text == "⬅️ Назад")
+async def manage_back(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("Главное меню:", reply_markup=get_teacher_keyboard())
 
 
