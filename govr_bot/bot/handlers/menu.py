@@ -740,8 +740,8 @@ async def back_from_instructions(cb: CallbackQuery):
     message_manager.add_message(cb.from_user.id, sent.message_id)
     await cb.answer()
 
-# ==== Обработчик кнопки розыгрыша ====
-# @router.message(lambda m: (m.text or "").strip() == "🎁 Розыгрыш")  # Розыгрыш - закомментировано
+# ==== Обработчик кнопки розыгрыша (отключен) ====
+# @router.message(lambda m: (m.text or "").strip() == "🎁 Розыгрыш")
 # async def giveaway_button_handler(m: types.Message):
 #     """Обработчик кнопки розыгрыша в главном меню"""
 #     from bot.handlers.giveaway import register_for_giveaway

@@ -63,8 +63,8 @@ async def register_for_giveaway(message: Message):
             await message.answer(
                 "🎉 Поздравляем! Ты зарегистрирован в розыгрыше!\n\n"
                 "🎁 <b>Призы:</b>\n"
-                "• 20 таблиц Менделеева\n"
-                "• 2 подписки 'Полный доступ'\n\n"
+                "• 15 таблиц Менделеева\n"
+                "• 1 подписка 'Полный доступ'\n\n"
                 f"👥 Участников: {total_participants}\n\n"
                 "Следи за новостями - скоро объявим победителей! 🏆",
                 parse_mode="HTML"
@@ -133,6 +133,22 @@ async def conduct_giveaway(message: Message):
         return
     
     try:
+        # Параметры розыгрыша из сообщения: /giveaway_draw <подписок> <таблиц>
+        # По умолчанию: 1 подписка и 15 таблиц
+        parts = (message.text or "").split()
+        subs_count = 1
+        tables_count = 15
+        if len(parts) >= 3:
+            try:
+                subs_count = max(0, int(parts[1]))
+                tables_count = max(0, int(parts[2]))
+            except Exception:
+                pass
+        total_needed = subs_count + tables_count
+        if total_needed <= 0:
+            await message.answer("❌ Неверные параметры. Нужно разыграть хотя бы 1 приз.")
+            return
+
         with get_db_connection() as conn:
             c = conn.cursor()
             
@@ -140,21 +156,21 @@ async def conduct_giveaway(message: Message):
             c.execute("SELECT user_id, username, full_name FROM giveaway_participants")
             all_participants = c.fetchall()
             
-            if len(all_participants) < 22:
+            if len(all_participants) < total_needed:
                 await message.answer(
                     f"❌ Недостаточно участников для розыгрыша!\n"
-                    f"Зарегистрировано: {len(all_participants)}, нужно минимум 22"
+                    f"Зарегистрировано: {len(all_participants)}, нужно минимум {total_needed}"
                 )
                 return
             
             # Выбираем случайных победителей
-            winners = random.sample(all_participants, 22)
+            winners = random.sample(all_participants, total_needed)
             
-            # 20 победителей таблицы Менделеева
-            mendeleev_winners = winners[:20]
+            # Победители таблицы Менделеева
+            mendeleev_winners = winners[:tables_count]
             
-            # 2 победителя подписки
-            subscription_winners = winners[20:22]
+            # Победители подписки
+            subscription_winners = winners[tables_count:tables_count + subs_count]
             
             # Отправляем сообщения победителям таблицы Менделеева
             mendeleev_success = 0
@@ -193,14 +209,14 @@ async def conduct_giveaway(message: Message):
 
 👥 <b>Участников:</b> {len(all_participants)}
 
-🏆 <b>Победители таблицы Менделеева ({mendeleev_success}/20):</b>"""
+🏆 <b>Победители таблицы Менделеева ({mendeleev_success}/{tables_count}):</b>"""
             
             for user_id, username, full_name in mendeleev_winners:
                 user_display = f"@{username}" if username else f"ID: {user_id}"
                 name_display = f" ({full_name})" if full_name else ""
                 report_text += f"\n• {user_display}{name_display}"
             
-            report_text += f"\n\n🔥 <b>Победители подписки ({subscription_success}/2):</b>"
+            report_text += f"\n\n🔥 <b>Победители подписки ({subscription_success}/{subs_count}):</b>"
             
             for user_id, username, full_name in subscription_winners:
                 user_display = f"@{username}" if username else f"ID: {user_id}"
@@ -209,5 +225,104 @@ async def conduct_giveaway(message: Message):
             
             await message.answer(report_text, parse_mode="HTML")
             
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при проведении розыгрыша: {str(e)}")
+
+
+@router.message(Command("giveaway_draw_today"))
+async def conduct_giveaway_today(message: Message):
+    """Проводит розыгрыш только среди тех, кто зарегистрировался сегодня"""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ У тебя нет доступа к этой команде")
+        return
+
+    try:
+        # Параметры: /giveaway_draw_today <подписок> <таблиц>, по умолчанию 1 и 15
+        parts = (message.text or "").split()
+        subs_count = 1
+        tables_count = 15
+        if len(parts) >= 3:
+            try:
+                subs_count = max(0, int(parts[1]))
+                tables_count = max(0, int(parts[2]))
+            except Exception:
+                pass
+        total_needed = subs_count + tables_count
+        if total_needed <= 0:
+            await message.answer("❌ Неверные параметры. Нужно разыграть хотя бы 1 приз.")
+            return
+
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            # Выбираем только сегодняшних участников. registered_at хранится как ISO c 'T', заменим на пробел.
+            c.execute(
+                """
+                SELECT user_id, username, full_name
+                FROM giveaway_participants
+                WHERE date(REPLACE(registered_at, 'T', ' ')) = date('now')
+                """
+            )
+            todays_participants = c.fetchall()
+
+            if len(todays_participants) < total_needed:
+                await message.answer(
+                    f"❌ Недостаточно участников, зарегистрированных сегодня!\n"
+                    f"Сегодня: {len(todays_participants)}, нужно минимум {total_needed}"
+                )
+                return
+
+            winners = random.sample(todays_participants, total_needed)
+            mendeleev_winners = winners[:tables_count]
+            subscription_winners = winners[tables_count:tables_count + subs_count]
+
+            mendeleev_success = 0
+            for user_id, username, full_name in mendeleev_winners:
+                try:
+                    await message.bot.send_message(
+                        user_id,
+                        "🎉 <b>ПОЗДРАВЛЯЕМ!</b> 🎉\n\n"
+                        "Ты выиграл таблицу Менделеева в сегодняшнем розыгрыше! 📊⚗️\n\n"
+                        "Скоро с тобой свяжется администратор для получения приза.\n\n"
+                        "Спасибо за участие! 🙏",
+                        parse_mode="HTML"
+                    )
+                    mendeleev_success += 1
+                except Exception:
+                    pass
+
+            subscription_success = 0
+            for user_id, username, full_name in subscription_winners:
+                try:
+                    await message.bot.send_message(
+                        user_id,
+                        "🎉 <b>ПОЗДРАВЛЯЕМ!</b> 🎉\n\n"
+                        "Ты выиграл подписку 'Полный доступ' в сегодняшнем розыгрыше! 🔥✨\n\n"
+                        "Скоро с тобой свяжется администратор для активации подписки.\n\n"
+                        "Спасибо за участие! 🙏",
+                        parse_mode="HTML"
+                    )
+                    subscription_success += 1
+                except Exception:
+                    pass
+
+            report_text = (
+                "🎊 <b>РОЗЫГРЫШ ЗАВЕРШЕН (сегодняшние участники)!</b> 🎊\n\n"
+                f"👥 <b>Участников сегодня:</b> {len(todays_participants)}\n\n"
+                f"🏆 <b>Победители таблицы Менделеева ({mendeleev_success}/{tables_count}):</b>"
+            )
+
+            for user_id, username, full_name in mendeleev_winners:
+                user_display = f"@{username}" if username else f"ID: {user_id}"
+                name_display = f" ({full_name})" if full_name else ""
+                report_text += f"\n• {user_display}{name_display}"
+
+            report_text += f"\n\n🔥 <b>Победители подписки ({subscription_success}/{subs_count}):</b>"
+            for user_id, username, full_name in subscription_winners:
+                user_display = f"@{username}" if username else f"ID: {user_id}"
+                name_display = f" ({full_name})" if full_name else ""
+                report_text += f"\n• {user_display}{name_display}"
+
+            await message.answer(report_text, parse_mode="HTML")
+
     except Exception as e:
         await message.answer(f"❌ Ошибка при проведении розыгрыша: {str(e)}")

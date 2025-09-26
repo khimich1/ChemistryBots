@@ -1,6 +1,6 @@
 from aiogram import Router, types
 import re
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.exceptions import TelegramBadRequest
 from keyboards import (
     get_teacher_keyboard,
@@ -54,9 +54,53 @@ async def cmd_start(message: types.Message):
     )
 
 
-@router.message(lambda m: m.text == "👥 Добавить в группу")
+# ── Прокси-обработчики главного меню (в этом же роутере, чтобы перехватывать раньше state-хендлеров) ─────────
+
+@router.message(StateFilter('*'), lambda m: m.text and "ученики онлайн" in m.text.lower())
+async def proxy_online(message: types.Message, state: FSMContext):
+    """Перенаправляет в раздел онлайн, очищая текущее состояние."""
+    try:
+        await state.clear()
+    except Exception:
+        pass
+    try:
+        from handlers import online as online_handlers  # импорт внутри, чтобы не ловить циклические зависимости при загрузке
+        await online_handlers.online_entry(message, state)
+    except Exception:
+        # Если что-то пошло не так — просто молча игнорируем
+        return
+
+
+@router.message(StateFilter('*'), lambda m: m.text == "📈 Успеваемость")
+async def proxy_report(message: types.Message, state: FSMContext):
+    try:
+        await state.clear()
+    except Exception:
+        pass
+    try:
+        from handlers import report as report_handlers
+        await report_handlers.report_entry(message, state)
+    except Exception:
+        return
+
+
+@router.message(StateFilter('*'), lambda m: m.text == "🛠 Управление заданиями")
+async def proxy_tasks(message: types.Message, state: FSMContext):
+    try:
+        await state.clear()
+    except Exception:
+        pass
+    try:
+        from handlers import add_task as add_task_handlers
+        await add_task_handlers.manage_tasks_menu(message, state)
+    except Exception:
+        return
+
+
+@router.message(StateFilter('*'), lambda m: m.text == "👥 Добавить ученика")
 async def show_students_list(message: types.Message, state: FSMContext):
     """Показывает список всех зарегистрированных учеников"""
+    await state.clear()
     students = get_all_students_with_plans()
     
     if not students:
@@ -82,9 +126,10 @@ async def show_students_list(message: types.Message, state: FSMContext):
     )
 
 
-@router.message(lambda m: m.text == "✅ Ученики в группе")
+@router.message(StateFilter('*'), lambda m: m.text == "✅ Ученики в группе")
 async def show_group_students(message: types.Message, state: FSMContext):
     """Показывает список только тех учеников, кто уже в группе"""
+    await state.clear()
     students = get_all_students_with_plans()
 
     # Отметим статус и отфильтруем
@@ -116,8 +161,9 @@ async def show_group_students(message: types.Message, state: FSMContext):
     )
 
 
-@router.message(lambda m: m.text == "📚 Управление группами")
-async def manage_groups_menu(message: types.Message):
+@router.message(StateFilter('*'), lambda m: m.text == "📚 Управление группами")
+async def manage_groups_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("Выберите действие:", reply_markup=get_manage_groups_keyboard())
 
 
@@ -1063,8 +1109,37 @@ async def students_clear_filters(callback: types.CallbackQuery, state: FSMContex
         await callback.answer()
 
 
-@router.message(lambda m: m.text == "📣 Статистика рекламы")
-async def show_ads_stats(message: types.Message):
+@router.callback_query(lambda c: c.data == "students_show_group_only")
+async def students_show_group_only(callback: types.CallbackQuery, state: FSMContext):
+    """Быстрый переход к списку учеников, уже добавленных в группу (как в кнопке главного меню)."""
+    students = get_all_students_with_plans()
+    for s in students:
+        s["is_in_group"] = is_student_in_group(s["user_id"])
+    students = [s for s in students if s.get("is_in_group")]
+
+    await state.update_data(
+        students=students,
+        only_not_in_group=False,
+        search_query="",
+    )
+
+    keyboard = get_students_keyboard(
+        students, page=1, page_size=30,
+        show_plans=True,
+        has_search=False,
+        only_not_in_group=False,
+        show_controls=True,
+        show_only_not_in_group_toggle=False,
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    finally:
+        await callback.answer()
+
+
+@router.message(StateFilter('*'), lambda m: m.text == "📣 Статистика рекламы")
+async def show_ads_stats(message: types.Message, state: FSMContext):
+    await state.clear()
     rows = get_ad_stats()
     if not rows:
         await message.answer("Пока нет данных по рекламе.")

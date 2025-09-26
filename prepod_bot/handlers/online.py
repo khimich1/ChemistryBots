@@ -1,6 +1,7 @@
 from aiogram import Router, types, Bot
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
 from datetime import datetime
 from html import escape
 import asyncio
@@ -178,8 +179,9 @@ def _build_online_text(viewer_id: int) -> str:
 
 
 @router.message(Command("online"))
-@router.message(lambda m: m.text and "ученики онлайн" in m.text.lower())
-async def online_entry(m: types.Message):
+@router.message(StateFilter('*'), lambda m: m.text and "ученики онлайн" in m.text.lower())
+async def online_entry(m: types.Message, state: FSMContext):
+    await state.clear()
     await m.answer("Раздел «Ученики онлайн».", reply_markup=_practice_kb(m.from_user.id))
     text = _build_online_text(m.from_user.id)
     await m.answer(text, parse_mode="HTML", reply_markup=_online_kb())

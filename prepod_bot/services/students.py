@@ -1097,11 +1097,79 @@ def build_user_oral_text(user_id: int, recent_limit: int = 10) -> str:
     if by_topic_map:
         parts.append("")
         parts.append("<b>По темам:</b>")
-        for topic in sorted(by_topic_map.keys()):
-            t, c = by_topic_map[topic]
-            pct = round((c / t) * 100, 1) if t else 0.0
-            title = escape(topic or "(без темы)")
-            parts.append(f"{title}: {c}/{t} ({pct}%) { _bar(pct) }")
+
+        # Желаемый порядок и группировка разделов
+        ordered_sections: list[tuple[str, list[str]]] = [
+            (
+                "Начала химии",
+                [
+                    "Строение атома",
+                    "Периодический закон",
+                    "Химическая связь",
+                    "Формула вещества",
+                    "Оксиды",
+                    "Основания и амфотерные гидроксиды",
+                    "Кислоты",
+                    "Соли",
+                ],
+            ),
+            (
+                "Химия элементов",
+                [
+                    "ОВР",
+                    "Водород",
+                    "Галогены",
+                    "Кислород",
+                    "Сера",
+                    "Азот и фосфор",
+                    "Углерод и кремний",
+                    "Хром, марганец и алюминий",
+                    "Железо, медь, серебро, цинк",
+                ],
+            ),
+            (
+                "Органическая химия",
+                [
+                    "Алканы",
+                    "Алкены",
+                    "Алкины",
+                    "Альдегиды и кетоны",
+                    "Аминокислоты и белки",
+                    "Амины",
+                    "Арены",
+                    "Именные реакции",
+                    "Карбоновые кислоты и эфиры",
+                    "Применение орг веществ",
+                    "Спирты",
+                    "Углеводы",
+                    "Фенол",
+                    "Циклоалканы и диены",
+                ],
+            ),
+        ]
+
+        # Отрисовываем по разделам в заданном порядке
+        used_topics: set[str] = set()
+        for section_title, topics in ordered_sections:
+            parts.append("")
+            parts.append(f"<u><b>{escape(section_title)}</b></u>")
+            for topic in topics:
+                used_topics.add(topic)
+                t, c = by_topic_map.get(topic, (0, 0))
+                pct = round((c / t) * 100, 1) if t else 0.0
+                title = escape(topic)
+                parts.append(f"{title}: {c}/{t} ({pct}%) { _bar(pct) }")
+
+        # Выведем оставшиеся темы (если есть) в конце, чтобы ничего не потерять
+        remaining = [t for t in sorted(by_topic_map.keys()) if t and t not in used_topics]
+        if remaining:
+            parts.append("")
+            parts.append("<u><b>Прочее</b></u>")
+            for topic in remaining:
+                t, c = by_topic_map.get(topic, (0, 0))
+                pct = round((c / t) * 100, 1) if t else 0.0
+                title = escape(topic)
+                parts.append(f"{title}: {c}/{t} ({pct}%) { _bar(pct) }")
 
     if recent_rows:
         parts.append("")
