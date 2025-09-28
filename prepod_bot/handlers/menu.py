@@ -1,7 +1,9 @@
 from aiogram import Router, types
 import re
 from aiogram.filters import Command, StateFilter
+from aiogram.fsm.state import StatesGroup, State
 from aiogram.exceptions import TelegramBadRequest
+import contextlib
 from keyboards import (
     get_teacher_keyboard,
     get_students_keyboard,
@@ -20,6 +22,8 @@ from keyboards import (
 from services.acquisition import get_ad_stats
 from services.students import get_all_students
 from services.teachers import get_teacher_moniker
+from services.lessons import get_lessons_in_week
+from services.lessons import add_lesson
 from services.groups import (
     add_student_to_group,
     is_student_in_group,
@@ -29,6 +33,8 @@ from services.groups import (
     get_all_group_numbers,
     get_work_group_members,
     broadcast_message_to_group_via_govr,
+    send_message_to_user_via_govr,
+    resolve_user_id_from_target,
     create_group_task,
     list_group_tasks,
     delete_group_task,
@@ -40,8 +46,14 @@ from aiogram.fsm.context import FSMContext
 from config import DEEPLINK_HINT
 from states import StudentsList, WorkGroups
 from services.pdf_export import render_questions_to_pdf
+from keyboards import get_pick_students_for_day_kb
+from datetime import datetime as _dt
 
 router = Router()
+# Локальные состояния для раздела расписания
+class ScheduleStates(StatesGroup):
+    waiting_change_time = State()
+
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -52,6 +64,308 @@ async def cmd_start(message: types.Message):
         f"Здравствуйте, {greeting_name}! Выберите действие:",
         reply_markup=get_teacher_keyboard()
     )
+
+# ── Расписание (локальный календарь) ──────────────────────────────────────────────────────────────────────────────
+
+@router.message(StateFilter('*'), lambda m: m.text == "📅 Расписание")
+async def schedule_entry(message: types.Message, state: FSMContext):
+    """Точка входа в расписание: показываем локальную неделю."""
+    await state.clear()
+    await _show_week_schedule(message, state, tg_id=message.from_user.id)
+
+
+def _unused():
+    pass
+
+
+def _week_inline_kb_unused():
+    return types.InlineKeyboardMarkup(inline_keyboard=[])
+
+
+async def _show_week_schedule(message: types.Message, state: FSMContext, base_date=None, tg_id: int | None = None) -> None:
+    from datetime import date, datetime, time, timedelta
+    # Определяем базовую дату (понедельник нужной недели)
+    today = base_date or date.today()
+    start = today - timedelta(days=today.isoweekday() - 1)
+    week_start = datetime.combine(start, time.min)
+    week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+    target_id = tg_id if tg_id is not None else message.from_user.id
+    extra = get_lessons_in_week(target_id, week_start, week_end)
+    lines: list[str] = []
+    cur = week_start
+    ru_full = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    for _ in range(7):
+        label = f"{ru_full[cur.weekday()]}, {cur.strftime('%d.%m')}"
+        lines.append(f"📅 {label}")
+        day_events = sorted(extra.get(label, []), key=lambda e: e.get("start"))
+        if not day_events:
+            lines.append("  • —")
+        else:
+            for ev in day_events:
+                s = ev.get("start")
+                e = ev.get("end")
+                t1 = s.strftime("%H:%M") if hasattr(s, 'strftime') else "--:--"
+                t2 = e.strftime("%H:%M") if hasattr(e, 'strftime') else "--:--"
+                title = ev.get("title") or "Занятие"
+                lines.append(f"  • {t1}-{t2} — {title}")
+        lines.append("")
+        cur = cur + timedelta(days=1)
+    # не отправляем текст недели сейчас — сначала покажем кнопки, затем текст
+    ru_days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    ru_months = [
+        "ЯНВАРЬ", "ФЕВРАЛЬ", "МАРТ", "АПРЕЛЬ", "МАЙ", "ИЮНЬ",
+        "ИЮЛЬ", "АВГУСТ", "СЕНТЯБРЬ", "ОКТЯБРЬ", "НОЯБРЬ", "ДЕКАБРЬ",
+    ]
+    month_start = ru_months[week_start.month - 1]
+    month_end = ru_months[week_end.month - 1]
+    month_label = month_start if month_start == month_end else f"{month_start}-{month_end}"
+    rows: list[list[types.InlineKeyboardButton]] = []
+    cur = week_start
+    # Навигация по неделям: определим понедельник текущей недели
+    monday_str = start.strftime("%Y-%m-%d")
+    prev_monday = (start - timedelta(days=7)).strftime("%Y-%m-%d")
+    next_monday = (start + timedelta(days=7)).strftime("%Y-%m-%d")
+    rows.append([
+        types.InlineKeyboardButton(text="⬅️", callback_data=f"week:prev:{monday_str}"),
+        types.InlineKeyboardButton(text=month_label, callback_data="noop_month"),
+        types.InlineKeyboardButton(text="➡️", callback_data=f"week:next:{monday_str}"),
+    ])
+    for i in range(7):
+        dow = ru_days[cur.weekday()]
+        day_btn = types.InlineKeyboardButton(text=dow, callback_data="noop_day")
+        num_btn = types.InlineKeyboardButton(text=str(cur.day), callback_data=f"open_day:{cur.strftime('%Y-%m-%d')}")
+        rows.append([day_btn, num_btn])
+        cur = cur + timedelta(days=1)
+    kb = types.InlineKeyboardMarkup(inline_keyboard=rows)
+    # Сначала показываем клавиатуру (без текста), затем текст недели
+    # Telegram требует непустой текст. Используем невидимый символ (U+2063),
+    # чтобы показать только клавиатуру без видимого текста.
+    msg_kb = await message.answer("\u2063", reply_markup=kb)
+    msg_text = await message.answer("\n".join(lines).strip())
+    try:
+        await state.update_data(week_text_msg_id=msg_text.message_id, week_kb_msg_id=msg_kb.message_id)
+    except Exception:
+        pass
+
+
+async def _refresh_week(message: types.Message, state: FSMContext, day: str) -> None:
+    """Перестраивает недельный блок для недели, в которую входит day (YYYY-MM-DD)."""
+    try:
+        base_date = _dt.strptime(day, "%Y-%m-%d").date()
+    except Exception:
+        base_date = None
+    # Почистим предыдущие сообщения недели
+    try:
+        data = await state.get_data()
+        mid_kb = data.get("week_kb_msg_id")
+        mid_text = data.get("week_text_msg_id")
+        if mid_kb:
+            with contextlib.suppress(Exception):
+                await message.bot.delete_message(message.chat.id, int(mid_kb))
+        if mid_text:
+            with contextlib.suppress(Exception):
+                await message.bot.delete_message(message.chat.id, int(mid_text))
+    except Exception:
+        pass
+    await _show_week_schedule(message, state, base_date=base_date, tg_id=message.from_user.id)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("week:"))
+async def on_week_nav(cb: types.CallbackQuery, state: FSMContext):
+    """Перелистывание недель вперёд/назад."""
+    await cb.answer()
+    try:
+        _, direction, monday = cb.data.split(":", 2)
+    except Exception:
+        return
+    from datetime import datetime, timedelta
+    try:
+        base = datetime.strptime(monday, "%Y-%m-%d").date()
+    except Exception:
+        return
+    if direction == "prev":
+        new_base = base - timedelta(days=7)
+    else:
+        new_base = base + timedelta(days=7)
+    # Удалим прошлые сообщения (клавиатуру и текст недели) по сохранённым id
+    try:
+        data = await state.get_data()
+        mid_kb = data.get("week_kb_msg_id")
+        mid_text = data.get("week_text_msg_id")
+        # Удалим сообщение, по которому нажали (на случай несовпадения id)
+        with contextlib.suppress(Exception):
+            await cb.message.delete()
+        if mid_kb:
+            with contextlib.suppress(Exception):
+                await cb.bot.delete_message(cb.message.chat.id, int(mid_kb))
+        if mid_text:
+            with contextlib.suppress(Exception):
+                await cb.bot.delete_message(cb.message.chat.id, int(mid_text))
+        # На всякий случай удалим предыдущее сообщение относительно текущего
+        with contextlib.suppress(Exception):
+            await cb.bot.delete_message(cb.message.chat.id, cb.message.message_id - 1)
+    except Exception:
+        pass
+    # Показать новую неделю и сохранить новые message_id
+    # Передаём tg_id напрямую, иначе в callback message.from_user.id может быть id бота
+    await _show_week_schedule(cb.message, state, base_date=new_base, tg_id=cb.from_user.id)
+
+
+# ── Добавление уроков из инлайн-кнопок недели ──────────────────────────────────────────────────────────────────────
+
+class LessonStates(StatesGroup):
+    waiting_time = State()  # ждём строку времени HH:MM-HH:MM
+    waiting_target = State()  # ждём @username или номер группы
+
+
+@router.callback_query(lambda c: c.data and (c.data.startswith("add_lesson_student:") or c.data.startswith("add_lesson_group:")))
+async def on_add_lesson(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    data = cb.data
+    kind = "student" if data.startswith("add_lesson_student:") else "group"
+    day = data.split(":", 1)[1]
+    await state.update_data(lesson_day=day, lesson_kind=kind)
+    if kind == "student":
+        # покажем список учеников на выбор
+        students = get_all_students()
+        kb = get_pick_students_for_day_kb(students, day=day, page=1)
+        await cb.message.answer("Выберите ученика:", reply_markup=kb)
+        # временно запомним день и что ждём ученика
+        await state.update_data(lesson_day=day, lesson_kind=kind)
+        # состояние для клика по ученику нам не нужно (inline)
+    else:
+        await cb.message.answer(f"Введите время для {day} в формате HH:MM-HH:MM (например, 18:00-19:00):")
+        await state.set_state(LessonStates.waiting_time)
+
+
+@router.message(LessonStates.waiting_time)
+async def on_lesson_time(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    import re
+
+    def parse_range(raw: str) -> tuple[int, int, int, int] | None:
+        # 1) HH:MM-HH:MM или с пробелами вокруг дефиса
+        m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*[- ]\s*(\d{1,2}):(\d{2})\s*$", raw)
+        if m:
+            return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        # 2) HHMM-HHMM или HHMM HHMM
+        m = re.match(r"^\s*(\d{3,4})\s*[- ]\s*(\d{3,4})\s*$", raw)
+        if m:
+            s, e = m.group(1), m.group(2)
+            s_h = int(s[:-2])
+            s_m = int(s[-2:])
+            e_h = int(e[:-2])
+            e_m = int(e[-2:])
+            return s_h, s_m, e_h, e_m
+        # 3) HH MM HH MM
+        parts = [p for p in re.split(r"\s+", raw) if p]
+        if len(parts) == 4 and all(p.isdigit() for p in parts):
+            return int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+        return None
+
+    parsed = parse_range(text)
+    if not parsed:
+        await message.answer("Не распознано. Допустимые форматы: HH:MM-HH:MM, HHMM-HHMM, HHMM HHMM, HH MM HH MM.")
+        return
+    h1, m1, h2, m2 = parsed
+    text_norm = f"{h1:02d}:{m1:02d}-{h2:02d}:{m2:02d}"
+    await state.update_data(lesson_time=text_norm)
+    data = await state.get_data()
+    if (data.get("lesson_kind") == "student"):
+        # Создаём запись сразу, используя выбранного ученика ранее
+        day = data.get("lesson_day")
+        user_id = data.get("lesson_student_id")
+        # Попробуем найти username/label
+        target = f"ID {user_id}"
+        try:
+            students = get_all_students()
+            for s in students:
+                if str(s.get("user_id")) == str(user_id):
+                    uname = (s.get("username") or "").strip()
+                    label = (s.get("label") or s.get("full_name") or "").strip()
+                    if uname:
+                        target = f"@{uname}" if not uname.startswith("@") else uname
+                    elif label:
+                        target = label
+                    break
+        except Exception:
+            pass
+        start_s, end_s = text_norm.split("-", 1)
+        add_lesson(message.from_user.id, day=day, start=start_s, end=end_s, kind="student", target=target)
+        # Уведомим ученика в govr-боте
+        try:
+            uid_int = int(user_id)
+        except Exception:
+            uid_int = None
+        if uid_int:
+            notify_text = f"Вам назначено занятие {day} {start_s}-{end_s}."
+            try:
+                await send_message_to_user_via_govr(uid_int, notify_text)
+            except Exception:
+                pass
+        # Автообновление недельного отображения
+        await _refresh_week(message, state, day)
+        await message.answer("✅ Урок добавлен.")
+        await state.set_state(None)
+        return
+    else:
+        await message.answer("Для какой группы урок? Отправьте номер группы (например, 101):")
+        await state.set_state(LessonStates.waiting_target)
+
+
+@router.message(LessonStates.waiting_target)
+async def on_lesson_target(message: types.Message, state: FSMContext):
+    target = (message.text or "").strip()
+    data = await state.get_data()
+    day = data.get("lesson_day")
+    kind = data.get("lesson_kind")
+    time_str = data.get("lesson_time")
+    try:
+        start, end = [t.strip() for t in time_str.split("-", 1)]
+    except Exception:
+        await message.answer("Ошибка времени. Начните заново: нажмите кнопку добавления ещё раз.")
+        await state.set_state(None)
+        return
+
+    # Простая валидация цели
+    if kind == "student" and not target.startswith("@"):
+        await message.answer("Для ученика отправьте @username (например, @ivan). Попробуйте ещё раз:")
+        return
+    if kind == "group":
+        target = target.lstrip("# ")
+
+    add_lesson(message.from_user.id, day=day, start=start, end=end, kind=kind, target=target)
+    # Автообновим недельный вид на соответствующей неделе
+    await _refresh_week(message, state, day)
+    await message.answer("✅ Урок добавлен.")
+    await state.set_state(None)
+
+
+@router.callback_query(lambda c: c.data and (c.data.startswith("pick_lesson_student:") or c.data.startswith("pick_lesson_student_page:")))
+async def on_pick_student(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    if cb.data.startswith("pick_lesson_student_page:"):
+        try:
+            _, day, page = cb.data.split(":", 2)
+            page = int(page)
+        except Exception:
+            return
+        students = get_all_students()
+        kb = get_pick_students_for_day_kb(students, day=day, page=page)
+        try:
+            await cb.message.edit_reply_markup(reply_markup=kb)
+        except Exception:
+            await cb.message.answer("Выберите ученика:", reply_markup=kb)
+        return
+
+    # Выбор конкретного ученика
+    try:
+        _, day, user_id = cb.data.split(":", 2)
+    except Exception:
+        return
+    await state.update_data(lesson_day=day, lesson_kind="student", lesson_student_id=user_id)
+    await cb.message.answer(f"Введите время для {day} в формате HH:MM-HH:MM (например, 18:00-19:00):")
+    await state.set_state(LessonStates.waiting_time)
 
 
 # ── Прокси-обработчики главного меню (в этом же роутере, чтобы перехватывать раньше state-хендлеров) ─────────
@@ -231,6 +545,249 @@ async def wg_broadcast_text(message: types.Message, state: FSMContext):
     await message.answer(f"Отправлено: {ok}. Ошибок: {fail}.")
     await state.set_state(None)
 
+
+@router.callback_query(lambda c: c.data and c.data.startswith("open_day:"))
+async def on_open_day(cb: types.CallbackQuery, state: FSMContext):
+    """Открывает карточку дня: показывает дату, существующие занятия и кнопку Добавить."""
+    await cb.answer()
+    day = cb.data.split(":", 1)[1]
+    # Список уже назначенных уроков этого преподавателя
+    from services.lessons import list_lessons_by_day
+    lessons = list_lessons_by_day(cb.from_user.id, day=day)
+    # Текст заголовка
+    from datetime import datetime, date
+    d = datetime.strptime(day, "%Y-%m-%d")
+    header = d.strftime("%A, %d %B").capitalize()
+    lines = [f"<b>{header}</b>"]
+
+    # Наши локальные уроки
+    for l in lessons:
+        who = (l.get("target") or "").strip()
+        if l.get("kind") == "group":
+            title = f"Группа {who}"
+        else:
+            title = who or "Ученик"
+        lines.append(f"• {l.get('start')}-{l.get('end')} — {title}")
+    if len(lines) == 1:
+        lines.append("— занятий нет")
+    # Клавиатура: на каждое занятие — кнопка; плюс Добавить
+    rows: list[list[types.InlineKeyboardButton]] = []
+    # Кнопки для локальных уроков
+    for l in lessons:
+        label = f"{l.get('start')}-{l.get('end')} • {'Гр' if l.get('kind')=='group' else 'Уч'}"
+        rows.append([types.InlineKeyboardButton(text=label, callback_data=f"open_lesson:{l.get('id')}")])
+    rows.append([types.InlineKeyboardButton(text="➕ Добавить занятие", callback_data=f"add_menu:{day}")])
+    rows.append([types.InlineKeyboardButton(text="⬅️ Назад к неделе", callback_data="day_back")])
+    kb = types.InlineKeyboardMarkup(inline_keyboard=rows)
+    await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("open_lesson:"))
+async def on_open_lesson(cb: types.CallbackQuery, state: FSMContext):
+    """Меню действий по занятию: изменить время, написать группе, отменить/удалить."""
+    await cb.answer()
+    try:
+        lesson_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    # Построим клавиатуру действий
+    rows = [
+        [types.InlineKeyboardButton(text="⏱ Изменить время", callback_data=f"lesson_change_time:{lesson_id}")],
+        [types.InlineKeyboardButton(text="✉️ Написать группе", callback_data=f"lesson_broadcast:{lesson_id}")],
+        [types.InlineKeyboardButton(text="🛑 Отменить занятие", callback_data=f"lesson_cancel:{lesson_id}")],
+        [types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"lesson_delete:{lesson_id}")],
+        [types.InlineKeyboardButton(text="⬅️ Назад к неделе", callback_data="day_back")],
+    ]
+    await cb.message.answer("Выберите действие:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("lesson_change_time:"))
+async def on_lesson_change_time(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        lesson_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    await state.update_data(change_lesson_id=lesson_id)
+    await cb.message.answer("Введите время в формате HH:MM-HH:MM:")
+    await state.set_state(ScheduleStates.waiting_change_time)
+
+
+@router.message(ScheduleStates.waiting_change_time)
+async def change_time_input(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    import re
+
+    def parse_range(raw: str) -> tuple[int, int, int, int] | None:
+        # 1) HH:MM-HH:MM или с пробелами вокруг дефиса
+        m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*[- ]\s*(\d{1,2}):(\d{2})\s*$", raw)
+        if m:
+            return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        # 2) HHMM-HHMM или HHMM HHMM
+        m = re.match(r"^\s*(\d{3,4})\s*[- ]\s*(\d{3,4})\s*$", raw)
+        if m:
+            s, e = m.group(1), m.group(2)
+            s_h = int(s[:-2])
+            s_m = int(s[-2:])
+            e_h = int(e[:-2])
+            e_m = int(e[-2:])
+            return s_h, s_m, e_h, e_m
+        # 3) HH MM HH MM
+        parts = [p for p in re.split(r"\s+", raw) if p]
+        if len(parts) == 4 and all(p.isdigit() for p in parts):
+            return int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+        return None
+
+    parsed = parse_range(text)
+    if not parsed:
+        await message.answer("Форматы: HH:MM-HH:MM, HHMM-HHMM, HHMM HHMM, HH MM HH MM")
+        return
+    data = await state.get_data()
+    lesson_id = int(data.get("change_lesson_id") or 0)
+    from services.lessons import update_lesson_time
+    h1, m1, h2, m2 = parsed
+    ok = update_lesson_time(lesson_id, start=f"{h1:02d}:{m1:02d}", end=f"{h2:02d}:{m2:02d}")
+    await message.answer("Время обновлено." if ok else "Не удалось обновить.")
+    await state.set_state(None)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("lesson_delete:"))
+async def on_lesson_delete(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        lesson_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    from services.lessons import delete_lesson, get_lesson_by_id
+    lesson = get_lesson_by_id(lesson_id)
+    ok = delete_lesson(lesson_id)
+    # Если это личное занятие — уведомим ученика
+    if ok and lesson and (lesson.get("kind") == "student"):
+        start = lesson.get("start") or ""
+        end = lesson.get("end") or ""
+        day = lesson.get("day") or ""
+        uid = resolve_user_id_from_target(lesson.get("target") or "")
+        if uid:
+            text = f"Ваше занятие {day} {start}-{end} удалено."
+            try:
+                await send_message_to_user_via_govr(int(uid), text)
+            except Exception:
+                pass
+    await cb.message.answer("Удалено." if ok else "Не удалось удалить.")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("lesson_cancel:"))
+async def on_lesson_cancel(cb: types.CallbackQuery, state: FSMContext):
+    """Отменяет занятие и шлёт уведомление всей группе (если это групповое занятие)."""
+    await cb.answer()
+    try:
+        lesson_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    from services.lessons import delete_lesson, get_lesson_by_id
+    lesson = get_lesson_by_id(lesson_id)
+    ok = delete_lesson(lesson_id)
+    if ok and lesson and (lesson.get("kind") == "group"):
+        # Попробуем разослать уведомление участникам группы
+        try:
+            group_no = int((lesson.get("target") or "").lstrip("# ").strip())
+        except Exception:
+            group_no = 0
+        if group_no:
+            from services.groups import broadcast_message_to_group_via_govr
+            start = lesson.get("start") or ""
+            end = lesson.get("end") or ""
+            day = lesson.get("day") or ""
+            text = f"Внимание! Занятие группы {group_no} {day} {start}-{end} отменено."
+            try:
+                await broadcast_message_to_group_via_govr(group_no, text)
+            except Exception:
+                pass
+    # Уведомление ученику для личного занятия
+    if ok and lesson and (lesson.get("kind") == "student"):
+        start = lesson.get("start") or ""
+        end = lesson.get("end") or ""
+        day = lesson.get("day") or ""
+        uid = resolve_user_id_from_target(lesson.get("target") or "")
+        if uid:
+            text = f"Занятие {day} {start}-{end} отменено."
+            try:
+                await send_message_to_user_via_govr(int(uid), text)
+            except Exception:
+                pass
+    await cb.message.answer("Занятие отменено." if ok else "Не удалось отменить.")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("lesson_broadcast:"))
+async def on_lesson_broadcast(cb: types.CallbackQuery, state: FSMContext):
+    """Открывает существующий механизм рассылки и подставляет номер группы из урока."""
+    await cb.answer()
+    try:
+        lesson_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    from services.lessons import get_lesson_by_id
+    lesson = get_lesson_by_id(lesson_id)
+    if not lesson or (lesson.get("kind") != "group"):
+        await cb.message.answer("Это не групповое занятие или запись не найдена.")
+        return
+    # Извлечём номер группы из target
+    group_str = (lesson.get("target") or "").lstrip("# ").strip()
+    try:
+        group_no = int(group_str)
+    except Exception:
+        await cb.message.answer("Не удалось определить номер группы.")
+        return
+    # Подставим и переключим state на ввод текста
+    await state.update_data(broadcast_group=group_no)
+    await cb.message.answer(f"Группа {group_no} выбрана. Введите текст сообщения:")
+    await state.set_state(WorkGroups.waiting_broadcast_text)
+
+# Удалено: iCal просмотр (open_ics)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("add_menu:"))
+async def on_add_menu(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    day = cb.data.split(":", 1)[1]
+    rows = [
+        [types.InlineKeyboardButton(text="➕ Группа", callback_data=f"add_lesson_group:{day}")],
+        [types.InlineKeyboardButton(text="➕ Ученик", callback_data=f"add_lesson_student:{day}")],
+        [types.InlineKeyboardButton(text="⬅️ Назад к неделе", callback_data="day_back")],
+    ]
+    await cb.message.answer("Что добавить?", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(lambda c: c.data == "day_back")
+async def day_back(cb: types.CallbackQuery, state: FSMContext):
+    """Удаляет все сообщения вниз до сообщения с кнопками недели (оставляем клавиатуру недели)."""
+    await cb.answer()
+    try:
+        data = await state.get_data()
+        kb_id_raw = data.get("week_kb_msg_id")
+        text_id_raw = data.get("week_text_msg_id")
+        kb_id = int(kb_id_raw) if kb_id_raw else None
+        text_id = int(text_id_raw) if text_id_raw else None
+    except Exception:
+        kb_id = None
+        text_id = None
+    chat_id = cb.message.chat.id
+    cur_id = cb.message.message_id
+    # Целимся остановиться ПЕРЕД недельным текстом, чтобы его не удалять.
+    # Если text_id неизвестен — останавливаемся перед клавиатурой.
+    stop_before_id = (text_id + 1) if (text_id and cur_id > text_id) else ((kb_id + 1) if kb_id else None)
+    if stop_before_id and cur_id >= stop_before_id:
+        # Удаляем все сообщения от текущего вниз до stop_before_id (не включая stop_before_id)
+        for mid in range(cur_id, stop_before_id - 1, -1):
+            with contextlib.suppress(Exception):
+                await cb.bot.delete_message(chat_id, mid)
+    else:
+        # Если kb_id неизвестен — просто удалим текущее сообщение
+        with contextlib.suppress(Exception):
+            await cb.message.delete()
+
+
+## Удалено: iCal клонирование событий
 
 @router.callback_query(lambda c: c.data == "wg_add_start")
 async def wg_add_start(callback: types.CallbackQuery, state: FSMContext):

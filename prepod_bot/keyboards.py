@@ -4,7 +4,7 @@ def get_teacher_keyboard():
     kb = [
         [KeyboardButton(text="👨‍🎓 Ученики онлайн"), KeyboardButton(text="📈 Успеваемость")],
         [KeyboardButton(text="🛠 Управление заданиями"), KeyboardButton(text="👥 Добавить ученика")],
-        [KeyboardButton(text="📚 Управление группами")]
+        [KeyboardButton(text="📚 Управление группами"), KeyboardButton(text="📅 Расписание")] 
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -292,3 +292,32 @@ def get_students_keyboard(
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
 
     return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def get_pick_students_for_day_kb(students: list[dict], *, day: str, page: int = 1, page_size: int = 20) -> InlineKeyboardMarkup:
+    """Минимальная клавиатура выбора ученика для указанного дня.
+    callback_data: pick_lesson_student:<day>:<user_id>
+    """
+    total = max(0, len(students))
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    end = min(start + page_size, total)
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for s in students[start:end]:
+        label = s.get("label") or s.get("full_name") or s.get("username") or f"ID {s.get('user_id')}"
+        if len(label) > 28:
+            label = label[:26] + "…"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"pick_lesson_student:{day}:{s.get('user_id')}")])
+
+    if total_pages > 1:
+        prev_page = page - 1 if page > 1 else page
+        next_page = page + 1 if page < total_pages else page
+        rows.append([
+            InlineKeyboardButton(text="⬅️", callback_data=f"pick_lesson_student_page:{day}:{prev_page}"),
+            InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="pick_lesson_student_page:noop"),
+            InlineKeyboardButton(text="➡️", callback_data=f"pick_lesson_student_page:{day}:{next_page}"),
+        ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)

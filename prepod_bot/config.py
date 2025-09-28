@@ -2,6 +2,9 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+_LOCAL_ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_LOCAL_ENV):
+    load_dotenv(_LOCAL_ENV, override=True)
 
 # Абсолютные пути к корню репозитория и каталогу shared
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +29,16 @@ TESTS_DB_OGE = os.getenv("TESTS_DB_OGE") or os.path.join(_SHARED_DIR, "test_oge.
 
 # Путь к базе пользователей (регистрируется через admin_bot, таблица teacher)
 # По умолчанию shared/users.db рядом с репозиторием
-USERS_DB = os.getenv("USERS_DB") or os.path.join(_SHARED_DIR, "users.db")
+def _clean_path(value: str | None) -> str | None:
+    if not value:
+        return value
+    v = value.strip().strip('"').strip("'")
+    return v
+
+USERS_DB = _clean_path(os.getenv("USERS_DB")) or os.path.join(_SHARED_DIR, "users.db")
+
+# Локальный календарь (по просьбе сделать полностью локальным)
+CALENDAR_DB = _clean_path(os.getenv("CALENDAR_DB")) or os.path.join(_SHARED_DIR, "calendar.db")
 
 ONLINE_WINDOW_MINUTES = int(os.getenv("ONLINE_WINDOW_MINUTES", 10))
 

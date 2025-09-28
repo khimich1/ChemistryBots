@@ -4,7 +4,8 @@ from aiogram.exceptions import TelegramBadRequest
 from typing import Callable, Dict, Any, Awaitable
 import sqlite3
 import os
-from config import USERS_DB, ADMIN_IDS
+from config import USERS_DB, ADMIN_IDS, DB_PATH
+from services.teachers import get_teacher_moniker
 
 class AdminCheckMiddleware(BaseMiddleware):
     async def __call__(
@@ -36,8 +37,16 @@ class AdminCheckMiddleware(BaseMiddleware):
             except Exception:
                 return False
 
+        # 1) Прямой запрос в teacher по пути из .env (prepod_bot)
+        if USERS_DB and os.path.exists(USERS_DB) and _exists_in_teacher(USERS_DB):
+            return await handler(event, data)
+        # 1b) Также поддержим teacher в базе ответов (test_answers.db)
+        if DB_PATH and os.path.exists(DB_PATH) and _exists_in_teacher(DB_PATH):
+            return await handler(event, data)
+        # 2) Мягкая проверка через сервис teacher (если схема отличается)
         try:
-            if USERS_DB and os.path.exists(USERS_DB) and _exists_in_teacher(USERS_DB):
+            moniker = get_teacher_moniker(int(user_id))
+            if moniker is not None:
                 return await handler(event, data)
         except Exception:
             pass

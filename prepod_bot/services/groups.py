@@ -3,6 +3,15 @@ from typing import List, Dict, Any
 import os
 from config import DB_PATH, TESTS_DB_EGE, TESTS_DB_OGE
 from services.students import get_all_students
+from typing import Optional
+
+
+def _project_root() -> str:
+    """Возвращает абсолютный путь к корню репозитория ChemistryBots.
+    Файл находится в prepod_bot/services → нужно подняться на три уровня до корня,
+    где лежат папки prepod_bot, govr_bot и т.д.
+    """
+    return os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 
 def _ensure_groups_table(conn: sqlite3.Connection) -> None:
@@ -170,7 +179,7 @@ def find_user_id_by_username(username: str) -> int | None:
 
     # govr_bot
     import os
-    repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    repo_root = _project_root()
     govr_db_file = os.path.join(repo_root, "govr_bot", "bot", "services", "answers.db")
     try:
         with sqlite3.connect(govr_db_file) as gconn:
@@ -221,24 +230,39 @@ async def broadcast_message_to_group_via_govr(group_no: int, text: str) -> tuple
         or os.getenv("BOT_TOKEN_govr")
         or os.getenv("BOT_TOKEN_GOVR")
         or os.getenv("GOVR_BOT_TOKEN")
+        or os.getenv("BOT_TOKEN")  # добавим основной токен
     )
+    
+    print(f"[DEBUG] broadcast: Переменные окружения: BOT_TOKEN={'***' if os.getenv('BOT_TOKEN') else 'НЕТ'}, "
+          f"GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}")
+    
     if not token:
+        print(f"[DEBUG] broadcast: Токен не найден в переменных окружения, проверяем .env файл")
         # Попробуем прочитать .env govr_bot и взять ключ BOT_TOKEN_govor / BOT_TOKEN
         try:
             from dotenv import dotenv_values
-            repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+            repo_root = _project_root()
             env_path = os.path.join(repo_root, "govr_bot", ".env")
-            vals = dotenv_values(env_path)
-            if vals:
-                token = (
-                    vals.get("BOT_TOKEN_govor")
-                    or vals.get("BOT_TOKEN_GOVOR")
-                    or vals.get("BOT_TOKEN")
-                )
-        except Exception:
+            print(f"[DEBUG] broadcast: Ищем .env по пути: {env_path}")
+            if os.path.exists(env_path):
+                vals = dotenv_values(env_path)
+                print(f"[DEBUG] broadcast: .env файл найден, ключи: {list(vals.keys()) if vals else 'пустой'}")
+                if vals:
+                    token = (
+                        vals.get("BOT_TOKEN_govor")
+                        or vals.get("BOT_TOKEN_GOVOR")
+                        or vals.get("BOT_TOKEN")
+                    )
+            else:
+                print(f"[DEBUG] broadcast: .env файл НЕ найден по пути: {env_path}")
+        except Exception as e:
+            print(f"[DEBUG] broadcast: Ошибка при чтении .env: {e}")
             token = None
 
+    print(f"[DEBUG] broadcast: Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'}")
+    
     if not token:
+        print(f"[DEBUG] broadcast: Токен не найден, отправка невозможна")
         return 0, len(get_work_group_members(group_no))
 
     user_ids = get_work_group_members(group_no)
@@ -250,9 +274,20 @@ async def broadcast_message_to_group_via_govr(group_no: int, text: str) -> tuple
     fail = 0
     for uid in user_ids:
         try:
+            # Проверяем, есть ли пользователь в базе test_answers
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT 1 FROM test_answers WHERE user_id = ? LIMIT 1", (uid,))
+                if not cur.fetchone():
+                    print(f"[DEBUG] broadcast: Пользователь {uid} не найден в базе, пропускаем")
+                    fail += 1
+                    continue
+            
             await bot.send_message(uid, text)
+            print(f"[DEBUG] broadcast: Сообщение отправлено пользователю {uid}")
             ok += 1
-        except Exception:
+        except Exception as e:
+            print(f"[DEBUG] broadcast: Ошибка отправки пользователю {uid}: {e}")
             fail += 1
             continue
     try:
@@ -260,6 +295,124 @@ async def broadcast_message_to_group_via_govr(group_no: int, text: str) -> tuple
     except Exception:
         pass
     return ok, fail
+
+
+# ===============
+# Notifications to a single user via govr_bot
+# ===============
+
+def _extract_username(target: str) -> Optional[str]:
+    t = (target or "").strip()
+    if not t:
+        return None
+    # Accept forms: @username, username, "Урок: @username", etc.
+    if "@" in t:
+        # take last token with @
+        parts = [p for p in t.replace("\n", " ").split(" ") if p]
+        for p in parts[::-1]:
+            if p.startswith("@"):
+                return p[1:]
+    # if looks like username without @
+    if t and t[0].isalnum():
+        return t.lstrip("# ")
+    return None
+
+
+def resolve_user_id_from_target(target: str) -> Optional[int]:
+    """Пытается получить user_id по полю target из занятия.
+    Поддерживает варианты:
+      - "@username"
+      - "ID 123456"
+      - произвольная подпись, содержащая @username
+    Возвращает int или None.
+    """
+    # 1) Явный ID
+    import re
+    t = (target or "").strip()
+    m = re.search(r"\bID\s*(\d+)\b", t, flags=re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            pass
+    # 2) Username
+    uname = _extract_username(t)
+    if uname:
+        return find_user_id_by_username(uname)
+    return None
+
+
+async def send_message_to_user_via_govr(user_id: int, text: str) -> bool:
+    """Отправляет одно сообщение пользователю через govr_bot. Возвращает True при успехе.
+    Ищет токен так же, как broadcast_message_to_group_via_govr.
+    """
+    try:
+        from aiogram import Bot
+    except Exception:
+        return False
+
+    token = (
+        os.getenv("BOT_TOKEN_govor")
+        or os.getenv("BOT_TOKEN_GOVOR")
+        or os.getenv("BOT_TOKEN_govr")
+        or os.getenv("BOT_TOKEN_GOVR")
+        or os.getenv("GOVR_BOT_TOKEN")
+        or os.getenv("BOT_TOKEN")  # добавим основной токен
+    )
+    
+    print(f"[DEBUG] Переменные окружения: BOT_TOKEN={'***' if os.getenv('BOT_TOKEN') else 'НЕТ'}, "
+          f"GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}")
+    
+    if not token:
+        print(f"[DEBUG] Токен не найден в переменных окружения, проверяем .env файл")
+        try:
+            from dotenv import dotenv_values
+            repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+            env_path = os.path.join(repo_root, "govr_bot", ".env")
+            print(f"[DEBUG] Ищем .env по пути: {env_path}")
+            if os.path.exists(env_path):
+                vals = dotenv_values(env_path)
+                print(f"[DEBUG] .env файл найден, ключи: {list(vals.keys()) if vals else 'пустой'}")
+                if vals:
+                    token = (
+                        vals.get("BOT_TOKEN_govor")
+                        or vals.get("BOT_TOKEN_GOVOR")
+                        or vals.get("BOT_TOKEN")
+                    )
+            else:
+                print(f"[DEBUG] .env файл НЕ найден по пути: {env_path}")
+        except Exception as e:
+            print(f"[DEBUG] Ошибка при чтении .env: {e}")
+            token = None
+    
+    print(f"[DEBUG] Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'}")
+    
+    if not token:
+        print(f"[DEBUG] Токен не найден, отправка невозможна")
+        return False
+
+    # Проверяем, есть ли пользователь в базе test_answers
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM test_answers WHERE user_id = ? LIMIT 1", (int(user_id),))
+        if not cur.fetchone():
+            print(f"[DEBUG] Пользователь {user_id} не найден в базе, отправка невозможна")
+            return False
+
+    bot = Bot(token=token)
+    try:
+        print(f"[DEBUG] Отправляем сообщение user_id={user_id}: {text}")
+        await bot.send_message(int(user_id), text)
+        print(f"[DEBUG] Сообщение отправлено успешно")
+        ok = True
+    except Exception as e:
+        print(f"[DEBUG] Ошибка отправки: {e}")
+        ok = False
+    try:
+        await bot.session.close()
+    except Exception:
+        pass
+    return ok
 
 def get_all_students_with_plans() -> List[Dict[str, Any]]:
     """
@@ -272,7 +425,7 @@ def get_all_students_with_plans() -> List[Dict[str, Any]]:
 
     # Чтение тарифов из govr_bot
     import os
-    repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    repo_root = _project_root()
     govr_db_file = os.path.join(repo_root, "govr_bot", "bot", "services", "answers.db")
 
     user_plans: Dict[int, str] = {}
