@@ -39,6 +39,20 @@ def _load_fallback_font(size: int) -> ImageFont.ImageFont:
     # В крайнем случае — системный дефолтный
     return ImageFont.load_default()
 
+# Unicode-наборы нижних/верхних индексов
+_SUB_CHARS = set("₀₁₂₃₄₅₆₇₈₉")
+_SUP_CHARS = set("⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻")
+# Отображение юникод‑индексов в ASCII‑символы для надёжного рендера даже без глифов
+_SUB_MAP = {
+    "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
+    "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9",
+}
+_SUP_MAP = {
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
+    "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+    "⁺": "+", "⁻": "-",
+}
+
 
 def render_questions_to_pdf(output_path: str, pages: List[dict]) -> str:
     """Рендерит список страниц в горизонтальный PDF.
@@ -74,47 +88,83 @@ def render_questions_to_pdf(output_path: str, pages: List[dict]) -> str:
         state["draw"] = ImageDraw.Draw(c)
 
     def _draw_with_sub_sup(draw: ImageDraw.ImageDraw, text: str, x: int, y: int, base_font: ImageFont.ImageFont) -> None:
-        """Рисует строку, заменяя последовательности вида H2SO4 на H₂SO₄ с фолбэк‑шрифтом.
-        Только цифры после буквы считаются нижним индексом; цифры после ^ — верхним индексом.
+        """Рисует строку, учитывая индексы.
+        - H2SO4 → H₂SO₄ (цифры после буквы/)] — нижний индекс)
+        - ^2, ^- → верхний индекс
+        - Уже готовые символы юникод-индексов (₀…₉, ⁰…⁹⁺⁻) рисуются фолбэк‑шрифтом со смещением.
         """
-        # Фолбэк для индексов
-        sub_font = _load_fallback_font(int(getattr(base_font, 'size', 18) * 0.85))
-        sup_font = _load_fallback_font(int(getattr(base_font, 'size', 18) * 0.8))
+        base_size = int(getattr(base_font, 'size', 18))
+        # Более естественные пропорции индексов
+        sub_font = _load_fallback_font(int(base_size * 0.70))
+        sup_font = _load_fallback_font(int(base_size * 0.70))
+        sub_dy = int(base_size * 0.42)
+        sup_dy = int(base_size * 0.45)
         i = 0
         cx = x
         while i < len(text):
             ch = text[i]
+
+            # Уже готовые верхние/нижние индексы (юникод) — рисуем ASCII-эквивалентом
+            if ch in _SUP_CHARS:
+                ascii_ch = _SUP_MAP.get(ch, ch)
+                draw.text((cx, y - sup_dy), ascii_ch, font=sup_font, fill=(0, 0, 0))
+                cx += draw.textlength(ascii_ch, font=sup_font)
+                i += 1
+                continue
+            if ch in _SUB_CHARS:
+                ascii_ch = _SUB_MAP.get(ch, ch)
+                draw.text((cx, y + sub_dy), ascii_ch, font=sub_font, fill=(0, 0, 0))
+                cx += draw.textlength(ascii_ch, font=sub_font)
+                i += 1
+                continue
+
             # Верхние индексы после '^'
             if ch == '^' and i + 1 < len(text) and text[i+1].isdigit():
                 i += 1
                 while i < len(text) and text[i].isdigit():
-                    draw.text((cx, y - int(getattr(base_font, 'size', 18) * 0.35)), text[i], font=sup_font, fill=(0, 0, 0))
+                    draw.text((cx, y - sup_dy), text[i], font=sup_font, fill=(0, 0, 0))
                     cx += draw.textlength(text[i], font=sup_font)
                     i += 1
                 continue
+
             # Нижние индексы: цифры сразу после буквы/закрывающей скобки
             if ch.isdigit() and i > 0 and (text[i-1].isalpha() or text[i-1] in ")]"):
-                draw.text((cx, y + int(getattr(base_font, 'size', 18) * 0.25)), ch, font=sub_font, fill=(0, 0, 0))
+                draw.text((cx, y + sub_dy), ch, font=sub_font, fill=(0, 0, 0))
                 cx += draw.textlength(ch, font=sub_font)
                 i += 1
                 # подряд идущие цифры
                 while i < len(text) and text[i].isdigit():
-                    draw.text((cx, y + int(getattr(base_font, 'size', 18) * 0.25)), text[i], font=sub_font, fill=(0, 0, 0))
+                    draw.text((cx, y + sub_dy), text[i], font=sub_font, fill=(0, 0, 0))
                     cx += draw.textlength(text[i], font=sub_font)
                     i += 1
                 continue
+
             # Обычный символ
             draw.text((cx, y), ch, font=base_font, fill=(0, 0, 0))
             cx += draw.textlength(ch, font=base_font)
             i += 1
 
     def _measure_with_sub_sup(draw: ImageDraw.ImageDraw, text: str, base_font: ImageFont.ImageFont) -> float:
-        sub_font = _load_fallback_font(int(getattr(base_font, 'size', 18) * 0.85))
-        sup_font = _load_fallback_font(int(getattr(base_font, 'size', 18) * 0.8))
+        base_size = int(getattr(base_font, 'size', 18))
+        sub_font = _load_fallback_font(int(base_size * 0.70))
+        sup_font = _load_fallback_font(int(base_size * 0.70))
         i = 0
         width_acc = 0.0
         while i < len(text):
             ch = text[i]
+
+            # Готовые юникод‑индексы — меряем по ASCII-эквиваленту
+            if ch in _SUP_CHARS:
+                ascii_ch = _SUP_MAP.get(ch, ch)
+                width_acc += state["draw"].textlength(ascii_ch, font=sup_font)
+                i += 1
+                continue
+            if ch in _SUB_CHARS:
+                ascii_ch = _SUB_MAP.get(ch, ch)
+                width_acc += state["draw"].textlength(ascii_ch, font=sub_font)
+                i += 1
+                continue
+
             if ch == '^' and i + 1 < len(text) and text[i+1].isdigit():
                 i += 1
                 while i < len(text) and text[i].isdigit():
@@ -347,7 +397,8 @@ def render_questions_to_pdf(output_path: str, pages: List[dict]) -> str:
         d = state["draw"]
         canvas = state["canvas"]
         # Заголовок в оранжевом овале по центру
-        title = page.get("title") or f"Задание №{idx}"
+        # В этом PDF заголовок всегда последовательный: "Задание №<n>" (n начинается с 1)
+        title = f"Задание №{idx}"
         title_color = (18, 121, 128)
         title_y = 54
         title_w = d.textlength(title, font=font_bold)

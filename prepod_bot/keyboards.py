@@ -23,11 +23,12 @@ def get_group_tasks_kb(tasks: list[dict]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for t in tasks:
         title = t.get("title") or f"Набор {t.get('id')}"
-        # Одна строка, три столбца: название | 🖨 | 🗑
+        # Одна строка: название | 📊 | 🖨 | 🗑
         open_btn = InlineKeyboardButton(text=title, callback_data=f"wg_task_open:{t.get('id')}")
+        stats_btn = InlineKeyboardButton(text="📊", callback_data=f"wg_task_results:{t.get('id')}")
         print_btn = InlineKeyboardButton(text="🖨", callback_data=f"wg_task_print:{t.get('id')}")
         del_btn = InlineKeyboardButton(text="🗑", callback_data=f"wg_task_del:{t.get('id')}")
-        rows.append([open_btn, print_btn, del_btn])
+        rows.append([open_btn, stats_btn, print_btn, del_btn])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -51,13 +52,20 @@ def get_group_pick_keyboard(group_numbers: list[int], *, prefix: str, back_cb: s
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_group_members_keyboard(members: list[dict]) -> InlineKeyboardMarkup:
+def get_group_members_keyboard(members: list[dict], group_no: int | None = None) -> InlineKeyboardMarkup:
+    """Список участников. Оставляем только кнопку исключения из рабочей группы:
+    - 🚫 Исключить из рабочей группы (work_groups), если передан group_no
+    """
     kb: list[list[InlineKeyboardButton]] = []
     for s in members:
-        label = s.get("label") or s.get("full_name") or s.get("username") or f"ID {s.get('user_id')}"
+        uid = s.get("user_id")
+        label = s.get("label") or s.get("full_name") or s.get("username") or f"ID {uid}"
         if len(label) > 30:
             label = label[:27] + "…"
-        kb.append([InlineKeyboardButton(text=label, callback_data=f"noop_member:{s.get('user_id')}")])
+        row: list[InlineKeyboardButton] = [InlineKeyboardButton(text=label, callback_data=f"noop_member:{uid}")]
+        if group_no is not None:
+            row.append(InlineKeyboardButton(text="🚫", callback_data=f"wg_wremove:{group_no}:{uid}"))
+        kb.append(row)
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_list")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -242,12 +250,21 @@ def get_students_keyboard(
         parts.append(status_icon)
         text = " • ".join(parts)
 
-        kb.append([
+        row = [
             InlineKeyboardButton(
                 text=text,
                 callback_data=f"add_to_group:{student['user_id']}:{page}"
             )
-        ])
+        ]
+        # Если уже в группе — показываем корзину для быстрого удаления из общей группы
+        if is_in_group:
+            row.append(
+                InlineKeyboardButton(
+                    text="🗑",
+                    callback_data=f"wg_remove:{student['user_id']}:{page}"
+                )
+            )
+        kb.append(row)
 
     # Ряд с контролами поиска/фильтра
     if show_controls:

@@ -540,6 +540,171 @@ def get_exam_answer_stats(user_id: int, exam: str) -> tuple[int, int]:
 
     return int(correct), int(total)
 
+
+def _get_assigned_question_ids(user_id: int) -> tuple[set[int], set[int]]:
+    """
+    Возвращает два множества ID вопросов, назначенных ученику через group_tasks:
+      (ege_ids, oge_ids)
+
+    Связка:
+      work_groups (user_id -> group_no)
+      group_tasks (group_no -> items: "ege:ID, oge:ID, ...")
+    """
+    ege_ids: set[int] = set()
+    oge_ids: set[int] = set()
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            # Найдём все рабочие группы пользователя
+            try:
+                cur.execute(
+                    "SELECT group_no FROM work_groups WHERE user_id=?",
+                    (int(user_id),),
+                )
+                groups = [int(r[0]) for r in cur.fetchall()]
+            except sqlite3.OperationalError:
+                groups = []
+            if not groups:
+                return ege_ids, oge_ids
+
+            # Соберём все items по этим группам
+            placeholders = ",".join(["?"] * len(groups))
+            try:
+                cur.execute(
+                    f"SELECT items FROM group_tasks WHERE group_no IN ({placeholders})",
+                    [int(g) for g in groups],
+                )
+                rows = [str(r[0] or "") for r in cur.fetchall()]
+            except sqlite3.OperationalError:
+                rows = []
+
+        # Разберём items формата "ege:1, oge:3, ege:5"
+        for items in rows:
+            parts = [p.strip() for p in items.split(",") if p.strip()]
+            for part in parts:
+                try:
+                    exam_code, sid = part.split(":", 1)
+                    qid = int(str(sid).strip())
+                    exam_code = str(exam_code or "").strip().lower()
+                except Exception:
+                    continue
+                if exam_code == "oge":
+                    oge_ids.add(qid)
+                else:
+                    # по умолчанию считаем как ege
+                    ege_ids.add(qid)
+    except Exception:
+        # В случае любой ошибки возвращаем пустые множества — UI покажет 0/0
+        return set(), set()
+
+    return ege_ids, oge_ids
+
+
+def get_assigned_exam_stats(user_id: int) -> dict[str, tuple[int, int]]:
+    """
+    Подсчитывает статистику по НАЗНАЧЕННЫМ вопросам для ЕГЭ и ОГЭ.
+    Возвращает словарь { 'ege': (correct, total), 'oge': (correct, total) }.
+
+    Логика подсчёта «верных» — по последнему ответу на каждый назначенный вопрос.
+    """
+    ege_ids, oge_ids = _get_assigned_question_ids(int(user_id))
+
+    def _count_for(ids: set[int]) -> tuple[int, int]:
+        if not ids:
+            return 0, 0
+        last: dict[int, int | None] = {int(q): None for q in ids}
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                placeholders = ",".join(["?"] * len(ids))
+                params = [int(user_id), *[int(q) for q in ids]]
+                cur.execute(
+                    f"""
+                    SELECT question_id, is_correct, id
+                    FROM test_answers
+                    WHERE user_id=? AND question_id IN ({placeholders})
+                    ORDER BY id
+                    """,
+                    params,
+                )
+                for qid, is_corr, _rid in cur.fetchall():
+                    if int(qid) in last:
+                        last[int(qid)] = None if is_corr is None else int(is_corr)
+        except sqlite3.OperationalError:
+            pass
+        correct = sum(1 for v in last.values() if v == 1)
+        total = len(ids)
+        return int(correct), int(total)
+
+    ege_correct, ege_total = _count_for(ege_ids)
+    oge_correct, oge_total = _count_for(oge_ids)
+    return {
+        "ege": (ege_correct, ege_total),
+        "oge": (oge_correct, oge_total),
+    }
+
+
+def get_overall_exam_stats_fixed(user_id: int) -> dict[str, tuple[int, int]]:
+    """
+    Возвращает прогресс по ВСЕЙ базе экзамена, с фиксированными знаменателями:
+      - ЕГЭ: 840 (28 типов × 30 заданий)
+      - ОГЭ: 570 (19 типов × 30 заданий)
+
+    Числитель — количество УНИКАЛЬНЫХ вопросов, на которые ученик ответил верно
+    хотя бы раз (по данным test_answers), и которые принадлежат выбранному экзамену
+    (проверяем по диапазону test_type и по совпадению correct_answer с эталоном из БД тестов).
+    """
+
+    def _unique_correct(exam: str) -> int:
+        exam_norm = (exam or "").strip().lower()
+        if exam_norm not in {"ege", "oge"}:
+            exam_norm = "ege"
+        unique_qids: set[int] = set()
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = _safe_fetchall(
+                conn,
+                """
+                SELECT test_type, question_id, correct_answer,
+                       CASE WHEN CAST(is_correct AS INTEGER)=1 THEN 1 ELSE 0 END AS is_correct
+                FROM test_answers
+                WHERE user_id=?
+                """,
+                (user_id,)
+            )
+        for t_type, qid, corr_ans, is_corr in rows:
+            try:
+                t = int(t_type or 0)
+                q = int(qid)
+            except Exception:
+                continue
+            # Принадлежность экзамену и проверка эталона
+            if exam_norm == "ege":
+                if not (1 <= t <= 28):
+                    continue
+                right = _get_correct_answer_from_tests(TESTS_DB_EGE, _ANS_CACHE_EGE, q)
+            else:
+                if not (1 <= t <= 19):
+                    continue
+                right = _get_correct_answer_from_tests(TESTS_DB_OGE, _ANS_CACHE_OGE, q)
+            if right is None:
+                continue
+            if str(corr_ans or "").strip().lower() != right:
+                continue
+            if int(is_corr or 0) == 1:
+                unique_qids.add(q)
+        return int(len(unique_qids))
+
+    ege_correct = _unique_correct("ege")
+    oge_correct = _unique_correct("oge")
+
+    # Фиксированные знаменатели
+    ege_total = 840
+    oge_total = 570
+    return {
+        "ege": (min(ege_correct, ege_total), ege_total),
+        "oge": (min(oge_correct, oge_total), oge_total),
+    }
+
 def build_user_summary_text(user_id: int) -> str:
     """
     Короткая сводка из 4 прогресс-баров:
@@ -552,41 +717,136 @@ def build_user_summary_text(user_id: int) -> str:
         full_name, username = get_identity(conn, user_id)
         label = (full_name or username or f"ID {user_id}")
 
-    # ЕГЭ/ОГЭ — считаем по экзаменам
-    ege_correct, ege_total = get_exam_answer_stats(user_id, "ege")
-    oge_correct, oge_total = get_exam_answer_stats(user_id, "oge")
+    # ЕГЭ/ОГЭ — прогресс по ВСЕЙ базе с фиксированными знаменателями (840/570)
+    overall = get_overall_exam_stats_fixed(user_id)
+    ege_correct, ege_total = overall.get("ege", (0, 0))
+    oge_correct, oge_total = overall.get("oge", (0, 0))
 
-    # Карточки
-    with sqlite3.connect(DB_PATH) as conn:
-        row = _safe_fetchone(
-            conn,
-            """
-            SELECT
-              SUM(CASE WHEN is_correct=1 THEN 1 ELSE 0 END) AS correct,
-              COUNT(*) AS total
-            FROM flashcards_practice_log
-            WHERE user_id=?
-            """,
-            (user_id,)
-        ) or (0, 0)
-    cards_correct = int(row[0] or 0)
-    cards_total = int(row[1] or 0)
+    # Карточки: считаем из общего числа карточек в базе (shared/ege_chemistry_substances.sqlite),
+    # а в числителе — число УНИКАЛЬНЫХ карточек, на которые ученик ответил верно хотя бы раз.
+    def _count_total_cards() -> int:
+        try:
+            # shared/ege_chemistry_substances.sqlite относительно репозитория
+            repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            db_path = os.path.join(repo_root, "shared", "ege_chemistry_substances.sqlite")
+            if not os.path.exists(db_path):
+                return 0
+            total_cards = 0
+            with sqlite3.connect(db_path) as c:
+                cur = c.cursor()
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = [r[0] for r in cur.fetchall()]
+                for tbl in tables:
+                    # Пытаемся подобрать имена колонок формул/названий
+                    cur.execute(f"PRAGMA table_info({tbl})")
+                    cols = {row[1].lower(): row[1] for row in cur.fetchall()}
+                    f_col = None
+                    i_col = None
+                    t_col = None
+                    for cand in ("formula", "формула"):
+                        if cand in cols:
+                            f_col = cols[cand]
+                            break
+                    for cand in ("iupac", "номенк"):
+                        if cand in cols:
+                            i_col = cols[cand]
+                            break
+                    for cand in ("trivial", "тривиал", "синоним"):
+                        if cand in cols:
+                            t_col = cols[cand]
+                            break
+                    # Строим условие: хотя бы одно поле непустое
+                    exprs: list[str] = []
+                    if f_col:
+                        exprs.append(f"TRIM(COALESCE({f_col}, '')) <> ''")
+                    if i_col:
+                        exprs.append(f"TRIM(COALESCE({i_col}, '')) <> ''")
+                    if t_col:
+                        exprs.append(f"TRIM(COALESCE({t_col}, '')) <> ''")
+                    where = (" WHERE " + " OR ".join(exprs)) if exprs else ""
+                    try:
+                        cur.execute(f"SELECT COUNT(*) FROM '{tbl}'{where}")
+                        cnt = int(cur.fetchone()[0] or 0)
+                    except Exception:
+                        cnt = 0
+                    total_cards += cnt
+            return int(total_cards)
+        except Exception:
+            return 0
 
-    # Зачёт по учебнику (theory_task_answers)
-    with sqlite3.connect(DB_PATH) as conn:
-        row = _safe_fetchone(
-            conn,
-            """
-            SELECT
-              SUM(CASE WHEN is_correct=1 THEN 1 ELSE 0 END) AS correct,
-              SUM(CASE WHEN is_correct IS NOT NULL THEN 1 ELSE 0 END) AS total
-            FROM theory_task_answers
-            WHERE user_id=?
-            """,
-            (user_id,)
-        ) or (0, 0)
-    theory_correct = int(row[0] or 0)
-    theory_total = int(row[1] or 0)
+    def _count_user_correct_cards(u_id: int) -> int:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                row = _safe_fetchone(
+                    conn,
+                    """
+                    SELECT COUNT(DISTINCT COALESCE(TRIM(category),'') || '|' || COALESCE(TRIM(card_key),''))
+                    FROM flashcards_practice_log
+                    WHERE user_id=? AND is_correct=1
+                    """,
+                    (u_id,)
+                ) or (0,)
+                return int(row[0] or 0)
+        except Exception:
+            return 0
+
+    cards_total = _count_total_cards()
+    cards_correct = _count_user_correct_cards(user_id)
+
+    # Устный зачёт: знаменатель — общее число «кусков» (строк) в prepared_lectures,
+    # числитель — число УНИКАЛЬНЫХ (topic, chunk_idx) с хотя бы одним верным ответом.
+    def _get_prepared_lectures_db() -> str | None:
+        try:
+            # Попытаемся импортировать путь из govr_bot, если доступен
+            import importlib  # type: ignore
+            _utils = None
+            for name in ("govr_bot.bot.utils", "bot.utils"):
+                try:
+                    _utils = importlib.import_module(name)
+                    break
+                except Exception:
+                    continue
+            db = getattr(_utils, "PREPARED_LECTURES_DB", None) if _utils else None
+            if db:
+                return str(db)
+        except Exception:
+            pass
+        # Фолбэк на shared/prepared_lectures.db
+        repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        cand = os.path.join(repo_root, "shared", "prepared_lectures.db")
+        return cand if os.path.exists(cand) else None
+
+    def _count_total_chunks() -> int:
+        try:
+            db = _get_prepared_lectures_db()
+            if not db or not os.path.exists(db):
+                return 0
+            with sqlite3.connect(db) as c2:
+                cur2 = c2.cursor()
+                cur2.execute("SELECT COUNT(*) FROM prepared_lectures")
+                row2 = cur2.fetchone()
+                return int(row2[0] or 0)
+        except Exception:
+            return 0
+
+    def _count_user_correct_chunks(u_id: int) -> int:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                row = _safe_fetchone(
+                    conn,
+                    """
+                    SELECT COUNT(DISTINCT topic || '|' || COALESCE(CAST(chunk_idx AS TEXT),'0'))
+                    FROM theory_task_answers
+                    WHERE user_id=? AND is_correct=1
+                    """,
+                    (u_id,)
+                ) or (0,)
+                return int(row[0] or 0)
+        except Exception:
+            return 0
+
+    theory_total = _count_total_chunks()
+    theory_correct = _count_user_correct_chunks(user_id)
 
     def _bar(pct: float, size: int = 12) -> str:
         filled = int(round(max(0.0, min(100.0, pct)) / 100 * size))
@@ -747,22 +1007,18 @@ def _build_user_progress_text_by_exam(user_id: int, exam: str, recent_limit: int
             cache[question_id] = ""
             return ""
 
-    def _belongs_to_exam(row_test_type: int, row_qid: int, row_correct: str) -> bool:
-        # Исключаем «учебники» и пр.: всё, что выше 999, не экзамены
+    def _belongs_to_exam(row_test_type: int, _row_qid: int, _row_correct: str) -> bool:
+        """
+        Принадлежность ответов к экзамену.
+        Упрощаем логику: учитываем ВСЕ ответы из test_answers с типом в диапазоне
+        экзамена (1..28 для ЕГЭ, 1..19 для ОГЭ), без проверки совпадения эталона.
+        Это согласует бота с PDF-отчетом, где берётся сырая статистика по test_answers.
+        """
         if row_test_type is None:
             return False
         if exam == "oge":
-            if not (1 <= int(row_test_type) <= 19):
-                return False
-            right = _get_correct_answer(TESTS_DB_OGE, _ANS_CACHE_OGE, int(row_qid))
-        else:
-            if not (1 <= int(row_test_type) <= 28):
-                return False
-            right = _get_correct_answer(TESTS_DB_EGE, _ANS_CACHE_EGE, int(row_qid))
-        if right is None:
-            return False
-        # Сравниваем нормализованные ответы
-        return (str(row_correct).strip().lower() == right)
+            return 1 <= int(row_test_type) <= 19
+        return 1 <= int(row_test_type) <= 28
 
     with sqlite3.connect(DB_PATH) as conn:
         # Имя ученика
@@ -847,8 +1103,11 @@ def _build_user_progress_text_by_exam(user_id: int, exam: str, recent_limit: int
     max_type = 28 if exam == "ege" else 19
     for t_type in range(1, max_type + 1):
         answered, correct = by_type.get(t_type, (0, 0))
-        p = round((correct / answered) * 100, 1) if answered else 0.0
-        parts.append(f"№{t_type}: {correct}/{answered} ({p}%) { _bar(p) }")
+        # Требование: в прогрессе по типам знаменатель всегда 30 (и для ЕГЭ, и для ОГЭ)
+        total_per_type = 30
+        corr_capped = min(int(correct or 0), total_per_type)
+        p = round((corr_capped / total_per_type) * 100, 1) if total_per_type else 0.0
+        parts.append(f"№{t_type}: {corr_capped}/{total_per_type} ({p}%) { _bar(p) }")
 
     if recent_kept:
         parts.append("")

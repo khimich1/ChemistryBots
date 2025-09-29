@@ -143,6 +143,15 @@ def get_work_group_members(group_no: int) -> List[int]:
         return [row[0] for row in cur.fetchall()]
 
 
+def remove_user_from_work_group(group_no: int, user_id: int) -> None:
+    """Удаляет пользователя из рабочей группы."""
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_work_groups_table(conn)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM work_groups WHERE group_no=? AND user_id=?", (group_no, user_id))
+        conn.commit()
+
+
 def find_user_id_by_username(username: str) -> int | None:
     """Ищет user_id по username в базах prepod_bot (user_profiles, test_answers) и govr_bot."""
     uname = (username or "").strip()
@@ -757,23 +766,41 @@ def get_question_ids_by_filename(exam: str, filename: str) -> List[int]:
             if not _table_has_column(conn, "tests", "filename"):
                 return []
             has_issue_col = _table_has_column(conn, "tests", "has_issue")
+            # Определим имя колонки типа (type/test_type/theme/task_type)
+            type_col = None
+            try:
+                cur = conn.cursor()
+                cur.execute("PRAGMA table_info(tests)")
+                cols = {row[1] for row in cur.fetchall()}
+                for name in ("type", "test_type", "theme", "task_type"):
+                    if name in cols:
+                        type_col = name
+                        break
+            except Exception:
+                type_col = "type"
+            if not type_col:
+                type_col = "type"
             cur = conn.cursor()
             if has_issue_col:
                 cur.execute(
-                    """
-                    SELECT id FROM tests
-                    WHERE filename=? AND COALESCE(has_issue,0)=0
-                    ORDER BY id
-                    """,
+                    (
+                        """
+                        SELECT id FROM tests
+                        WHERE filename=? AND COALESCE(has_issue,0)=0
+                        ORDER BY {tc}, id
+                        """
+                    ).replace("{tc}", type_col),
                     (fname,),
                 )
             else:
                 cur.execute(
-                    """
-                    SELECT id FROM tests
-                    WHERE filename=?
-                    ORDER BY id
-                    """,
+                    (
+                        """
+                        SELECT id FROM tests
+                        WHERE filename=?
+                        ORDER BY {tc}, id
+                        """
+                    ).replace("{tc}", type_col),
                     (fname,),
                 )
             ids = [int(r[0]) for r in cur.fetchall()]
@@ -807,3 +834,84 @@ def list_variant_filenames(exam: str, limit: int = 300) -> List[str]:
     except Exception:
         names = []
     return names
+
+
+# =====================
+#   Итоги по набору заданий группы
+# =====================
+
+def _parse_task_items_qids(items: str) -> list[int]:
+    parts = [p.strip() for p in (items or "").split(",") if p.strip()]
+    qids: list[int] = []
+    for part in parts:
+        try:
+            _exam, sid = part.split(":", 1)
+            qids.append(int(sid.strip()))
+        except Exception:
+            continue
+    return qids
+
+
+def compute_group_task_results(task_id: int) -> dict:
+    """
+    Возвращает словарь:
+    {
+      'group_no': int,
+      'title': str,
+      'qids': [int, ...],
+      'results': [ { 'user_id': int, 'label': str, 'correct': int, 'total': int, 'pct': float }, ... ]
+    }
+    Считаем по последнему ответу на каждый вопрос из набора (таблица test_answers).
+    """
+    import sqlite3
+
+    with sqlite3.connect(DB_PATH) as conn:
+        # 1) сам набор
+        _ensure_group_tasks_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT group_no, title, items FROM group_tasks WHERE id=?", (int(task_id),))
+        row = cur.fetchone()
+        if not row:
+            return {'group_no': None, 'title': '', 'qids': [], 'results': []}
+        group_no, title, items = int(row[0]), str(row[1] or ''), str(row[2] or '')
+        qids = _parse_task_items_qids(items)
+        if not qids:
+            return {'group_no': group_no, 'title': title, 'qids': [], 'results': []}
+
+        # 2) участники группы
+        members = get_work_group_members(group_no)
+        results: list[dict] = []
+        if not members:
+            return {'group_no': group_no, 'title': title, 'qids': qids, 'results': []}
+
+        placeholders = ",".join(["?"] * len(qids))
+        sql = f"""
+            SELECT question_id, is_correct, id
+            FROM test_answers
+            WHERE user_id=? AND question_id IN ({placeholders})
+            ORDER BY id
+        """
+
+        for uid in members:
+            # имя/username
+            full_name, username = _get_user_identity(conn, int(uid))
+            label = (full_name or username or f"ID {uid}")
+            # берём последнюю запись по каждому question_id
+            last: dict[int, int | None] = {int(q): None for q in qids}
+            params = [int(uid), *[int(q) for q in qids]]
+            try:
+                cur.execute(sql, params)
+                for qid, is_corr, _rid in cur.fetchall():
+                    if qid in last:
+                        last[int(qid)] = None if is_corr is None else int(is_corr)
+            except sqlite3.OperationalError:
+                # если таблицы нет — пусто
+                pass
+            correct = sum(1 for v in last.values() if v == 1)
+            total = len(qids)
+            pct = round((correct / total) * 100.0, 1) if total else 0.0
+            results.append({'user_id': int(uid), 'label': label, 'correct': correct, 'total': total, 'pct': pct})
+
+        # сортировка по убыванию верных, затем по имени
+        results.sort(key=lambda r: (-r['correct'], str(r['label']).lower()))
+        return {'group_no': group_no, 'title': title, 'qids': qids, 'results': results}

@@ -33,6 +33,13 @@ import sqlite3
 router = Router()
 user_test_state = {}
 
+# Для маппинга test_type в групповых заданиях (ЕГЭ как есть, ОГЭ со смещением)
+OGE_TYPE_OFFSET = 1000
+
+def _group_test_type(q: dict) -> int:
+    t = int(q.get('type') or 0)
+    return t if (q.get('exam_type') == 'ege') else (OGE_TYPE_OFFSET + t)
+
 # Небольшое форматирование текста задания: переносы строк перед А), Б), В), Г)
 # и выделение заголовков типа "Реагенты:" / "Продукты:" на отдельную строку.
 def _format_question_text(text: str) -> str:
@@ -1057,6 +1064,7 @@ async def start_group_task(cb: CallbackQuery):
             if q:
                 questions.append({
                     'id': q.get('id'),
+                    'type': q.get('type'),
                     'question': q.get('question', ''),
                     'options': q.get('options', ''),
                     'correct_answer': q.get('correct_answer', ''),
@@ -1106,6 +1114,12 @@ async def start_group_question(cb: CallbackQuery, user_id: int):
         return
     
     question = questions[current_question]
+    
+    # Логируем старт вопроса группового задания
+    try:
+        log_question_started(user_id, _group_test_type(question), question['id'])
+    except Exception:
+        pass
     
     # Формируем текст вопроса
     question_text = f"📋 <b>Задание группы: {state.get('group_task_title', '')}</b>\n\n"
@@ -1277,6 +1291,23 @@ async def handle_group_text_answer(m: types.Message):
     if is_correct:
         state['correct_answers'] = state.get('correct_answers', 0) + 1
     
+    # Логируем ответ и сохраняем его в БД
+    try:
+        log_question_answered(user_id, question['id'], answer_text, is_correct)
+        save_test_answer(
+            user_id=user_id,
+            username=(getattr(m.from_user, "username", None) or m.from_user.full_name),
+            test_type=_group_test_type(question),
+            question_id=question['id'],
+            question_text=question.get('question', ''),
+            user_answer=answer_text,
+            correct_answer=correct_answer,
+            is_correct=is_correct,
+            full_name=get_user_full_name(user_id)
+        )
+    except Exception:
+        pass
+
     # Переходим к следующему вопросу
     state['current_question'] = current_question + 1
     user_test_state[user_id] = state
@@ -1315,6 +1346,12 @@ async def start_group_question_text(m: types.Message, user_id: int):
         return
     
     question = questions[current_question]
+    
+    # Логируем старт вопроса (текстовая версия)
+    try:
+        log_question_started(user_id, _group_test_type(question), question['id'])
+    except Exception:
+        pass
     
     # Формируем текст вопроса
     question_text = f"📋 <b>Задание группы: {state.get('group_task_title', '')}</b>\n\n"

@@ -41,6 +41,8 @@ from services.groups import (
     get_group_task_by_id,
     get_question_ids_by_filename,
     get_question_ids_by_type,
+    remove_user_from_work_group,
+    compute_group_task_results,
 )
 from aiogram.fsm.context import FSMContext
 from config import DEEPLINK_HINT
@@ -48,6 +50,7 @@ from states import StudentsList, WorkGroups
 from services.pdf_export import render_questions_to_pdf
 from keyboards import get_pick_students_for_day_kb
 from datetime import datetime as _dt
+from utils.message_manager import message_manager
 
 router = Router()
 # Локальные состояния для раздела расписания
@@ -60,10 +63,12 @@ async def cmd_start(message: types.Message):
     tg_id = message.from_user.id
     moniker = get_teacher_moniker(tg_id) or (message.from_user.full_name or "")
     greeting_name = moniker.strip() or "Коллега"
-    await message.answer(
+    await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
+    sent = await message.answer(
         f"Здравствуйте, {greeting_name}! Выберите действие:",
         reply_markup=get_teacher_keyboard()
     )
+    message_manager.add_message(message.from_user.id, sent.message_id)
 
 # ── Расписание (локальный календарь) ──────────────────────────────────────────────────────────────────────────────
 
@@ -415,6 +420,7 @@ async def proxy_tasks(message: types.Message, state: FSMContext):
 async def show_students_list(message: types.Message, state: FSMContext):
     """Показывает список всех зарегистрированных учеников"""
     await state.clear()
+    await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
     students = get_all_students_with_plans()
     
     if not students:
@@ -433,17 +439,22 @@ async def show_students_list(message: types.Message, state: FSMContext):
     )
 
     keyboard = get_students_keyboard(students, page=1, page_size=30, show_plans=True, has_search=False, only_not_in_group=False)
-    await message.answer(
+    sent = await message.answer(
         "Список всех зарегистрированных учеников:\n\n"
         "Нажмите на ученика, чтобы добавить его в группу для доступа к тарифу 'Групповые':",
         reply_markup=keyboard
     )
+    try:
+        message_manager.add_message(message.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 @router.message(StateFilter('*'), lambda m: m.text == "✅ Ученики в группе")
 async def show_group_students(message: types.Message, state: FSMContext):
     """Показывает список только тех учеников, кто уже в группе"""
     await state.clear()
+    await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
     students = get_all_students_with_plans()
 
     # Отметим статус и отфильтруем
@@ -469,16 +480,22 @@ async def show_group_students(message: types.Message, state: FSMContext):
         show_controls=True,
         show_only_not_in_group_toggle=False,
     )
-    await message.answer(
+    sent = await message.answer(
         "Ученики, которые уже в группе. Листайте страницы ⬅️➡️ или используйте поиск.",
         reply_markup=keyboard,
     )
+    try:
+        message_manager.add_message(message.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 @router.message(StateFilter('*'), lambda m: m.text == "📚 Управление группами")
 async def manage_groups_menu(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Выберите действие:", reply_markup=get_manage_groups_keyboard())
+    await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
+    sent = await message.answer("Выберите действие:", reply_markup=get_manage_groups_keyboard())
+    message_manager.add_message(message.from_user.id, sent.message_id)
 
 
 @router.callback_query(lambda c: c.data == "manage_groups_back")
@@ -519,13 +536,62 @@ async def wg_broadcast_group(message: types.Message, state: FSMContext):
 @router.callback_query(lambda c: c.data.startswith("pick_broadcast_group:"))
 async def pick_broadcast_group(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("wg_remove:"))
+async def remove_from_teacher_group(cb: types.CallbackQuery, state: FSMContext):
+    """Удаляет ученика из общей группы преподавателя (teacher_groups) и обновляет текущую страницу списка."""
     try:
-        group_no = int(cb.data.split(":", 1)[1])
+        parts = cb.data.split(":")
+        user_id = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 1
     except Exception:
+        await cb.answer("Не понимаю id", show_alert=True)
         return
-    await state.update_data(broadcast_group=group_no)
-    await _safe_edit_text(cb.message, f"Группа {group_no} выбрана. Введите текст сообщения, оно уйдёт всем участникам группы:")
-    await state.set_state(WorkGroups.waiting_broadcast_text)
+    from services.groups import remove_student_from_group
+    remove_student_from_group(user_id)
+
+    # Обновим текущую страницу
+    data = await state.get_data()
+    students = data.get("students") or get_all_students_with_plans()
+    for s in students:
+        s["is_in_group"] = is_student_in_group(s["user_id"])
+    only_not_in_group = bool((await state.get_data()).get("only_not_in_group"))
+    search_query = (await state.get_data()).get("search_query") or ""
+    filtered = _apply_students_filters(students, only_not_in_group=only_not_in_group, search_query=search_query)
+    keyboard = get_students_keyboard(
+        filtered, page=page, page_size=30,
+        show_plans=True,
+        has_search=bool(search_query.strip()),
+        only_not_in_group=only_not_in_group,
+    )
+    try:
+        await cb.message.edit_reply_markup(reply_markup=keyboard)
+    finally:
+        await cb.answer("Удалён из группы")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("wg_wremove:"))
+async def remove_from_work_group(cb: types.CallbackQuery):
+    """Исключает ученика из рабочей группы по номеру."""
+    try:
+        _, group_no, user_id = cb.data.split(":", 2)
+        group_no = int(group_no)
+        user_id = int(user_id)
+    except Exception:
+        await cb.answer("Не понимаю", show_alert=True)
+        return
+    remove_user_from_work_group(group_no, user_id)
+    # Обновим список участников этой группы в текущем сообщении
+    user_ids = get_work_group_members(group_no)
+    students = get_all_students_with_plans()
+    by_id = {s["user_id"]: s for s in students}
+    members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
+    try:
+        await cb.message.edit_text(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members, group_no=group_no))
+    except Exception:
+        await cb.message.answer(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members, group_no=group_no))
+    await cb.answer("Исключён из рабочей группы")
 
 
 @router.message(WorkGroups.waiting_broadcast_text)
@@ -823,13 +889,51 @@ async def wg_input_group(message: types.Message, state: FSMContext):
 @router.callback_query(lambda c: c.data.startswith("pick_add_group:"))
 async def pick_add_group(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_task_results:"))
+async def wg_task_results(cb: types.CallbackQuery):
+    """Показывает итоги по набору: по каждому ученику группы — верных/всего и %."""
     try:
-        group_no = int(cb.data.split(":", 1)[1])
+        task_id = int(cb.data.split(":", 1)[1])
     except Exception:
+        await cb.answer("Не понимаю id", show_alert=True)
         return
-    await state.update_data(group_no=group_no)
-    await _safe_edit_text(cb.message, f"Группа {group_no} выбрана. Теперь отправьте username ученика с @ (например, @ivan_ivanov):")
-    await state.set_state(WorkGroups.waiting_username)
+
+    info = compute_group_task_results(task_id)
+    group_no = info.get('group_no')
+    title = info.get('title') or f"Набор {task_id}"
+    qids = info.get('qids') or []
+    results = info.get('results') or []
+
+    if group_no is None:
+        await cb.answer("Набор не найден", show_alert=True)
+        return
+
+    lines: list[str] = []
+    lines.append(f"📊 Результаты набора «{title}» (группа {group_no})")
+    lines.append(f"Всего вопросов в наборе: {len(qids)}")
+    lines.append("")
+
+    if not results:
+        lines.append("Пока нет участников группы или ответов по этому набору.")
+    else:
+        lines.append("<b>Ученик — верных/всего (точность)</b>")
+        for r in results:
+            label = str(r.get('label') or f"ID {r.get('user_id')}")
+            if len(label) > 30:
+                label = label[:27] + "…"
+            lines.append(f"{label} — {r['correct']}/{r['total']} ({r['pct']}%)")
+
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[[types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"wg_tasks_list:{group_no}")]]
+    )
+    text = "\n".join(lines)
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await cb.answer()
 
 
 @router.message(WorkGroups.waiting_username)
@@ -881,9 +985,9 @@ async def wg_open_group(callback: types.CallbackQuery):
     by_id = {s["user_id"]: s for s in students}
     members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
     try:
-        await callback.message.edit_text(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members))
+        await callback.message.edit_text(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members, group_no=group_no))
     except Exception:
-        await callback.message.answer(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members))
+        await callback.message.answer(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members, group_no=group_no))
 
 
 @router.callback_query(lambda c: c.data == "wg_tasks_start")
@@ -1305,7 +1409,15 @@ async def wg_task_print(cb: types.CallbackQuery):
     import tempfile, os
     tmp_dir = tempfile.mkdtemp(prefix="grp_pdf_")
     out_path = os.path.join(tmp_dir, f"group_set_{task_id}.pdf")
-    pdf_path = render_questions_to_pdf(out_path, questions)
+    # Строгая сортировка: сначала по типу (если есть), затем по id
+    questions_sorted = sorted(
+        questions,
+        key=lambda q: (
+            int(q.get("type")) if (q.get("type") is not None and str(q.get("type")).isdigit()) else 10**9,
+            int(q.get("qid") or 0)
+        )
+    )
+    pdf_path = render_questions_to_pdf(out_path, questions_sorted)
     # Отправляем файл
     try:
         from aiogram.types import FSInputFile
@@ -1509,11 +1621,13 @@ async def add_student_to_group_handler(callback: types.CallbackQuery, state: FSM
 @router.callback_query(lambda c: c.data == "back_to_main")
 async def back_to_main_handler(callback: types.CallbackQuery):
     """Возврат в главное меню"""
-    await callback.message.delete()
-    await callback.message.answer(
+    await message_manager.delete_user_messages_fast(callback.bot, callback.from_user.id, callback.message.chat.id)
+    sent = await callback.message.answer(
         "Выберите действие:",
         reply_markup=get_teacher_keyboard()
     )
+    message_manager.add_message(callback.from_user.id, sent.message_id)
+    await callback.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith("students_page:"))
