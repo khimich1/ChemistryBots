@@ -1155,6 +1155,7 @@ async def tests_go_back(cb: CallbackQuery):
             [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии")],
             [KeyboardButton(text="🧪 Тестовая часть ОГЭ по химии")],
             [KeyboardButton(text="📂 Задания для группы")],
+            [KeyboardButton(text="👨‍🏫 Задания от преподавателя")],
             [KeyboardButton(text="⬅️ В меню")],
         ],
         resize_keyboard=True
