@@ -30,11 +30,19 @@ def _report_students_kb(students: list, *, page: int = 1, page_size: int = 30) -
     end = min(start + page_size, total)
 
     rows: list[list[InlineKeyboardButton]] = []
+    # Соберём кнопки учеников и выложим в 2 столбца
+    buf: list[InlineKeyboardButton] = []
     for s in students[start:end]:
         label = s.get("label") or s.get("full_name") or s.get("username") or f"ID {s.get('user_id')}"
         if len(label) > 30:
             label = label[:27] + "…"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"student_{s['user_id']}")])
+        btn = InlineKeyboardButton(text=label, callback_data=f"student_{s['user_id']}")
+        buf.append(btn)
+        if len(buf) == 2:
+            rows.append(buf)
+            buf = []
+    if buf:
+        rows.append(buf)
 
     # Контролы: Поиск | Список групп
     rows.append([
@@ -215,13 +223,18 @@ async def report_groups_list(cb: types.CallbackQuery):
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("rep_open_group:"))
-async def report_open_group(cb: types.CallbackQuery):
+async def report_open_group(cb: types.CallbackQuery, state: FSMContext):
     try:
         group_no = int(cb.data.split(":", 1)[1])
     except Exception:
         await cb.answer()
         return
     user_ids = get_work_group_members(group_no)
+    # Сохраним текущую группу в состоянии для корректной "Назад" из сводки ученика
+    try:
+        await state.update_data(current_group_no=group_no)
+    except Exception:
+        pass
     if not user_ids:
         await cb.message.edit_text(f"В группе {group_no} пока нет участников.", reply_markup=_report_groups_kb(get_all_group_numbers()))
         await cb.answer()
@@ -241,12 +254,17 @@ async def report_open_group(cb: types.CallbackQuery):
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("rep_open_student:"))
-async def report_open_student(cb: types.CallbackQuery):
+async def report_open_student(cb: types.CallbackQuery, state: FSMContext):
     try:
         user_id = int(cb.data.split(":", 1)[1])
     except Exception:
         await cb.answer()
         return
+    # Запомним id ученика для навигации
+    try:
+        await state.update_data(current_report_user_id=user_id)
+    except Exception:
+        pass
     # Показать мини-сводку и меню прогресса
     try:
         summary = build_user_summary_text(user_id)
@@ -274,6 +292,26 @@ async def rep_back_delete(cb: types.CallbackQuery, state: FSMContext):
     # Попробуем восстановить user_id из предыдущего контекста: часто предыдущее сообщение — меню ученика
     # Если восстановить не удастся — вернём список учеников
     data = await state.get_data()
+    # Если есть номер текущей группы — вернёмся к списку участников группы
+    group_no = data.get("current_group_no")
+    if group_no:
+        try:
+            user_ids = get_work_group_members(int(group_no))
+            students = get_all_students_with_plans()
+            by_id = {int(s["user_id"]): s for s in students}
+            members = [by_id.get(int(uid), {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
+            sent = await cb.message.answer(f"Участники группы {group_no}:", reply_markup=_report_group_members_kb(members))
+            try:
+                message_manager.add_message(cb.from_user.id, sent.message_id)
+            except Exception:
+                pass
+            await cb.answer()
+            return
+        except Exception:
+            # если не получилось — упадём в обычный фолбэк ниже
+            pass
+
+    # Иначе вернёмся к меню ученика (если знаем id) или к списку всех учеников
     user_id = data.get("current_report_user_id")
     if user_id:
         try:

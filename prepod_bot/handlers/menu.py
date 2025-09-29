@@ -222,6 +222,18 @@ async def wg_broadcast_group(message: types.Message, state: FSMContext):
 @router.callback_query(lambda c: c.data.startswith("pick_broadcast_group:"))
 async def pick_broadcast_group(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
+    try:
+        group_no = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer("Не понимаю номер группы", show_alert=True)
+        return
+    await state.update_data(broadcast_group=group_no)
+    # Сообщим выбор и попросим текст
+    try:
+        await cb.message.edit_text(f"Группа {group_no} выбрана. Введите текст сообщения:")
+    except Exception:
+        await cb.message.answer(f"Группа {group_no} выбрана. Введите текст сообщения:")
+    await state.set_state(WorkGroups.waiting_broadcast_text)
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("wg_remove:"))
@@ -301,18 +313,19 @@ async def wg_broadcast_text(message: types.Message, state: FSMContext):
 @router.callback_query(lambda c: c.data == "wg_add_start")
 async def wg_add_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    # Покажем список существующих групп, если есть
+    # Одно сообщение: выбор группы для добавления ученика
     groups = get_all_group_numbers()
-    if groups:
-        try:
-            await callback.message.edit_text("Существующие группы:", reply_markup=get_group_numbers_keyboard(groups))
-        except Exception:
-            await callback.message.answer("Существующие группы:", reply_markup=get_group_numbers_keyboard(groups))
-    # Предложим выбрать группу кнопками для добавления ученика
     try:
-        await callback.message.answer("Выберите группу, куда добавить ученика:", reply_markup=get_group_pick_keyboard(groups or [], prefix="pick_add_group"))
+        await callback.message.edit_text(
+            "Выберите группу, куда добавить ученика:",
+            reply_markup=get_group_pick_keyboard(groups or [], prefix="pick_add_group", include_create=True)
+        )
     except Exception:
-        pass
+        await callback.message.answer(
+            "Выберите группу, куда добавить ученика:",
+            reply_markup=get_group_pick_keyboard(groups or [], prefix="pick_add_group", include_create=True)
+        )
+    # Ждём выбора кнопкой; ввод числа используем только если пользователь напишет вручную
     await state.set_state(WorkGroups.waiting_group_number)
 
 
@@ -329,9 +342,43 @@ async def wg_input_group(message: types.Message, state: FSMContext):
     await state.set_state(WorkGroups.waiting_username)
 
 
+@router.callback_query(lambda c: c.data == "wg_create_group")
+async def wg_create_group(cb: types.CallbackQuery, state: FSMContext):
+    """Начинает создание новой группы: просим номер/название, затем username."""
+    await cb.answer()
+    try:
+        await cb.message.edit_text("Введите номер новой группы (целое число):")
+    except Exception:
+        await cb.message.answer("Введите номер новой группы (целое число):")
+    await state.set_state(WorkGroups.waiting_group_number)
+
+
 @router.callback_query(lambda c: c.data.startswith("pick_add_group:"))
 async def pick_add_group(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
+    try:
+        group_no = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer("Не понимаю номер", show_alert=True)
+        return
+    await state.update_data(group_no=group_no)
+    # Покажем текущих участников и кнопку «Добавить в группу»
+    user_ids = get_work_group_members(group_no)
+    students = get_all_students_with_plans()
+    by_id = {s["user_id"]: s for s in students}
+    members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
+    try:
+        await cb.message.edit_text(
+            f"Участники группы {group_no}:",
+            reply_markup=get_group_members_keyboard(members, group_no=group_no, back_cb="manage_groups_list")
+        )
+    except Exception:
+        await cb.message.answer(
+            f"Участники группы {group_no}:",
+            reply_markup=get_group_members_keyboard(members, group_no=group_no, back_cb="manage_groups_list")
+        )
+    # Ожидание username начнётся после нажатия «➕ Добавить в группу»
+    await state.set_state(None)
 
 
 @router.callback_query(lambda c: c.data.startswith("wg_task_results:"))
@@ -396,6 +443,18 @@ async def wg_input_username(message: types.Message, state: FSMContext):
 
     add_user_to_work_group(group_no, user_id)
     await message.answer(f"✅ Пользователь {username} (id={user_id}) добавлен в рабочую группу {group_no}.")
+    # После добавления сразу обновим список участников
+    user_ids = get_work_group_members(group_no)
+    students = get_all_students_with_plans()
+    by_id = {s["user_id"]: s for s in students}
+    members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
+    try:
+        await message.answer(
+            f"Участники группы {group_no}:",
+            reply_markup=get_group_members_keyboard(members, group_no=group_no, back_cb="manage_groups_list")
+        )
+    except Exception:
+        pass
     await state.set_state(None)
 
 
@@ -420,18 +479,41 @@ async def wg_open_group(callback: types.CallbackQuery):
     except Exception:
         group_no = 0
     user_ids = get_work_group_members(group_no)
-    if not user_ids:
-        await callback.message.edit_text(f"В группе {group_no} пока нет участников.", reply_markup=get_manage_groups_keyboard())
-        return
     # Обогатим данными (label)
     students = get_all_students_with_plans()
     by_id = {s["user_id"]: s for s in students}
     members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
     try:
-        await callback.message.edit_text(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members, group_no=group_no))
+        await callback.message.edit_text(
+            f"Участники группы {group_no}:",
+            reply_markup=get_group_members_keyboard(members, group_no=group_no, back_cb="manage_groups_list")
+        )
     except Exception:
-        await callback.message.answer(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members, group_no=group_no))
+        await callback.message.answer(
+            f"Участники группы {group_no}:",
+            reply_markup=get_group_members_keyboard(members, group_no=group_no, back_cb="manage_groups_list")
+        )
 
+
+@router.callback_query(lambda c: c.data.startswith("wg_prompt_add:"))
+async def wg_prompt_add(cb: types.CallbackQuery, state: FSMContext):
+    """Запрашивает username для добавления в выбранную группу."""
+    await cb.answer()
+    try:
+        group_no = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer("Не понимаю номер группы", show_alert=True)
+        return
+    await state.update_data(group_no=group_no)
+    try:
+        await cb.message.edit_text(
+            f"Группа {group_no}. Теперь отправьте username ученика с @ (например, @ivan_ivanov):"
+        )
+    except Exception:
+        await cb.message.answer(
+            f"Группа {group_no}. Теперь отправьте username ученика с @ (например, @ivan_ivanov):"
+        )
+    await state.set_state(WorkGroups.waiting_username)
 
 @router.callback_query(lambda c: c.data == "wg_tasks_start")
 async def wg_tasks_start(callback: types.CallbackQuery, state: FSMContext):
@@ -458,12 +540,27 @@ async def wg_tasks_group(message: types.Message, state: FSMContext):
     tasks = list_group_tasks(group_no)
     if tasks:
         try:
-            await message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+            await message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
         except Exception:
-            # На случай, если редактирование/отправка с клавиатурой не удалось — покажем текстом и следом клавиатуру
             await message.answer("У этой группы уже есть наборы:")
-            await message.answer("Выберите набор:", reply_markup=get_group_tasks_kb(tasks))
-    await message.answer("Введите название набора (например, Домашка 24.09):")
+            await message.answer("Выберите набор:", reply_markup=get_group_tasks_kb(tasks, group_no))
+    else:
+        # Даже если наборов нет — показываем кнопку создания
+        await message.answer("У этой группы пока нет наборов:", reply_markup=get_group_tasks_kb([], group_no))
+    # Больше не спрашиваем название сразу. Пользователь нажмёт «Создать задание».
+    await state.set_state(None)
+
+
+@router.callback_query(lambda c: c.data.startswith("wg_task_create:"))
+async def wg_task_create(cb: types.CallbackQuery, state: FSMContext):
+    """Начинает создание нового набора: запрашиваем название после нажатия кнопки."""
+    await cb.answer()
+    try:
+        group_no = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    await state.update_data(tasks_group=group_no)
+    await cb.message.answer("Введите название набора (например, Домашка 24.09):")
     await state.set_state(WorkGroups.waiting_tasks_title)
 
 
@@ -475,15 +572,20 @@ async def pick_tasks_group(cb: types.CallbackQuery, state: FSMContext):
     except Exception:
         return
     await state.update_data(tasks_group=group_no)
-    # Показать уже имеющиеся наборы
+    # Показать уже имеющиеся наборы и кнопку «Создать задание»
     tasks = list_group_tasks(group_no)
     if tasks:
         try:
-            await _safe_edit_text(cb.message, "У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+            await _safe_edit_text(cb.message, "У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
         except Exception:
-            await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
-    await cb.message.answer("Введите название набора (например, Домашка 24.09):")
-    await state.set_state(WorkGroups.waiting_tasks_title)
+            await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
+    else:
+        try:
+            await _safe_edit_text(cb.message, "У этой группы пока нет наборов:", reply_markup=get_group_tasks_kb([], group_no))
+        except Exception:
+            await cb.message.answer("У этой группы пока нет наборов:", reply_markup=get_group_tasks_kb([], group_no))
+    # Ждём нажатия «Создать задание»
+    await state.set_state(None)
 
 
 @router.message(WorkGroups.waiting_tasks_title)
@@ -572,6 +674,12 @@ async def wg_tasks_ids(message: types.Message, state: FSMContext):
     ids_str = ", ".join(str(i) for i in ids)
     await message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {ids_str})")
     await state.set_state(None)
+    # Показать обновлённый список наборов сразу
+    try:
+        tasks = list_group_tasks(group_no)
+        await message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
+    except Exception:
+        pass
 
 
 # ── Новые обработчики для кнопок выбора способа/типов/варианта ─────────────
@@ -635,7 +743,16 @@ async def wg_types_done(cb: types.CallbackQuery, state: FSMContext):
     title = data.get("tasks_title") or "Набор"
     items = ", ".join(f"{exam}:{p}" for p in ids)
     create_group_task(group_no, title, items)
-    await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
+    # Покажем подтверждение и обновлённый список наборов
+    try:
+        await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
+    except Exception:
+        await cb.message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
+    tasks = list_group_tasks(group_no)
+    try:
+        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
+    except Exception:
+        pass
     await state.set_state(None)
     await cb.answer()
 
@@ -737,7 +854,16 @@ async def wg_ids_done(cb: types.CallbackQuery, state: FSMContext):
         return
     items = ", ".join(f"{exam}:{i}" for i in ids_selected)
     create_group_task(group_no, title, items)
-    await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids_selected))})")
+    try:
+        await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids_selected))})")
+    except Exception:
+        await cb.message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids_selected))})")
+    # Обновим список наборов
+    tasks = list_group_tasks(group_no)
+    try:
+        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
+    except Exception:
+        pass
     await state.set_state(None)
     await cb.answer()
 
@@ -775,10 +901,10 @@ async def wg_task_delete(cb: types.CallbackQuery):
     tasks = list_group_tasks(group_no)
     try:
         # Обновим только клавиатуру у того же сообщения
-        await cb.message.edit_reply_markup(reply_markup=get_group_tasks_kb(tasks))
+        await cb.message.edit_reply_markup(reply_markup=get_group_tasks_kb(tasks, group_no))
     except Exception:
         # Если не получилось — отправим новое сообщение с клавиатурой
-        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     await cb.answer("Удалено")
 
 
@@ -948,9 +1074,9 @@ async def wg_tasks_list(cb: types.CallbackQuery):
         return
     tasks = list_group_tasks(group_no)
     try:
-        await cb.message.edit_text("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+        await cb.message.edit_text("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     except Exception:
-        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks))
+        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     await cb.answer()
 
 
@@ -992,7 +1118,16 @@ async def wg_pick_variant(cb: types.CallbackQuery, state: FSMContext):
     title = data.get("tasks_title") or f"Вариант {filename}"
     items = ", ".join(f"{exam}:{p}" for p in ids)
     create_group_task(group_no, title, items)
-    await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
+    try:
+        await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
+    except Exception:
+        await cb.message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
+    # После создания сразу показываем список наборов с новой кнопкой
+    tasks = list_group_tasks(group_no)
+    try:
+        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
+    except Exception:
+        pass
     await state.set_state(None)
     await cb.answer()
 

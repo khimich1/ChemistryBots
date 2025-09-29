@@ -655,47 +655,38 @@ def get_overall_exam_stats_fixed(user_id: int) -> dict[str, tuple[int, int]]:
     (проверяем по диапазону test_type и по совпадению correct_answer с эталоном из БД тестов).
     """
 
-    def _unique_correct(exam: str) -> int:
+    def _sum_correct(exam: str) -> int:
         exam_norm = (exam or "").strip().lower()
         if exam_norm not in {"ege", "oge"}:
             exam_norm = "ege"
-        unique_qids: set[int] = set()
-        with sqlite3.connect(DB_PATH) as conn:
-            rows = _safe_fetchall(
-                conn,
-                """
-                SELECT test_type, question_id, correct_answer,
-                       CASE WHEN CAST(is_correct AS INTEGER)=1 THEN 1 ELSE 0 END AS is_correct
-                FROM test_answers
-                WHERE user_id=?
-                """,
-                (user_id,)
-            )
-        for t_type, qid, corr_ans, is_corr in rows:
-            try:
-                t = int(t_type or 0)
-                q = int(qid)
-            except Exception:
-                continue
-            # Принадлежность экзамену и проверка эталона
-            if exam_norm == "ege":
-                if not (1 <= t <= 28):
-                    continue
-                right = _get_correct_answer_from_tests(TESTS_DB_EGE, _ANS_CACHE_EGE, q)
-            else:
-                if not (1 <= t <= 19):
-                    continue
-                right = _get_correct_answer_from_tests(TESTS_DB_OGE, _ANS_CACHE_OGE, q)
-            if right is None:
-                continue
-            if str(corr_ans or "").strip().lower() != right:
-                continue
-            if int(is_corr or 0) == 1:
-                unique_qids.add(q)
-        return int(len(unique_qids))
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                if exam_norm == "ege":
+                    row = _safe_fetchone(
+                        conn,
+                        """
+                        SELECT COALESCE(SUM(CASE WHEN CAST(is_correct AS INTEGER)=1 THEN 1 ELSE 0 END), 0)
+                        FROM test_answers
+                        WHERE user_id=? AND CAST(test_type AS INTEGER) BETWEEN 1 AND 28
+                        """,
+                        (user_id,)
+                    )
+                else:
+                    row = _safe_fetchone(
+                        conn,
+                        """
+                        SELECT COALESCE(SUM(CASE WHEN CAST(is_correct AS INTEGER)=1 THEN 1 ELSE 0 END), 0)
+                        FROM test_answers
+                        WHERE user_id=? AND CAST(test_type AS INTEGER) BETWEEN 1 AND 19
+                        """,
+                        (user_id,)
+                    )
+                return int((row[0] if row else 0) or 0)
+        except Exception:
+            return 0
 
-    ege_correct = _unique_correct("ege")
-    oge_correct = _unique_correct("oge")
+    ege_correct = _sum_correct("ege")
+    oge_correct = _sum_correct("oge")
 
     # Фиксированные знаменатели
     ege_total = 840

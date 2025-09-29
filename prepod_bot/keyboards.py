@@ -19,7 +19,7 @@ def get_manage_groups_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-def get_group_tasks_kb(tasks: list[dict]) -> InlineKeyboardMarkup:
+def get_group_tasks_kb(tasks: list[dict], group_no: int | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for t in tasks:
         title = t.get("title") or f"Набор {t.get('id')}"
@@ -29,6 +29,9 @@ def get_group_tasks_kb(tasks: list[dict]) -> InlineKeyboardMarkup:
         print_btn = InlineKeyboardButton(text="🖨", callback_data=f"wg_task_print:{t.get('id')}")
         del_btn = InlineKeyboardButton(text="🗑", callback_data=f"wg_task_del:{t.get('id')}")
         rows.append([open_btn, stats_btn, print_btn, del_btn])
+    # Кнопка создания нового набора — перед кнопкой Назад
+    if group_no is not None:
+        rows.append([InlineKeyboardButton(text="➕ Создать задание", callback_data=f"wg_task_create:{group_no}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -37,22 +40,28 @@ def get_group_numbers_keyboard(group_numbers: list[int]) -> InlineKeyboardMarkup
     kb: list[list[InlineKeyboardButton]] = []
     for g in group_numbers:
         kb.append([InlineKeyboardButton(text=f"Группа {g}", callback_data=f"wg_open:{g}")])
+    # Кнопка создания новой группы в этом списке
+    kb.append([InlineKeyboardButton(text="➕ Создать новую группу", callback_data="wg_add_start")])
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_back")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-def get_group_pick_keyboard(group_numbers: list[int], *, prefix: str, back_cb: str = "manage_groups_back") -> InlineKeyboardMarkup:
+def get_group_pick_keyboard(
+    group_numbers: list[int], *, prefix: str, back_cb: str = "manage_groups_back", include_create: bool = False
+) -> InlineKeyboardMarkup:
     """Универсальная клавиатура выбора группы по списку номеров.
     prefix — префикс callback_data, будет отправлено `<prefix>:<group_no>`.
     """
     rows: list[list[InlineKeyboardButton]] = []
     for g in group_numbers:
         rows.append([InlineKeyboardButton(text=f"Группа {g}", callback_data=f"{prefix}:{g}")])
+    if include_create:
+        rows.append([InlineKeyboardButton(text="➕ Создать новую группу", callback_data="wg_create_group")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_group_members_keyboard(members: list[dict], group_no: int | None = None) -> InlineKeyboardMarkup:
+def get_group_members_keyboard(members: list[dict], group_no: int | None = None, *, back_cb: str = "manage_groups_list") -> InlineKeyboardMarkup:
     """Список участников. Оставляем только кнопку исключения из рабочей группы:
     - 🚫 Исключить из рабочей группы (work_groups), если передан group_no
     """
@@ -66,7 +75,10 @@ def get_group_members_keyboard(members: list[dict], group_no: int | None = None)
         if group_no is not None:
             row.append(InlineKeyboardButton(text="🚫", callback_data=f"wg_wremove:{group_no}:{uid}"))
         kb.append(row)
-    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_list")])
+    # Кнопка добавления нового участника в эту группу
+    if group_no is not None:
+        kb.append([InlineKeyboardButton(text="➕ Добавить в группу", callback_data=f"wg_prompt_add:{group_no}")])
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
