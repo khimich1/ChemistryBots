@@ -11,37 +11,60 @@ from services.tasks import (
     unhide_task,
 )
 from states import EditTask
+from utils.message_manager import message_manager
 
 router = Router()
 
 @router.message(StateFilter('*'), lambda m: m.text == "🛠 Управление заданиями")
 async def manage_tasks_menu(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Выберите действие:", reply_markup=get_manage_tasks_keyboard())
+    await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
+    sent = await message.answer("Выберите действие:", reply_markup=get_manage_tasks_keyboard())
+    try:
+        message_manager.add_message(message.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 @router.message(StateFilter('*'), lambda m: m.text == "⬅️ Назад")
 async def manage_back(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Главное меню:", reply_markup=get_teacher_keyboard())
+    await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
+    sent = await message.answer("Главное меню:", reply_markup=get_teacher_keyboard())
+    try:
+        message_manager.add_message(message.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 @router.message(lambda m: m.text == "➕ Добавить")
 async def manage_add_placeholder(message: types.Message):
-    await message.answer("Функция добавления появится позже.")
+    sent = await message.answer("Функция добавления появится позже.")
+    try:
+        message_manager.add_message(message.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 @router.message(lambda m: m.text == "🛠 Исправить")
 async def manage_fix_list(message: types.Message):
     tasks = list_problem_tasks()
     if not tasks:
-        await message.answer("Нет скрытых заданий.")
+        sent = await message.answer("Нет скрытых заданий.")
+        try:
+            message_manager.add_message(message.from_user.id, sent.message_id)
+        except Exception:
+            pass
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"#{t['id']} • {t['question'][:32]}…", callback_data=f"dbg_task_{t['id']}")]
         for t in tasks
     ])
-    await message.answer("Выберите задание для правки:", reply_markup=kb)
+    sent = await message.answer("Выберите задание для правки:", reply_markup=kb)
+    try:
+        message_manager.add_message(message.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 def _edit_task_kb(task_id: int) -> InlineKeyboardMarkup:
@@ -73,7 +96,11 @@ async def open_task(cb: types.CallbackQuery):
         await cb.message.edit_text(text)
         await cb.message.edit_reply_markup(reply_markup=_edit_task_kb(task_id))
     except Exception:
-        await cb.message.answer(text, reply_markup=_edit_task_kb(task_id))
+        sent = await cb.message.answer(text, reply_markup=_edit_task_kb(task_id))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 
@@ -84,7 +111,11 @@ async def back_to_list(cb: types.CallbackQuery):
         try:
             await cb.message.edit_text("Нет скрытых заданий.")
         except Exception:
-            await cb.message.answer("Нет скрытых заданий.")
+            sent = await cb.message.answer("Нет скрытых заданий.")
+            try:
+                message_manager.add_message(cb.from_user.id, sent.message_id)
+            except Exception:
+                pass
         await cb.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -95,7 +126,11 @@ async def back_to_list(cb: types.CallbackQuery):
         await cb.message.edit_text("Выберите задание для правки:")
         await cb.message.edit_reply_markup(reply_markup=kb)
     except Exception:
-        await cb.message.answer("Выберите задание для правки:", reply_markup=kb)
+        sent = await cb.message.answer("Выберите задание для правки:", reply_markup=kb)
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 
@@ -113,7 +148,11 @@ async def ask_new_text(cb: types.CallbackQuery, state: FSMContext):
     task_id = int(data.split("_")[-1])
     await state.set_state(EditTask.waiting_new_text)
     await state.update_data(edit_task_id=task_id, edit_field=field)
-    await cb.message.answer("Пришлите новый текст:")
+    sent = await cb.message.answer("Пришлите новый текст:")
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer()
 
 
@@ -134,8 +173,13 @@ async def save_new_text(m: types.Message, state: FSMContext):
         f"Верный ответ: {task['correct_answer']}\n\n"
         f"Подсказка: {task.get('hint','')}"
     )
-    await m.answer("Изменения сохранены.")
-    await m.answer(text, reply_markup=_edit_task_kb(task_id))
+    sent1 = await m.answer("Изменения сохранены.")
+    sent2 = await m.answer(text, reply_markup=_edit_task_kb(task_id))
+    try:
+        message_manager.add_message(m.from_user.id, sent1.message_id)
+        message_manager.add_message(m.from_user.id, sent2.message_id)
+    except Exception:
+        pass
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("dbg_unhide_"))
@@ -148,7 +192,11 @@ async def unhide_and_back(cb: types.CallbackQuery):
         try:
             await cb.message.edit_text("Готово. Все исправлено, скрытых заданий нет.")
         except Exception:
-            await cb.message.answer("Готово. Все исправлено, скрытых заданий нет.")
+            sent = await cb.message.answer("Готово. Все исправлено, скрытых заданий нет.")
+            try:
+                message_manager.add_message(cb.from_user.id, sent.message_id)
+            except Exception:
+                pass
         await cb.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -159,5 +207,9 @@ async def unhide_and_back(cb: types.CallbackQuery):
         await cb.message.edit_text("Задание возвращено в выдачу. Выберите следующее:")
         await cb.message.edit_reply_markup(reply_markup=kb)
     except Exception:
-        await cb.message.answer("Задание возвращено в выдачу. Выберите следующее:", reply_markup=kb)
+        sent = await cb.message.answer("Задание возвращено в выдачу. Выберите следующее:", reply_markup=kb)
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()

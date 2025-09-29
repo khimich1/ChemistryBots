@@ -11,12 +11,13 @@ from services.students import (
     build_user_progress_text_ege, build_user_progress_text_oge, build_user_flashcards_text, build_user_oral_text,
 )
 from services.groups import get_all_group_numbers, get_work_group_members, get_all_students_with_plans
+from utils.message_manager import message_manager
 from states import EditStudent, ReportSearch
 
 # Добавляем путь к модулю в parent_bot
 parent_services_path = os.path.join(os.path.dirname(__file__), "..", "..", "parent_bot", "bot", "services")
 sys.path.insert(0, parent_services_path)
-from filename_generator import get_filename_for_user, get_user_display_name
+# filename_generator не используется здесь — импорт удалён, чтобы не плодить предупреждения
 
 router = Router()
 
@@ -102,7 +103,12 @@ async def report_entry(message: types.Message, state: FSMContext):
     await state.clear()
     students = get_all_students()
     await state.update_data(report_students=students, report_query="", report_page=1)
-    await message.answer("Выберите ученика:", reply_markup=_report_students_kb(students, page=1))
+    await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
+    sent = await message.answer("Выберите ученика:", reply_markup=_report_students_kb(students, page=1))
+    try:
+        message_manager.add_message(message.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 @router.callback_query(lambda c: c.data == "students_back")
@@ -113,7 +119,11 @@ async def students_back(cb: types.CallbackQuery, state: FSMContext):
     try:
         await cb.message.edit_text("Выберите ученика:", reply_markup=_report_students_kb(students, page=page))
     except Exception:
-        await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(students, page=page))
+        sent = await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(students, page=page))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 
@@ -126,7 +136,11 @@ async def students_show_all(cb: types.CallbackQuery, state: FSMContext):
     try:
         await cb.message.edit_text("Выберите ученика:", reply_markup=_report_students_kb(students, page=1))
     except Exception:
-        await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(students, page=1))
+        sent = await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(students, page=1))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer(text, show_alert=True)
 
 
@@ -135,7 +149,11 @@ async def students_show_all(cb: types.CallbackQuery, state: FSMContext):
 @router.callback_query(lambda c: c.data == "report_search")
 async def report_search_start(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(ReportSearch.waiting_query)
-    await cb.message.answer("Введите часть имени или username (можно с @):")
+    sent = await cb.message.answer("Введите часть имени или username (можно с @):")
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer()
 
 
@@ -147,7 +165,11 @@ async def report_search_apply(m: types.Message, state: FSMContext):
     await state.update_data(report_students=filtered, report_query=query, report_page=1)
     kb = _report_students_kb(filtered, page=1)
     await state.clear()
-    await m.answer("Результаты поиска:", reply_markup=kb)
+    sent = await m.answer("Результаты поиска:", reply_markup=kb)
+    try:
+        message_manager.add_message(m.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("report_page:"))
@@ -184,7 +206,11 @@ async def report_groups_list(cb: types.CallbackQuery):
     try:
         await cb.message.edit_text("Список групп:", reply_markup=_report_groups_kb(groups))
     except Exception:
-        await cb.message.answer("Список групп:", reply_markup=_report_groups_kb(groups))
+        sent = await cb.message.answer("Список групп:", reply_markup=_report_groups_kb(groups))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 
@@ -206,7 +232,11 @@ async def report_open_group(cb: types.CallbackQuery):
     try:
         await cb.message.edit_text(f"Участники группы {group_no}:", reply_markup=_report_group_members_kb(members))
     except Exception:
-        await cb.message.answer(f"Участники группы {group_no}:", reply_markup=_report_group_members_kb(members))
+        sent = await cb.message.answer(f"Участники группы {group_no}:", reply_markup=_report_group_members_kb(members))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 
@@ -220,9 +250,17 @@ async def report_open_student(cb: types.CallbackQuery):
     # Показать мини-сводку и меню прогресса
     try:
         summary = build_user_summary_text(user_id)
-        await cb.message.answer(summary, parse_mode="HTML", reply_markup=_progress_menu_kb(user_id))
+        sent = await cb.message.answer(summary, parse_mode="HTML", reply_markup=_progress_menu_kb(user_id))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     except Exception as e:
-        await cb.message.answer(f"Не удалось сформировать сводку: {e}")
+        err = await cb.message.answer(f"Не удалось сформировать сводку: {e}")
+        try:
+            message_manager.add_message(cb.from_user.id, err.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 
@@ -239,11 +277,23 @@ async def rep_back_delete(cb: types.CallbackQuery, state: FSMContext):
     user_id = data.get("current_report_user_id")
     if user_id:
         try:
-            await cb.message.answer(f"Ученик ID {int(user_id)}. Выберите действие:", reply_markup=_student_menu_kb(int(user_id)))
+            sent = await cb.message.answer(f"Ученик ID {int(user_id)}. Выберите действие:", reply_markup=_student_menu_kb(int(user_id)))
+            try:
+                message_manager.add_message(cb.from_user.id, sent.message_id)
+            except Exception:
+                pass
         except Exception:
-            await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(get_all_students(), page=1))
+            sent2 = await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(get_all_students(), page=1))
+            try:
+                message_manager.add_message(cb.from_user.id, sent2.message_id)
+            except Exception:
+                pass
     else:
-        await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(get_all_students(), page=1))
+        sent = await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(get_all_students(), page=1))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 
@@ -264,7 +314,11 @@ async def student_selected(cb: types.CallbackQuery):
         # Поэтому продублируем user_id в тексте и будем возвращаться к меню без обращения к state
         await cb.message.edit_text(f"Ученик ID {user_id}. Выберите действие:", reply_markup=_student_menu_kb(user_id))
     except Exception:
-        await cb.message.answer(f"Ученик ID {user_id}. Выберите действие:", reply_markup=_student_menu_kb(user_id))
+        sent = await cb.message.answer(f"Ученик ID {user_id}. Выберите действие:", reply_markup=_student_menu_kb(user_id))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 
@@ -299,7 +353,11 @@ async def show_progress_ege(cb: types.CallbackQuery):
     user_id = int(cb.data.split("_", 2)[1])
     # Разделяем статистику: здесь считаем только по базе ЕГЭ
     text = build_user_progress_text_ege(user_id)
-    await cb.message.answer("<b>Статистика по тестам ЕГЭ</b>\n\n" + text, parse_mode="HTML", reply_markup=_back_delete_kb())
+    sent = await cb.message.answer("<b>Статистика по тестам ЕГЭ</b>\n\n" + text, parse_mode="HTML", reply_markup=_back_delete_kb())
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer()
 
 
@@ -308,7 +366,11 @@ async def show_progress_oge(cb: types.CallbackQuery):
     user_id = int(cb.data.split("_", 2)[1])
     # Статистика только по базе ОГЭ
     text = build_user_progress_text_oge(user_id)
-    await cb.message.answer("<b>Статистика по тестам ОГЭ</b>\n\n" + text, parse_mode="HTML", reply_markup=_back_delete_kb())
+    sent = await cb.message.answer("<b>Статистика по тестам ОГЭ</b>\n\n" + text, parse_mode="HTML", reply_markup=_back_delete_kb())
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer()
 
 
@@ -316,7 +378,11 @@ async def show_progress_oge(cb: types.CallbackQuery):
 async def show_progress_cards(cb: types.CallbackQuery):
     user_id = int(cb.data.split("_", 2)[1])
     text = build_user_flashcards_text(user_id)
-    await cb.message.answer("<b>Статистика по карточкам</b>\n\n" + text, parse_mode="HTML", reply_markup=_back_delete_kb())
+    sent = await cb.message.answer("<b>Статистика по карточкам</b>\n\n" + text, parse_mode="HTML", reply_markup=_back_delete_kb())
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer()
 
 
@@ -324,7 +390,11 @@ async def show_progress_cards(cb: types.CallbackQuery):
 async def show_progress_oral(cb: types.CallbackQuery):
     user_id = int(cb.data.split("_", 2)[1])
     text = build_user_oral_text(user_id)
-    await cb.message.answer("<b>Устный зачёт</b>\n\n" + text, parse_mode="HTML", reply_markup=_back_delete_kb())
+    sent = await cb.message.answer("<b>Устный зачёт</b>\n\n" + text, parse_mode="HTML", reply_markup=_back_delete_kb())
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer()
 
 
@@ -343,7 +413,11 @@ async def edit_menu(cb: types.CallbackQuery):
     try:
         await cb.message.edit_text("Редактирование профиля ученика:", reply_markup=_edit_menu_kb(user_id))
     except Exception:
-        await cb.message.answer("Редактирование профиля ученика:", reply_markup=_edit_menu_kb(user_id))
+        sent = await cb.message.answer("Редактирование профиля ученика:", reply_markup=_edit_menu_kb(user_id))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer()
 
 
@@ -352,7 +426,11 @@ async def ask_new_username(cb: types.CallbackQuery, state: FSMContext):
     user_id = int(cb.data.split("_", 2)[1])
     await state.update_data(edit_user_id=user_id)
     await state.set_state(EditStudent.waiting_new_username)
-    await cb.message.answer("Пришлите новый username (можно пустую строку, чтобы очистить):")
+    sent = await cb.message.answer("Пришлите новый username (можно пустую строку, чтобы очистить):")
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer()
 
 
@@ -361,7 +439,11 @@ async def ask_new_fullname(cb: types.CallbackQuery, state: FSMContext):
     user_id = int(cb.data.split("_", 2)[1])
     await state.update_data(edit_user_id=user_id)
     await state.set_state(EditStudent.waiting_new_fullname)
-    await cb.message.answer("Пришлите новое имя (full_name). Пустая строка — очистить значение:")
+    sent = await cb.message.answer("Пришлите новое имя (full_name). Пустая строка — очистить значение:")
+    try:
+        message_manager.add_message(cb.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await cb.answer()
 
 
@@ -372,7 +454,11 @@ async def save_new_username(m: types.Message, state: FSMContext):
     new_username = (m.text or "").strip()
     update_user_profile(user_id, username=new_username)
     await state.clear()
-    await m.answer("Username обновлён. Возвращаю список учеников...", reply_markup=_report_students_kb(get_all_students(), page=1))
+    sent = await m.answer("Username обновлён. Возвращаю список учеников...", reply_markup=_report_students_kb(get_all_students(), page=1))
+    try:
+        message_manager.add_message(m.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 @router.message(EditStudent.waiting_new_fullname)
@@ -382,7 +468,11 @@ async def save_new_fullname(m: types.Message, state: FSMContext):
     new_fullname = (m.text or "").strip()
     update_user_profile(user_id, full_name=new_fullname)
     await state.clear()
-    await m.answer("Имя обновлено. Возвращаю список учеников...", reply_markup=_report_students_kb(get_all_students(), page=1))
+    sent = await m.answer("Имя обновлено. Возвращаю список учеников...", reply_markup=_report_students_kb(get_all_students(), page=1))
+    try:
+        message_manager.add_message(m.from_user.id, sent.message_id)
+    except Exception:
+        pass
 
 
 @router.callback_query(lambda c: c.data and c.data.endswith("_delete"))
@@ -393,5 +483,9 @@ async def hide_student(cb: types.CallbackQuery):
     try:
         await cb.message.edit_text("Выберите ученика:", reply_markup=_report_students_kb(get_all_students(), page=1))
     except Exception:
-        await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(get_all_students(), page=1))
+        sent = await cb.message.answer("Выберите ученика:", reply_markup=_report_students_kb(get_all_students(), page=1))
+        try:
+            message_manager.add_message(cb.from_user.id, sent.message_id)
+        except Exception:
+            pass
     await cb.answer("Ученик скрыт из списка. Используйте 'Показать всех' чтобы вернуть.", show_alert=True)

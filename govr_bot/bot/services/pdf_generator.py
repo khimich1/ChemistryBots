@@ -65,29 +65,51 @@ def _register_fonts():
         pdfmetrics.registerFont(TTFont("HeaderFont", bold_path))
         body, header = "BodyFont", "HeaderFont"
     else:
-        # fallbacks (linux обычно)
+        # fallbacks (linux/Windows): сначала попробуем системные пути, затем — шрифт DejaVu из matplotlib
         candidates = [
             ("/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
              "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"),
             ("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
              "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"),
+            (os.path.join(os.getenv("WINDIR", "C:/Windows"), "Fonts", "DejaVuSerif.ttf"),
+             os.path.join(os.getenv("WINDIR", "C:/Windows"), "Fonts", "DejaVuSerif-Bold.ttf")),
         ]
         body, header = "Helvetica", "Helvetica-Bold"
         for reg, b in candidates:
-            if os.path.exists(reg) and os.path.exists(b):
-                pdfmetrics.registerFont(TTFont("BodyFont", reg))
-                pdfmetrics.registerFont(TTFont("HeaderFont", b))
-                body, header = "BodyFont", "HeaderFont"
-                break
+            try:
+                if os.path.exists(reg) and os.path.exists(b):
+                    pdfmetrics.registerFont(TTFont("BodyFont", reg))
+                    pdfmetrics.registerFont(TTFont("HeaderFont", b))
+                    body, header = "BodyFont", "HeaderFont"
+                    break
+            except Exception:
+                pass
+
+        # Если подходящих ttf не нашли — возьмём DejaVu Sans из matplotlib (он точно ставится как зависимость)
+        if body == "Helvetica":
+            try:
+                from matplotlib import font_manager as _fm
+                dejavu_reg = _fm.findfont("DejaVu Sans", fallback_to_default=True)
+                dejavu_bold = os.path.join(os.path.dirname(dejavu_reg), "DejaVuSans-Bold.ttf")
+                pdfmetrics.registerFont(TTFont("BodyFont", dejavu_reg))
+                if os.path.exists(dejavu_bold):
+                    pdfmetrics.registerFont(TTFont("HeaderFont", dejavu_bold))
+                    body, header = "BodyFont", "HeaderFont"
+                else:
+                    body, header = "BodyFont", "Helvetica-Bold"
+            except Exception:
+                pass
 
     # Matplotlib: тот же шрифт
     try:
         from matplotlib import font_manager as fm, rcParams
+        # Регистрируем оба основных шрифта, если доступны
         if os.path.exists(regular_path):
             fm.fontManager.addfont(regular_path)
         if os.path.exists(bold_path):
             fm.fontManager.addfont(bold_path)
-        rcParams["font.family"] = "Liberation Serif"
+        # Предпочтительно используем DejaVu Sans — у него широкий набор глифов (в том числе ₀…₉, ⁰…⁹)
+        rcParams["font.family"] = "DejaVu Sans"
         rcParams["font.size"] = 10
         rcParams["axes.titlesize"] = 10
         rcParams["axes.labelsize"] = 10

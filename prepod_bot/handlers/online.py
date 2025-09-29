@@ -14,6 +14,7 @@ from services.students import (
     get_activity_updates_since, get_user_label,
 )
 from handlers import menu
+from utils.message_manager import message_manager
 
 router = Router()
 
@@ -182,23 +183,38 @@ def _build_online_text(viewer_id: int) -> str:
 @router.message(StateFilter('*'), lambda m: m.text and "ученики онлайн" in m.text.lower())
 async def online_entry(m: types.Message, state: FSMContext):
     await state.clear()
-    await m.answer("Раздел «Ученики онлайн».", reply_markup=_practice_kb(m.from_user.id))
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
+    sent0 = await m.answer("Раздел «Ученики онлайн».", reply_markup=_practice_kb(m.from_user.id))
     text = _build_online_text(m.from_user.id)
-    await m.answer(text, parse_mode="HTML", reply_markup=_online_kb())
+    sent1 = await m.answer(text, parse_mode="HTML", reply_markup=_online_kb())
+    try:
+        message_manager.add_message(m.from_user.id, sent0.message_id)
+        message_manager.add_message(m.from_user.id, sent1.message_id)
+    except Exception:
+        pass
 
 
 @router.message(lambda m: m.text == "▶ Начать практику")
 async def start_practice(m: types.Message):
     practice_started_at[m.from_user.id] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = _build_online_text(m.from_user.id)
-    await m.answer(text, parse_mode="HTML", reply_markup=_online_kb())
-    await m.answer("Управление:", reply_markup=_practice_kb(m.from_user.id))
+    sent1 = await m.answer(text, parse_mode="HTML", reply_markup=_online_kb())
+    sent2 = await m.answer("Управление:", reply_markup=_practice_kb(m.from_user.id))
+    try:
+        message_manager.add_message(m.from_user.id, sent1.message_id)
+        message_manager.add_message(m.from_user.id, sent2.message_id)
+    except Exception:
+        pass
 
 
 @router.message(lambda m: m.text == "⏹ Закончить практику")
 async def stop_practice(m: types.Message):
     practice_started_at.pop(m.from_user.id, None)
-    await m.answer("Практика завершена.")
+    sent = await m.answer("Практика завершена.")
+    try:
+        message_manager.add_message(m.from_user.id, sent.message_id)
+    except Exception:
+        pass
     await menu.cmd_start(m)
 
 
