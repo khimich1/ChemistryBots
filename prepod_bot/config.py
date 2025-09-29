@@ -27,6 +27,10 @@ TESTS_DB_EGE = os.getenv("TESTS_DB_EGE") or os.path.join(_SHARED_DIR, "test_ege.
 # Для ОГЭ используем TESTS_DB_OGE (дефолт: shared/test_oge.db)
 TESTS_DB_OGE = os.getenv("TESTS_DB_OGE") or os.path.join(_SHARED_DIR, "test_oge.db")
 
+# База для заданий, добавляемых преподавателями (teacher)
+# В .env предусмотрена переменная TESTS_DB_TEACHER с абсолютным путём
+TESTS_DB_TEACHER = os.getenv("TESTS_DB_TEACHER") or os.path.join(_SHARED_DIR, "test_teacher.db")
+
 # Путь к базе пользователей (регистрируется через admin_bot, таблица teacher)
 # По умолчанию shared/users.db рядом с репозиторием
 def _clean_path(value: str | None) -> str | None:

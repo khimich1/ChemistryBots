@@ -27,3 +27,8 @@ class WorkGroups(StatesGroup):
 
 class ReportSearch(StatesGroup):
     waiting_query = State()
+
+
+class AddTeacherTask(StatesGroup):
+    waiting_question_and_image = State()
+    waiting_correct_answer = State()

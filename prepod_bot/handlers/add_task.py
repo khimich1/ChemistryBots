@@ -1,6 +1,6 @@
 from aiogram import Router, types
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import StateFilter
 
 from keyboards import get_manage_tasks_keyboard, get_teacher_keyboard
@@ -10,7 +10,8 @@ from services.tasks import (
     update_task_field,
     unhide_task,
 )
-from states import EditTask
+from services.teacher_tests import save_image, add_teacher_task
+from states import EditTask, AddTeacherTask
 from utils.message_manager import message_manager
 
 router = Router()
@@ -38,8 +39,95 @@ async def manage_back(message: types.Message, state: FSMContext):
 
 
 @router.message(lambda m: m.text == "➕ Добавить")
-async def manage_add_placeholder(message: types.Message):
-    sent = await message.answer("Функция добавления появится позже.")
+async def manage_add_start(message: types.Message, state: FSMContext):
+    await state.set_state(AddTeacherTask.waiting_question_and_image)
+    sent = await message.answer(
+        "Отправьте текст задания. Можно сразу прикрепить 1 фото.\n" 
+        "Когда будете готовы — просто пришлите сообщение.",
+        reply_markup=get_manage_tasks_keyboard(),
+    )
+    try:
+        message_manager.add_message(message.from_user.id, sent.message_id)
+    except Exception:
+        pass
+
+
+@router.message(AddTeacherTask.waiting_question_and_image)
+async def on_question_and_image(message: types.Message, state: FSMContext):
+    # Позволяем вернуться назад клавишей
+    if message.text == "⬅️ Назад":
+        await state.clear()
+        await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
+        sent = await message.answer("Выберите действие:", reply_markup=get_manage_tasks_keyboard())
+        try:
+            message_manager.add_message(message.from_user.id, sent.message_id)
+        except Exception:
+            pass
+        return
+
+    text = (message.caption or message.text or "").strip()
+    if not text:
+        sent = await message.answer("Текст задания пуст. Отправьте текст ещё раз.")
+        try:
+            message_manager.add_message(message.from_user.id, sent.message_id)
+        except Exception:
+            pass
+        return
+
+    image_id: int | None = None
+    # Если прислано фото — сохраняем максимальное по размеру
+    if message.photo:
+        try:
+            photo = message.photo[-1]
+            file = await message.bot.get_file(photo.file_id)
+            file_bytes = await message.bot.download_file(file.file_path)
+            data = file_bytes.read()
+            image_id = save_image(filename=f"tg_{photo.file_unique_id}.jpg", mime_type="image/jpeg", data=data)
+        except Exception:
+            image_id = None
+
+    await state.update_data(add_question=text, add_image_id=image_id)
+    await state.set_state(AddTeacherTask.waiting_correct_answer)
+    sent = await message.answer("Теперь пришлите номер правильного ответа (число).", reply_markup=get_manage_tasks_keyboard())
+    try:
+        message_manager.add_message(message.from_user.id, sent.message_id)
+    except Exception:
+        pass
+
+
+@router.message(AddTeacherTask.waiting_correct_answer)
+async def on_correct_answer(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Назад":
+        # Вернёмся на этап ввода вопроса
+        await state.set_state(AddTeacherTask.waiting_question_and_image)
+        sent = await message.answer("Отправьте текст задания и опционально фото.")
+        try:
+            message_manager.add_message(message.from_user.id, sent.message_id)
+        except Exception:
+            pass
+        return
+
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        sent = await message.answer("Ожидаю число. Пришлите только номер правильного варианта, например: 3")
+        try:
+            message_manager.add_message(message.from_user.id, sent.message_id)
+        except Exception:
+            pass
+        return
+
+    data = await state.get_data()
+    q_text = data.get("add_question") or ""
+    image_id = data.get("add_image_id")
+    # teacher id = message.from_user.id
+    new_id = add_teacher_task(
+        teacher_tg_id=message.from_user.id,
+        question_text=q_text,
+        image_id=int(image_id) if (image_id is not None) else None,
+        correct_answer=raw,
+    )
+    await state.clear()
+    sent = await message.answer(f"✅ Задание сохранено (id={new_id}).", reply_markup=get_manage_tasks_keyboard())
     try:
         message_manager.add_message(message.from_user.id, sent.message_id)
     except Exception:
