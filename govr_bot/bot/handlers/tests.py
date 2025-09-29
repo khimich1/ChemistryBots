@@ -99,7 +99,6 @@ def tests_instruction_text() -> str:
 # 1. Клавиатура для выбора тестов
 # =========================
 def get_tests_types_kb(with_menu: bool = False, include_back: bool = False, user_id: int = None):
-    from bot.services.teacher_access import is_student_approved_by_teacher
     
     types = get_all_tests_types()
     
@@ -118,10 +117,6 @@ def get_tests_types_kb(with_menu: bool = False, include_back: bool = False, user
             row.append(InlineKeyboardButton(text=f"Тест {types[i + 2]}", callback_data=f"choose_test_{types[i + 2]}"))
         if row:  # Добавляем ряд только если в нем есть кнопки
             keyboard.append(row)
-    
-    # --- Кнопка "Задания для группы" (только для студентов в группе)
-    if user_id and is_student_approved_by_teacher(user_id):
-        keyboard.append([InlineKeyboardButton(text="📂 Задания для группы", callback_data="group_assignments")])
     
     # --- Кнопка "Работа над ошибками"
     keyboard.append([InlineKeyboardButton(text="💡 Работа над ошибками", callback_data="work_on_mistakes")])

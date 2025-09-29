@@ -300,6 +300,7 @@ async def tests_entry_menu(m: types.Message):
         keyboard=[
             [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии")],
             [KeyboardButton(text="🧪 Тестовая часть ОГЭ по химии")],
+            [KeyboardButton(text="📂 Задания для группы")],
             [KeyboardButton(text="⬅️ В меню")],
         ],
         resize_keyboard=True
@@ -335,6 +336,7 @@ async def tests_go_back(cb: types.CallbackQuery):
         keyboard=[
             [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии")],
             [KeyboardButton(text="🧪 Тестовая часть ОГЭ по химии")],
+            [KeyboardButton(text="📂 Задания для группы")],
             [KeyboardButton(text="⬅️ В меню")],
         ],
         resize_keyboard=True
@@ -342,6 +344,48 @@ async def tests_go_back(cb: types.CallbackQuery):
     sent = await cb.message.answer("Выбери раздел тестов:", reply_markup=kb)
     message_manager.add_message(cb.from_user.id, sent.message_id)
     await cb.answer()
+
+@router.message(lambda m: (m.text or "").strip().lower() in {"📂 задания для группы", "задания для группы"})
+async def show_group_tasks_from_menu(m: types.Message):
+    """Показывает список заданий для группы из нижнего меню тестов."""
+    from bot.services.teacher_access import get_group_tasks_for_user, get_user_group_number
+
+    await message_manager.delete_user_messages_fast(m.bot, m.from_user.id, m.chat.id)
+
+    user_id = m.from_user.id
+    group_no = get_user_group_number(user_id)
+
+    if not group_no:
+        await m.answer("❌ Вы не состоите в группе или произошла ошибка.")
+        return
+
+    tasks = get_group_tasks_for_user(user_id)
+
+    if not tasks:
+        await m.answer(
+            f"📂 <b>Задания для группы {group_no}</b>\n\nПока нет заданий от преподавателя.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Формируем список заданий и кнопки запуска
+    tasks_text = f"📂 <b>Задания для группы {group_no}</b>\n\n"
+    keyboard = []
+    for task in tasks:
+        tasks_text += f"📋 {task['title']}\n"
+        tasks_text += f"📅 Создано: {task['created_at']}\n\n"
+        keyboard.append([
+            InlineKeyboardButton(text=f"▶️ {task['title']}", callback_data=f"start_group_task_{task['id']}")
+        ])
+
+    # Кнопка "Назад" к выбору раздела тестов
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="tests_go_back")])
+
+    await m.answer(
+        tasks_text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
 
 # Универсальная кнопка «В главное меню» для инлайн-кнопок
 @router.callback_query(lambda c: c.data == "to_main_menu")

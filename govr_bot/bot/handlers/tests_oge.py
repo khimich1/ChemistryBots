@@ -4,7 +4,7 @@ from __future__ import annotations
 import base64
 import io
 from aiogram import Router, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.exceptions import TelegramBadRequest
 
 from bot.handlers.menu import main_kb
@@ -23,6 +23,7 @@ from bot.services.answer_db import (
 from bot.utils_pkg_new.logger import log_error
 from bot.utils_pkg_new.telegram_error_handler import safe_edit_message, handle_telegram_errors
 from bot.services.plan import get_user_plan_code, limits_for, consume_daily
+from bot.utils_pkg.message_manager import message_manager
 
 router = Router()
 
@@ -1141,7 +1142,25 @@ async def back_to_grid(cb: CallbackQuery):
 # ── возврат в меню ─────────────────────────────────────────────────────
 @router.callback_query(lambda c: c.data == f"{CALLBACK_PREFIX}_tests_go_back")
 async def tests_go_back(cb: CallbackQuery):
-    await cb.message.answer("Выбери номер ОГЭ-теста:", reply_markup=get_tests_types_kb(with_menu=True, include_back=True))
+    await message_manager.delete_user_messages_fast(cb.message.bot, cb.from_user.id, cb.message.chat.id)
+    # Удаляем сообщение со списком тестов
+    try:
+        await cb.message.delete()
+    except Exception:
+        # если не удалилось — просто продолжим и перешлём меню ниже
+        pass
+    # Возврат к подменю тестов (кнопки Reply)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии")],
+            [KeyboardButton(text="🧪 Тестовая часть ОГЭ по химии")],
+            [KeyboardButton(text="📂 Задания для группы")],
+            [KeyboardButton(text="⬅️ В меню")],
+        ],
+        resize_keyboard=True
+    )
+    sent = await cb.message.answer("Выбери раздел тестов:", reply_markup=kb)
+    message_manager.add_message(cb.from_user.id, sent.message_id)
     await cb.answer()
 
 # =========================
