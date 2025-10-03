@@ -316,6 +316,59 @@ def clear_test_progress(user_id, test_type):
         c.execute('DELETE FROM test_progress WHERE user_id=? AND test_type=?', (user_id, test_type))
         conn.commit()
 
+# === Прогресс групповых заданий ===
+
+def _init_group_task_progress():
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS group_task_progress (
+                user_id INTEGER,
+                task_id INTEGER,
+                current_question INTEGER,
+                correct_answers INTEGER,
+                items TEXT,
+                title TEXT,
+                updated_at TEXT,
+                PRIMARY KEY (user_id, task_id)
+            )
+        ''')
+        conn.commit()
+
+def save_group_task_progress(user_id: int, task_id: int, current_question: int, correct_answers: int, items: str, title: str) -> None:
+    _init_group_task_progress()
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO group_task_progress (user_id, task_id, current_question, correct_answers, items, title, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, task_id) DO UPDATE SET
+                current_question=excluded.current_question,
+                correct_answers=excluded.correct_answers,
+                items=excluded.items,
+                title=excluded.title,
+                updated_at=excluded.updated_at
+        ''', (int(user_id), int(task_id), int(current_question), int(correct_answers or 0), items or "", title or "", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+
+def load_group_task_progress(user_id: int, task_id: int) -> tuple[int, int, str, str] | None:
+    _init_group_task_progress()
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute('SELECT current_question, correct_answers, items, title FROM group_task_progress WHERE user_id=? AND task_id=?', (int(user_id), int(task_id)))
+        row = c.fetchone()
+        if row:
+            cq, ca, items, title = row
+            return int(cq or 0), int(ca or 0), str(items or ""), str(title or "")
+        return None
+
+def clear_group_task_progress(user_id: int, task_id: int) -> None:
+    _init_group_task_progress()
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute('DELETE FROM group_task_progress WHERE user_id=? AND task_id=?', (int(user_id), int(task_id)))
+        conn.commit()
+
 def reset_test_results(user_id: int, test_type: int) -> None:
     """
     Полный сброс результатов по тесту для пользователя:

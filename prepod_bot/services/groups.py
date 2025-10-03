@@ -14,6 +14,58 @@ def _project_root() -> str:
     return os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 
+def _govr_db_path() -> str:
+    """Абсолютный путь к БД govr-бота с ответами/тарифами."""
+    repo_root = _project_root()
+    return os.path.join(repo_root, "govr_bot", "bot", "services", "answers.db")
+
+
+def _user_exists_anywhere(user_id: int) -> bool:
+    """Проверяет наличие пользователя в ЛЮБОЙ из доступных баз:
+    - prepod_bot: таблица test_answers (если есть)
+    - govr_bot: таблица test_answers или user_plans (если есть)
+    Возвращает True, если найден хотя бы где-то.
+    """
+    uid = int(user_id)
+    # 1) prepod_bot DB_PATH
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT 1 FROM test_answers WHERE user_id = ? LIMIT 1", (uid,))
+                if cur.fetchone():
+                    return True
+            except sqlite3.OperationalError:
+                # таблицы может не быть — это ок
+                pass
+    except Exception:
+        pass
+
+    # 2) govr_bot answers.db
+    try:
+        gpath = _govr_db_path()
+        with sqlite3.connect(gpath) as gconn:
+            gcur = gconn.cursor()
+            # test_answers
+            try:
+                gcur.execute("SELECT 1 FROM test_answers WHERE user_id = ? LIMIT 1", (uid,))
+                if gcur.fetchone():
+                    return True
+            except sqlite3.OperationalError:
+                pass
+            # user_plans (учёт подписки)
+            try:
+                gcur.execute("SELECT 1 FROM user_plans WHERE user_id = ? LIMIT 1", (uid,))
+                if gcur.fetchone():
+                    return True
+            except sqlite3.OperationalError:
+                pass
+    except Exception:
+        pass
+
+    return False
+
+
 def _ensure_groups_table(conn: sqlite3.Connection) -> None:
     """Создает таблицу групп, если её нет"""
     cur = conn.cursor()
@@ -283,14 +335,11 @@ async def broadcast_message_to_group_via_govr(group_no: int, text: str) -> tuple
     fail = 0
     for uid in user_ids:
         try:
-            # Проверяем, есть ли пользователь в базе test_answers
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT 1 FROM test_answers WHERE user_id = ? LIMIT 1", (uid,))
-                if not cur.fetchone():
-                    print(f"[DEBUG] broadcast: Пользователь {uid} не найден в базе, пропускаем")
-                    fail += 1
-                    continue
+            # Проверка наличия пользователя в любой доступной базе (prepod или govr)
+            if not _user_exists_anywhere(int(uid)):
+                print(f"[DEBUG] broadcast: Пользователь {uid} не найден ни в одной базе, пропускаем")
+                fail += 1
+                continue
             
             await bot.send_message(uid, text)
             print(f"[DEBUG] broadcast: Сообщение отправлено пользователю {uid}")
@@ -400,13 +449,10 @@ async def send_message_to_user_via_govr(user_id: int, text: str) -> bool:
         print(f"[DEBUG] Токен не найден, отправка невозможна")
         return False
 
-    # Проверяем, есть ли пользователь в базе test_answers
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT 1 FROM test_answers WHERE user_id = ? LIMIT 1", (int(user_id),))
-        if not cur.fetchone():
-            print(f"[DEBUG] Пользователь {user_id} не найден в базе, отправка невозможна")
-            return False
+    # Проверка наличия пользователя в любой базе (prepod/govr)
+    if not _user_exists_anywhere(int(user_id)):
+        print(f"[DEBUG] Пользователь {user_id} не найден ни в одной базе, отправка невозможна")
+        return False
 
     bot = Bot(token=token)
     try:

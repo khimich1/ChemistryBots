@@ -1424,4 +1424,10 @@ async def catch_user_question(m: types.Message):
     
     # Ответ формирует реальная функция из gpt_service.py
     answer = await answer_student_question(topic, m.text.strip())
-    await m.answer(answer)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="❓ Ещё вопрос ИИ", callback_data="learn_ask"),
+            InlineKeyboardButton(text="➡️ К сл. разделу", callback_data="learn_ok"),
+        ]]
+    )
+    await m.answer(answer, reply_markup=kb)

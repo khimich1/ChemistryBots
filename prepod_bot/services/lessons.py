@@ -18,11 +18,21 @@ def _ensure_table() -> None:
                     start TEXT NOT NULL,    -- HH:MM
                     end TEXT NOT NULL,      -- HH:MM
                     kind TEXT NOT NULL,     -- student|group
-                    target TEXT NOT NULL    -- @username или номер группы
+                    target TEXT NOT NULL,   -- @username или номер группы
+                    notify_before_min INTEGER DEFAULT 30
                 )
                 """
             )
             conn.commit()
+            # Backfill: add notify_before_min if the table existed before
+            try:
+                cur.execute("PRAGMA table_info(teacher_lessons)")
+                cols = {row[1] for row in cur.fetchall()}
+                if "notify_before_min" not in cols:
+                    cur.execute("ALTER TABLE teacher_lessons ADD COLUMN notify_before_min INTEGER DEFAULT 30")
+                    conn.commit()
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -45,11 +55,21 @@ def _ensure_calendar_table(moniker: str) -> None:
                     end TEXT NOT NULL,
                     kind TEXT NOT NULL,
                     target TEXT NOT NULL,
-                    note TEXT
+                    note TEXT,
+                    notify_before_min INTEGER DEFAULT 30
                 )
                 """
             )
             conn.commit()
+            # Миграция добавочного столбца
+            try:
+                cur.execute(f"PRAGMA table_info({safe_name})")
+                cols = {row[1] for row in cur.fetchall()}
+                if "notify_before_min" not in cols:
+                    cur.execute(f"ALTER TABLE {safe_name} ADD COLUMN notify_before_min INTEGER DEFAULT 30")
+                    conn.commit()
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -68,7 +88,7 @@ def add_lesson(tg_id: int, *, day: str, start: str, end: str, kind: str, target:
     with sqlite3.connect(USERS_DB) as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO teacher_lessons (tg_id, day, start, end, kind, target) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO teacher_lessons (tg_id, day, start, end, kind, target, notify_before_min) VALUES (?, ?, ?, ?, ?, ?, 30)",
             (tg_id, day, start, end, kind, target)
         )
         conn.commit()
@@ -82,7 +102,7 @@ def add_lesson(tg_id: int, *, day: str, start: str, end: str, kind: str, target:
         with sqlite3.connect(CALENDAR_DB) as conn2:
             cur2 = conn2.cursor()
             cur2.execute(
-                f"INSERT INTO {table} (day, start, end, kind, target, note) VALUES (?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO {table} (day, start, end, kind, target, note, notify_before_min) VALUES (?, ?, ?, ?, ?, ?, 30)",
                 (day, start, end, kind, target, None)
             )
             conn2.commit()
@@ -98,7 +118,7 @@ def list_lessons_by_day(tg_id: int, *, day: str) -> List[Dict]:
     with sqlite3.connect(USERS_DB) as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, day, start, end, kind, target FROM teacher_lessons WHERE tg_id=? AND day=? ORDER BY start",
+            "SELECT id, day, start, end, kind, target, COALESCE(notify_before_min,30) FROM teacher_lessons WHERE tg_id=? AND day=? ORDER BY start",
             (tg_id, day),
         )
         rows = cur.fetchall()
@@ -111,6 +131,7 @@ def list_lessons_by_day(tg_id: int, *, day: str) -> List[Dict]:
             "end": str(r[3]),
             "kind": str(r[4]),
             "target": str(r[5]),
+            "notify_before_min": int(r[6] or 30),
         })
     # Дополнительно подмешаем записи из локального календаря (если они ещё не в users.db)
     try:
@@ -120,8 +141,8 @@ def list_lessons_by_day(tg_id: int, *, day: str) -> List[Dict]:
         table = _safe_table_name(moniker)
         with sqlite3.connect(CALENDAR_DB) as conn2:
             cur2 = conn2.cursor()
-            cur2.execute(f"SELECT id, day, start, end, kind, target FROM {table} WHERE day=? ORDER BY start", (day,))
-            for cid, d, s, e, k, t in cur2.fetchall():
+            cur2.execute(f"SELECT id, day, start, end, kind, target, COALESCE(notify_before_min,30) FROM {table} WHERE day=? ORDER BY start", (day,))
+            for cid, d, s, e, k, t, nb in cur2.fetchall():
                 # Найдём дубль по (start,end,kind,target)
                 if not any(x["start"] == s and x["end"] == e and x["kind"] == k and x["target"] == t for x in out):
                     out.append({
@@ -131,6 +152,7 @@ def list_lessons_by_day(tg_id: int, *, day: str) -> List[Dict]:
                         "end": e,
                         "kind": k,
                         "target": t,
+                        "notify_before_min": int(nb or 30),
                     })
     except Exception:
         pass
@@ -315,7 +337,7 @@ def get_lesson_by_id(lesson_id: int) -> Optional[Dict]:
     with sqlite3.connect(USERS_DB) as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, tg_id, day, start, end, kind, target FROM teacher_lessons WHERE id=?",
+            "SELECT id, tg_id, day, start, end, kind, target, COALESCE(notify_before_min,30) FROM teacher_lessons WHERE id=?",
             (lesson_id,),
         )
         row = cur.fetchone()
@@ -329,5 +351,39 @@ def get_lesson_by_id(lesson_id: int) -> Optional[Dict]:
         "end": str(row[4]),
         "kind": str(row[5]),
         "target": str(row[6]),
+        "notify_before_min": int(row[7] or 30),
     }
+
+
+def update_lesson_notify_minutes(lesson_id: int, minutes: int) -> bool:
+    """Обновляет поле notify_before_min в обеих БД. Возвращает True, если удалось где-либо."""
+    minutes = int(minutes)
+    if minutes < 0:
+        minutes = 0
+    ok1 = False
+    ok2 = False
+    try:
+        with sqlite3.connect(USERS_DB) as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE teacher_lessons SET notify_before_min=? WHERE id=?", (minutes, int(lesson_id)))
+            conn.commit()
+            ok1 = cur.rowcount > 0
+    except Exception:
+        ok1 = False
+
+    try:
+        with sqlite3.connect(CALENDAR_DB) as conn2:
+            cur2 = conn2.cursor()
+            cur2.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'cal_%'")
+            for (tbl,) in cur2.fetchall():
+                try:
+                    cur2.execute(f"UPDATE {tbl} SET notify_before_min=? WHERE id=?", (minutes, int(lesson_id)))
+                    if cur2.rowcount:
+                        ok2 = True
+                except Exception:
+                    continue
+            conn2.commit()
+    except Exception:
+        ok2 = ok2 or False
+    return ok1 or ok2
 

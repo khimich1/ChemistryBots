@@ -29,6 +29,7 @@ from bot.handlers.billing import router as billing_router
 from bot.services.plan import init_billing_tables
 from bot.handlers.admin import router as admin_router
 # from bot.handlers.giveaway import router as giveaway_router  # Розыгрыш отключен
+from bot.services.reminders import reminders_loop
 
 # --- Конфиг и токен ---
 from dotenv import load_dotenv
@@ -75,6 +76,17 @@ async def shutdown_bot():
                 await asyncio.wait_for(cleanup_task, timeout=5.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+        # Останавливаем задачу напоминаний, если была создана
+        try:
+            rt = globals().get('reminder_task', None)
+            if rt:
+                rt.cancel()
+                try:
+                    await asyncio.wait_for(rt, timeout=5.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+        except Exception:
+            pass
         
         # Останавливаем polling
         if dp_instance:
@@ -180,8 +192,10 @@ async def main():
     if not commands_set:
         print("⚠️ Команды бота не установлены, но бот будет работать")
 
-    # --- Запуск rate limiter cleanup ---
+    # --- Запуск фоновых задач ---
     cleanup_task = asyncio.create_task(cleanup_rate_limiters())
+    # Сохраняем ссылку глобально, чтобы корректно останавливать при shutdown
+    globals()['reminder_task'] = asyncio.create_task(reminders_loop(bot_instance))
 
     # --- Проверка токена перед запуском ---
     try:
