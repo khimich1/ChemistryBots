@@ -298,7 +298,7 @@ async def tests_entry_menu(m: types.Message):
     message_manager.add_message(m.from_user.id, msg1.message_id)
     kb = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии")],
+            [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии"), KeyboardButton(text="📂 Задания для группы")],
             [KeyboardButton(text="🧪 Тестовая часть ОГЭ по химии")],
             [KeyboardButton(text="⬅️ В меню")],
         ],
@@ -333,7 +333,7 @@ async def tests_go_back(cb: types.CallbackQuery):
     # Возврат к подменю тестов (кнопки Reply)
     kb = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии")],
+            [KeyboardButton(text="🧪 Тестовая часть ЕГЭ по химии"), KeyboardButton(text="📂 Задания для группы")],
             [KeyboardButton(text="🧪 Тестовая часть ОГЭ по химии")],
             [KeyboardButton(text="⬅️ В меню")],
         ],

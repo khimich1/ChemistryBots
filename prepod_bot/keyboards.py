@@ -3,15 +3,13 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 def get_teacher_keyboard():
     kb = [
         [KeyboardButton(text="👨‍🎓 Ученики онлайн"), KeyboardButton(text="📈 Успеваемость")],
-        [KeyboardButton(text="🛠 Управление заданиями"), KeyboardButton(text="👥 Добавить ученика")],
-        [KeyboardButton(text="📚 Управление группами")]
+        [KeyboardButton(text="🛠 Управление заданиями"), KeyboardButton(text="📚 Управление группами")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
 def get_manage_groups_keyboard() -> InlineKeyboardMarkup:
     kb = [
-        [InlineKeyboardButton(text="📂 Список групп", callback_data="manage_groups_list")],
         [InlineKeyboardButton(text="➕ Добрать в рабочие группы", callback_data="wg_add_start")],
         [InlineKeyboardButton(text="📝 Отправить сообщение", callback_data="wg_broadcast_start")],
         [InlineKeyboardButton(text="🧩 Задания для группы", callback_data="wg_tasks_start")],
@@ -68,10 +66,30 @@ def get_group_members_keyboard(members: list[dict], group_no: int | None = None,
     kb: list[list[InlineKeyboardButton]] = []
     for s in members:
         uid = s.get("user_id")
+        # Базовая подпись
         label = s.get("label") or s.get("full_name") or s.get("username") or f"ID {uid}"
         if len(label) > 30:
             label = label[:27] + "…"
-        row: list[InlineKeyboardButton] = [InlineKeyboardButton(text=label, callback_data=f"noop_member:{uid}")]
+        # Короткая метка тарифа, если есть данные
+        plan_code = (s.get("plan_code") or "").lower()
+        plan_name = (s.get("plan_name") or "").lower()
+        code = plan_code or plan_name
+        short = ""
+        if code:
+            mapping = {
+                "free": "Беспл.",
+                "group": "Групп.",
+                "self": "Самост.",
+                "organic": "Орган.",
+                "elements": "Элем.",
+                "full": "Полный",
+            }
+            for key, short_name in mapping.items():
+                if key in code:
+                    short = short_name
+                    break
+        text = f"{label} • {short}" if short else label
+        row: list[InlineKeyboardButton] = [InlineKeyboardButton(text=text, callback_data=f"noop_member:{uid}")]
         if group_no is not None:
             row.append(InlineKeyboardButton(text="🚫", callback_data=f"wg_wremove:{group_no}:{uid}"))
         kb.append(row)
@@ -147,6 +165,7 @@ def get_exam_pick_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="ЕГЭ", callback_data="wg_pick_exam:ege"),
             InlineKeyboardButton(text="ОГЭ", callback_data="wg_pick_exam:oge"),
+            InlineKeyboardButton(text="Задания преподавателя", callback_data="wg_pick_exam:teacher"),
         ],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="manage_groups_back")],
     ]
@@ -166,6 +185,19 @@ def get_test_types_list_keyboard(exam: str) -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="wg_methods_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_teacher_sets_keyboard(sets: list[dict]) -> InlineKeyboardMarkup:
+    """Список наборов из test_teacher.db для назначения группе."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for s in sets:
+        title = s.get("title") or f"Набор {s.get('id')}"
+        if len(title) > 40:
+            title = title[:37] + "…"
+        sid = s.get("id")
+        rows.append([InlineKeyboardButton(text=title, callback_data=f"wg_pick_teacher_set:{sid}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="wg_teacher_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

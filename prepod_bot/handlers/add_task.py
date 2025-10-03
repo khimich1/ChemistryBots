@@ -10,9 +10,6 @@ from services.tasks import (
     update_task_field,
     unhide_task,
 )
-<<<<<<< Updated upstream
-from states import EditTask
-=======
 from services.teacher_tests import (
     save_image,
     add_teacher_task,
@@ -25,7 +22,6 @@ from services.teacher_tests import (
     compute_teacher_set_results,
 )
 from states import EditTask, AddTeacherTask
->>>>>>> Stashed changes
 from utils.message_manager import message_manager
 
 router = Router()
@@ -71,10 +67,6 @@ def _sets_list_kb() -> InlineKeyboardMarkup:
 
 
 @router.message(lambda m: m.text == "➕ Добавить")
-<<<<<<< Updated upstream
-async def manage_add_placeholder(message: types.Message):
-    sent = await message.answer("Функция добавления появится позже.")
-=======
 async def manage_add_start(message: types.Message, state: FSMContext):
     await state.clear()
     # При первом входе показываем список наборов построчно: название + 📊 + 🖨 + 🗑
@@ -168,7 +160,6 @@ async def on_correct_answer(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="✅ Закончить", callback_data="tt_finish")],
     ])
     sent = await message.answer(f"✅ Задание сохранено (id={new_id}). Что дальше?", reply_markup=kb)
->>>>>>> Stashed changes
     try:
         message_manager.add_message(message.from_user.id, sent.message_id)
     except Exception:

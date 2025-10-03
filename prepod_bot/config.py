@@ -67,11 +67,6 @@ TESTS_DB_EGE = _expand_path(os.getenv("TESTS_DB_EGE")) or os.path.join(_SHARED_D
 # Для ОГЭ используем TESTS_DB_OGE (дефолт: shared/test_oge.db)
 TESTS_DB_OGE = _expand_path(os.getenv("TESTS_DB_OGE")) or os.path.join(_SHARED_DIR, "test_oge.db")
 
-<<<<<<< Updated upstream
-# Путь к базе пользователей (регистрируется через admin_bot, таблица teacher)
-# По умолчанию shared/users.db рядом с репозиторием
-USERS_DB = os.getenv("USERS_DB") or os.path.join(_SHARED_DIR, "users.db")
-=======
 # База для заданий, добавляемых преподавателями (teacher)
 # В .env предусмотрена переменная TESTS_DB_TEACHER с абсолютным путём
 TESTS_DB_TEACHER = _expand_path(os.getenv("TESTS_DB_TEACHER")) or os.path.join(_SHARED_DIR, "test_teacher.db")
@@ -88,7 +83,6 @@ USERS_DB = _expand_path(_clean_path(os.getenv("USERS_DB"))) or os.path.join(_SHA
 
 # Локальный календарь (по просьбе сделать полностью локальным)
 CALENDAR_DB = _expand_path(_clean_path(os.getenv("CALENDAR_DB"))) or os.path.join(_SHARED_DIR, "calendar.db")
->>>>>>> Stashed changes
 
 ONLINE_WINDOW_MINUTES = int(os.getenv("ONLINE_WINDOW_MINUTES", 10))
 

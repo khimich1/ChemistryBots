@@ -379,6 +379,55 @@ def _get_plan_name(plan_code: str) -> str:
     return plan_names.get(plan_code, 'Бесплатный')
 
 
+async def send_message_to_user_via_govr(user_id: int, text: str) -> bool:
+    """Отправляет одиночное сообщение пользователю через govr_bot.
+    Возвращает True при успехе.
+    """
+    try:
+        from aiogram import Bot
+    except Exception:
+        return False
+
+    token = (
+        os.getenv("BOT_TOKEN_govor")
+        or os.getenv("BOT_TOKEN_GOVOR")
+        or os.getenv("BOT_TOKEN_govr")
+        or os.getenv("BOT_TOKEN_GOVR")
+        or os.getenv("GOVR_BOT_TOKEN")
+    )
+
+    if not token:
+        # Попробуем прочитать .env govr_bot
+        try:
+            from dotenv import dotenv_values
+            repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+            env_path = os.path.join(repo_root, "govr_bot", ".env")
+            vals = dotenv_values(env_path)
+            if vals:
+                token = (
+                    vals.get("BOT_TOKEN_govor")
+                    or vals.get("BOT_TOKEN_GOVOR")
+                    or vals.get("BOT_TOKEN")
+                )
+        except Exception:
+            token = None
+
+    if not token:
+        return False
+
+    bot = Bot(token=token)
+    try:
+        await bot.send_message(int(user_id), text)
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
+
+
 def get_students_with_group_access() -> List[Dict[str, Any]]:
     """
     Возвращает список учеников с подпиской 'group'.

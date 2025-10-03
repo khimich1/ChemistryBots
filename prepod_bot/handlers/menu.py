@@ -16,6 +16,7 @@ from keyboards import (
     get_exam_pick_keyboard,
     get_test_types_list_keyboard,
     get_type_ids_keyboard,
+    get_teacher_sets_keyboard,
 )
 from services.acquisition import get_ad_stats
 from services.students import get_all_students
@@ -29,6 +30,7 @@ from services.groups import (
     get_all_group_numbers,
     get_work_group_members,
     broadcast_message_to_group_via_govr,
+    send_message_to_user_via_govr,
     create_group_task,
     list_group_tasks,
     delete_group_task,
@@ -41,10 +43,30 @@ from services.groups import (
 from aiogram.fsm.context import FSMContext
 from config import DEEPLINK_HINT
 from states import StudentsList, WorkGroups
+from services.teacher_tests import list_task_sets, list_tasks_in_set, get_task_set_by_id  # type: ignore
 from services.pdf_export import render_questions_to_pdf
 from utils.message_manager import message_manager
 
 router = Router()
+
+
+async def _show_teacher_sets(message_or_cb_message: types.Message, state: FSMContext) -> None:
+    """Показывает список наборов преподавателя из test_teacher.db для назначения группе."""
+    try:
+        sets = list_task_sets()
+    except Exception:
+        sets = []
+    if not sets:
+        try:
+            await message_or_cb_message.answer("В базе преподавателя пока нет наборов.")
+        except Exception:
+            return
+        return
+    await state.set_state(WorkGroups.waiting_teacher_set)
+    try:
+        await message_or_cb_message.answer("Выберите набор преподавателя:", reply_markup=get_teacher_sets_keyboard(sets))
+    except Exception:
+        pass
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -280,6 +302,12 @@ async def remove_from_work_group(cb: types.CallbackQuery):
         await cb.answer("Не понимаю", show_alert=True)
         return
     remove_user_from_work_group(group_no, user_id)
+    # Автоматически снимаем доступ к групповому тарифу при исключении из рабочей группы
+    try:
+        from services.groups import remove_student_from_group
+        remove_student_from_group(user_id)
+    except Exception:
+        pass
     # Обновим список участников этой группы в текущем сообщении
     user_ids = get_work_group_members(group_no)
     students = get_all_students_with_plans()
@@ -289,7 +317,7 @@ async def remove_from_work_group(cb: types.CallbackQuery):
         await cb.message.edit_text(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members, group_no=group_no))
     except Exception:
         await cb.message.answer(f"Участники группы {group_no}:", reply_markup=get_group_members_keyboard(members, group_no=group_no))
-    await cb.answer("Исключён из рабочей группы")
+    await cb.answer("Исключён из рабочей группы и доступ отозван")
 
 
 @router.message(WorkGroups.waiting_broadcast_text)
@@ -441,8 +469,25 @@ async def wg_input_username(message: types.Message, state: FSMContext):
         await state.set_state(None)
         return
 
+    # 1) Добавляем в рабочую группу
     add_user_to_work_group(group_no, user_id)
-    await message.answer(f"✅ Пользователь {username} (id={user_id}) добавлен в рабочую группу {group_no}.")
+    # 2) Автоматически выдаём доступ к групповому тарифу (teacher_groups)
+    try:
+        add_student_to_group(user_id)
+    except Exception:
+        pass
+    # 3) Приветственное сообщение ученику (через govr-бота)
+    try:
+        welcome = (
+            f"Вас добавили в учебную группу {group_no}.\n"
+            f"Вам открыт бесплатный групповой доступ к занятиям в боте."
+        )
+        await send_message_to_user_via_govr(int(user_id), welcome)
+    except Exception:
+        pass
+    await message.answer(
+        f"✅ Пользователь {username} (id={user_id}) добавлен в рабочую группу {group_no} и получил доступ к групповому тарифу."
+    )
     # После добавления сразу обновим список участников
     user_ids = get_work_group_members(group_no)
     students = get_all_students_with_plans()
@@ -603,7 +648,10 @@ async def wg_tasks_title(message: types.Message, state: FSMContext):
 async def wg_tasks_exam(message: types.Message, state: FSMContext):
     # Если пользователь всё же напишет текстом, поддержим старый способ
     exam = (message.text or "").strip().lower()
-    if exam in {"ege", "егэ", "oge", "огэ"}:
+    if exam in {"ege", "егэ", "oge", "огэ", "teacher", "преподаватель"}:
+        if exam in {"teacher", "преподаватель"}:
+            await _show_teacher_sets(message, state)
+            return
         canonical = "ege" if exam in {"ege", "егэ"} else "oge"
         await state.update_data(tasks_exam=canonical)
         await message.answer("Выберите способ добавления заданий:", reply_markup=get_task_method_keyboard(canonical))
@@ -760,6 +808,10 @@ async def wg_types_done(cb: types.CallbackQuery, state: FSMContext):
 @router.callback_query(lambda c: c.data.startswith("wg_pick_exam:"))
 async def wg_pick_exam(cb: types.CallbackQuery, state: FSMContext):
     canonical = (cb.data.split(":", 1)[1] or "ege").lower()
+    if canonical == "teacher":
+        await cb.answer()
+        await _show_teacher_sets(cb.message, state)
+        return
     if canonical not in {"ege", "oge"}:
         canonical = "ege"
     await state.update_data(tasks_exam=canonical)
@@ -882,6 +934,16 @@ async def wg_ids_back(cb: types.CallbackQuery, state: FSMContext):
     exam = (data.get("tasks_exam") or "ege").lower()
     await _safe_edit_text(cb.message, "Выбери тест:", reply_markup=get_test_types_list_keyboard(exam))
     await cb.answer()
+
+
+@router.callback_query(lambda c: c.data == "wg_teacher_back")
+async def wg_teacher_back(cb: types.CallbackQuery, state: FSMContext):
+    # Возврат к выбору базы
+    await cb.answer()
+    try:
+        await _safe_edit_text(cb.message, "Выберите базу:", reply_markup=get_exam_pick_keyboard())
+    except Exception:
+        await cb.message.answer("Выберите базу:", reply_markup=get_exam_pick_keyboard())
 
 
 @router.callback_query(lambda c: c.data.startswith("wg_task_del:"))
@@ -1080,6 +1142,45 @@ async def wg_tasks_list(cb: types.CallbackQuery):
     await cb.answer()
 
 
+@router.callback_query(lambda c: c.data.startswith("wg_pick_teacher_set:"))
+async def wg_pick_teacher_set(cb: types.CallbackQuery, state: FSMContext):
+    """Назначает выбранный набор преподавателя группе как новый набор group_tasks.
+    Преобразует вопросы teacher-набора в формат items: "teacher:<id>, ...".
+    """
+    await cb.answer()
+    try:
+        set_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    data = await state.get_data()
+    group_no = int(data.get("tasks_group") or 0)
+    title_state = data.get("tasks_title")
+    info = get_task_set_by_id(set_id) or {"title": f"Набор преподавателя {set_id}"}
+    # Соберём id вопросов этого набора
+    try:
+        tasks = list_tasks_in_set(set_id)
+    except Exception:
+        tasks = []
+    qids = [int(t.get("id")) for t in tasks if t.get("id") is not None]
+    if not qids:
+        await cb.message.answer("В этом наборе пока нет вопросов.")
+        return
+    items = ", ".join(f"teacher:{qid}" for qid in qids)
+    title = title_state or (info.get("title") or f"Teacher set {set_id}")
+    create_group_task(group_no, title, items)
+    try:
+        await cb.message.edit_text(f"✅ Набор ‘{title}’ назначен группе {group_no}. (TEACHER IDs: {', '.join(map(str, qids))})")
+    except Exception:
+        await cb.message.answer(f"✅ Набор ‘{title}’ назначен группе {group_no}. (TEACHER IDs: {', '.join(map(str, qids))})")
+    # Показать обновлённый список наборов
+    tasks_list = list_group_tasks(group_no)
+    try:
+        await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks_list, group_no))
+    except Exception:
+        pass
+    await state.set_state(None)
+
+
 @router.callback_query(lambda c: c.data.startswith("wg_variants_page:"))
 async def wg_variants_page(cb: types.CallbackQuery, state: FSMContext):
     try:
@@ -1161,6 +1262,15 @@ async def add_student_to_group_handler(callback: types.CallbackQuery, state: FSM
         
         # Добавляем ученика в группу
         add_student_to_group(user_id)
+        # Приветственное сообщение ученику (через govr-бота)
+        try:
+            welcome = (
+                "Вам открыт бесплатный групповой доступ к занятиям в боте.\n"
+                "Если у вас уже есть тариф, просто продолжайте пользоваться."
+            )
+            await send_message_to_user_via_govr(int(user_id), welcome)
+        except Exception:
+            pass
         
         student_name = student_info.get("label", f"ID {user_id}")
         await callback.answer(f"✅ {student_name} добавлен в группу! Теперь он может купить тариф 'Групповые'.")
