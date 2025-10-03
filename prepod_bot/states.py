@@ -26,4 +26,14 @@ class WorkGroups(StatesGroup):
 
 
 class ReportSearch(StatesGroup):
+<<<<<<< Updated upstream
     waiting_query = State()
+=======
+    waiting_query = State()
+
+
+class AddTeacherTask(StatesGroup):
+    waiting_set_title = State()
+    waiting_question_and_image = State()
+    waiting_correct_answer = State()
+>>>>>>> Stashed changes

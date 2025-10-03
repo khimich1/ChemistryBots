@@ -273,6 +273,32 @@ def render_questions_to_pdf(output_path: str, pages: List[dict]) -> str:
             return None
 
         def _fetch_image_from_db(exam_local: str, qid_local: int, options_text: str) -> Image.Image | None:
+            # Поддержка teacher-наборов: options содержит id изображения(й) из таблицы images базы TESTS_DB_TEACHER
+            if (exam_local or "").lower() == "teacher":
+                try:
+                    from config import TESTS_DB_TEACHER
+                    with sqlite3.connect(TESTS_DB_TEACHER) as conn:
+                        cur = conn.cursor()
+                        # options может быть одним id или списком через запятую — берём первый существующий
+                        ids = []
+                        for part in (options_text or "").replace(";", ",").split(","):
+                            part = part.strip()
+                            if part.isdigit():
+                                ids.append(int(part))
+                        for img_id in ids or [None]:
+                            if img_id is None:
+                                break
+                            try:
+                                cur.execute("SELECT data FROM images WHERE id=?", (int(img_id),))
+                                row = cur.fetchone()
+                                if row and row[0]:
+                                    return Image.open(BytesIO(row[0]))
+                            except sqlite3.OperationalError:
+                                continue
+                except Exception:
+                    return None
+                return None
+
             db_path = TESTS_DB_EGE if (exam_local or "").lower()=="ege" else TESTS_DB_OGE
             try:
                 with sqlite3.connect(db_path) as conn:
@@ -331,6 +357,26 @@ def render_questions_to_pdf(output_path: str, pages: List[dict]) -> str:
 
         y_local = start_y
         image_used = False
+        # Если это преподавательский набор и в options есть id изображения — вставим картинку сразу
+        if (exam or "").lower() == "teacher":
+            try:
+                img0 = _fetch_image_from_db("teacher", qid, options or "")
+            except Exception:
+                img0 = None
+            if isinstance(img0, Image.Image):
+                max_w = max_width
+                scale = min(1.0, max_w / max(1, img0.width)) * 0.8
+                new_w = int(img0.width * scale)
+                new_h = int(img0.height * scale)
+                if y_local + new_h > box_bottom - 10:
+                    rendered.append(state["canvas"])
+                    _new_canvas()
+                    state["draw"].text((title_x, title_y), title, font=font_bold, fill=title_color)
+                    y_local = margin_top
+                img_resized = img0.resize((new_w, new_h))
+                state["canvas"].paste(img_resized, (margin_left, y_local))
+                y_local += new_h + int(line_height / 2)
+                image_used = True
         lines = [ln for ln in (question_text or "").split("\n")]
         for para in lines:
             if not para.strip():
