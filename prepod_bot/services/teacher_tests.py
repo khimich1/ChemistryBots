@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -62,10 +63,23 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS teacher_task_sets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
-            created_at TEXT
+            created_at TEXT,
+            teacher_id INTEGER
         )
         """
     )
+
+    # Добавим teacher_id в teacher_task_sets, если его нет (миграция старой БД)
+    try:
+        c.execute("PRAGMA table_info(teacher_task_sets)")
+        cols = {row[1] for row in c.fetchall()}
+        if "teacher_id" not in cols:
+            try:
+                c.execute("ALTER TABLE teacher_task_sets ADD COLUMN teacher_id INTEGER")
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     # Добавим колонку set_id в tests при необходимости (связь вопроса с набором)
     try:
@@ -76,15 +90,65 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 c.execute("ALTER TABLE tests ADD COLUMN set_id INTEGER")
             except Exception:
                 pass
+        if "teacher_id" not in cols:
+            try:
+                c.execute("ALTER TABLE tests ADD COLUMN teacher_id INTEGER")
+            except Exception:
+                pass
     except Exception:
         pass
     conn.commit()
 
 
+def _backfill_sets_teacher(conn: sqlite3.Connection, teacher_id: int) -> None:
+    """Для старых наборов без teacher_id проставляет владельца по авторам заданий внутри набора."""
+    try:
+        c = conn.cursor()
+        # Если в tests нет teacher_id — добавим
+        try:
+            c.execute("PRAGMA table_info(tests)")
+            cols = {row[1] for row in c.fetchall()}
+            if "teacher_id" not in cols:
+                try:
+                    c.execute("ALTER TABLE tests ADD COLUMN teacher_id INTEGER")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Проставим teacher_id у наборов, если внутри есть задания автора
+        try:
+            c.execute(
+                """
+                UPDATE teacher_task_sets
+                SET teacher_id = ?
+                WHERE teacher_id IS NULL AND id IN (
+                  SELECT DISTINCT set_id FROM tests WHERE teacher_id = ? OR filename = ?
+                )
+                """,
+                (int(teacher_id), int(teacher_id), str(teacher_id)),
+            )
+            conn.commit()
+        except Exception:
+            pass
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def _connect() -> sqlite3.Connection:
     path = TESTS_DB_TEACHER
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
+    # Укрепляем соединение для снижения конфликтов блокировок
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=30000;")
+    except Exception:
+        # Не валим выполнение, если PRAGMA недоступны
+        pass
     _ensure_schema(conn)
     return conn
 
@@ -112,29 +176,92 @@ def add_teacher_task(*, teacher_tg_id: int, question_text: str, image_id: Option
     options_value = str(image_id) if image_id is not None else ""
     with _connect() as conn:
         c = conn.cursor()
-        c.execute(
-            "INSERT INTO tests (filename, type, question, options, correct_ans, correct_answer, set_id) VALUES (?, NULL, ?, ?, ?, ?, ?)",
-            (str(teacher_tg_id), question_text, options_value, str(correct_answer), str(correct_answer), int(set_id) if set_id is not None else None),
-        )
+        # Привяжем вопрос к автору (teacher_id)
+        try:
+            c.execute(
+                "INSERT INTO tests (filename, type, question, options, correct_ans, correct_answer, set_id, teacher_id) VALUES (?, NULL, ?, ?, ?, ?, ?, ?)",
+                (str(teacher_tg_id), question_text, options_value, str(correct_answer), str(correct_answer), int(set_id) if set_id is not None else None, int(teacher_tg_id)),
+            )
+        except sqlite3.OperationalError:
+            # Если нет колонки teacher_id — добавим и повторим
+            try:
+                c.execute("ALTER TABLE tests ADD COLUMN teacher_id INTEGER")
+            except Exception:
+                pass
+            c.execute(
+                "INSERT INTO tests (filename, type, question, options, correct_ans, correct_answer, set_id, teacher_id) VALUES (?, NULL, ?, ?, ?, ?, ?, ?)",
+                (str(teacher_tg_id), question_text, options_value, str(correct_answer), str(correct_answer), int(set_id) if set_id is not None else None, int(teacher_tg_id)),
+            )
         conn.commit()
         return int(c.lastrowid)
 
 
 # ── Работа с наборами заданий преподавателя ─────────────────────────────────────────
-def list_task_sets() -> list[dict]:
+def list_task_sets(*, teacher_id: int | None = None) -> list[dict]:
     with _connect() as conn:
         c = conn.cursor()
-        c.execute("SELECT id, title, created_at FROM teacher_task_sets ORDER BY id DESC")
+        if teacher_id is not None:
+            tid = int(teacher_id)
+            _backfill_sets_teacher(conn, tid)
+            # Пытаемся выбрать по teacher_id, а для старых наборов (без teacher_id)
+            # берём те, где есть хотя бы одно задание автора (по tests.teacher_id или filename = tg_id)
+            try:
+                c.execute(
+                    """
+                    SELECT s.id, s.title, s.created_at
+                    FROM teacher_task_sets s
+                    LEFT JOIN tests t ON t.set_id = s.id
+                    WHERE (s.teacher_id = ?)
+                       OR (s.teacher_id IS NULL AND (t.teacher_id = ? OR t.filename = ?))
+                    GROUP BY s.id
+                    ORDER BY s.id DESC
+                    """,
+                    (tid, tid, str(tid)),
+                )
+            except sqlite3.OperationalError as e:
+                # Миграции на лету
+                msg = str(e).lower()
+                if "teacher_task_sets" in msg and "no such column" in msg:
+                    try:
+                        c.execute("ALTER TABLE teacher_task_sets ADD COLUMN teacher_id INTEGER")
+                    except Exception:
+                        pass
+                if "tests" in msg and "no such column" in msg:
+                    try:
+                        c.execute("ALTER TABLE tests ADD COLUMN teacher_id INTEGER")
+                    except Exception:
+                        pass
+                # Повторим запрос
+                c.execute(
+                    """
+                    SELECT s.id, s.title, s.created_at
+                    FROM teacher_task_sets s
+                    LEFT JOIN tests t ON t.set_id = s.id
+                    WHERE (s.teacher_id = ?)
+                       OR (s.teacher_id IS NULL AND (t.teacher_id = ? OR t.filename = ?))
+                    GROUP BY s.id
+                    ORDER BY s.id DESC
+                    """,
+                    (tid, tid, str(tid)),
+                )
+        else:
+            c.execute("SELECT id, title, created_at FROM teacher_task_sets ORDER BY id DESC")
         rows = c.fetchall()
     return [{"id": int(r[0]), "title": r[1] or "", "created_at": r[2]} for r in rows]
 
 
-def create_task_set(title: str) -> int:
+async def list_task_sets_async(*, teacher_id: int | None = None) -> list[dict]:
+    """Асинхронная обёртка над list_task_sets: выполняет работу в пуле потоков,
+    чтобы не блокировать event loop aiogram."""
+    return await asyncio.to_thread(list_task_sets, teacher_id=teacher_id)
+
+
+def create_task_set(title: str, *, teacher_id: int | None = None) -> int:
     with _connect() as conn:
         c = conn.cursor()
         c.execute(
-            "INSERT INTO teacher_task_sets (title, created_at) VALUES (?, ?)",
-            (title.strip(), datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
+            "INSERT INTO teacher_task_sets (title, created_at, teacher_id) VALUES (?, ?, ?)",
+            (title.strip(), datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), int(teacher_id) if teacher_id else None),
         )
         conn.commit()
         return int(c.lastrowid)

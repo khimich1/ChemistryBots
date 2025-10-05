@@ -1,5 +1,4 @@
 import os
-import sys
 from aiogram import Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -10,14 +9,9 @@ from services.students import (
     build_user_progress_text, build_user_summary_text,
     build_user_progress_text_ege, build_user_progress_text_oge, build_user_flashcards_text, build_user_oral_text,
 )
-from services.groups import get_all_group_numbers, get_work_group_members, get_all_students_with_plans
+from services.groups import get_all_group_numbers, get_work_group_members, get_all_students_with_plans, get_teacher_students_with_plans
 from utils.message_manager import message_manager
 from states import EditStudent, ReportSearch
-
-# Добавляем путь к модулю в parent_bot
-parent_services_path = os.path.join(os.path.dirname(__file__), "..", "..", "parent_bot", "bot", "services")
-sys.path.insert(0, parent_services_path)
-# filename_generator не используется здесь — импорт удалён, чтобы не плодить предупреждения
 
 router = Router()
 
@@ -109,7 +103,11 @@ def _student_menu_kb(user_id: int) -> InlineKeyboardMarkup:
 @router.message(StateFilter('*'), lambda m: m.text == "📈 Успеваемость")
 async def report_entry(message: types.Message, state: FSMContext):
     await state.clear()
-    students = get_all_students()
+    # Показываем только учеников текущего преподавателя (его группа teacher_groups)
+    try:
+        students = get_teacher_students_with_plans(int(message.from_user.id))
+    except Exception:
+        students = []
     await state.update_data(report_students=students, report_query="", report_page=1)
     await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
     sent = await message.answer("Выберите ученика:", reply_markup=_report_students_kb(students, page=1))
@@ -122,7 +120,7 @@ async def report_entry(message: types.Message, state: FSMContext):
 @router.callback_query(lambda c: c.data == "students_back")
 async def students_back(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    students = data.get("report_students") or get_all_students()
+    students = data.get("report_students") or get_teacher_students_with_plans(int(cb.from_user.id))
     page = int(data.get("report_page") or 1)
     try:
         await cb.message.edit_text("Выберите ученика:", reply_markup=_report_students_kb(students, page=page))
@@ -168,7 +166,7 @@ async def report_search_start(cb: types.CallbackQuery, state: FSMContext):
 @router.message(ReportSearch.waiting_query)
 async def report_search_apply(m: types.Message, state: FSMContext):
     query = (m.text or "").strip()
-    students = get_all_students()
+    students = get_teacher_students_with_plans(int(m.from_user.id))
     filtered = _filter_students(students, query)
     await state.update_data(report_students=filtered, report_query=query, report_page=1)
     kb = _report_students_kb(filtered, page=1)
@@ -191,7 +189,7 @@ async def report_students_page(cb: types.CallbackQuery, state: FSMContext):
     except Exception:
         page = 1
     data = await state.get_data()
-    students = data.get("report_students") or get_all_students()
+    students = data.get("report_students") or get_teacher_students_with_plans(int(cb.from_user.id))
     await state.update_data(report_page=page)
     try:
         await cb.message.edit_reply_markup(reply_markup=_report_students_kb(students, page=page))
@@ -207,7 +205,16 @@ async def report_students_page(cb: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(lambda c: c.data == "report_groups_list")
 async def report_groups_list(cb: types.CallbackQuery):
-    groups = get_all_group_numbers()
+    # Фильтруем группы по текущему преподавателю
+    all_groups = get_all_group_numbers()
+    my_groups: list[int] = []
+    for g in all_groups:
+        try:
+            if get_work_group_members(int(g), teacher_id=cb.from_user.id):
+                my_groups.append(int(g))
+        except Exception:
+            continue
+    groups = my_groups or []
     if not groups:
         await cb.answer("Группы не найдены", show_alert=True)
         return
@@ -229,7 +236,7 @@ async def report_open_group(cb: types.CallbackQuery, state: FSMContext):
     except Exception:
         await cb.answer()
         return
-    user_ids = get_work_group_members(group_no)
+    user_ids = get_work_group_members(group_no, teacher_id=cb.from_user.id)
     # Сохраним текущую группу в состоянии для корректной "Назад" из сводки ученика
     try:
         await state.update_data(current_group_no=group_no)
@@ -296,7 +303,7 @@ async def rep_back_delete(cb: types.CallbackQuery, state: FSMContext):
     group_no = data.get("current_group_no")
     if group_no:
         try:
-            user_ids = get_work_group_members(int(group_no))
+            user_ids = get_work_group_members(int(group_no), teacher_id=cb.from_user.id)
             students = get_all_students_with_plans()
             by_id = {int(s["user_id"]): s for s in students}
             members = [by_id.get(int(uid), {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]

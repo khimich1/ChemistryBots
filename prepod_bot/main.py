@@ -1,7 +1,6 @@
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
 from handlers import menu, online, report, add_task
-from middlewares.admin_check import AdminCheckMiddleware
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -22,10 +21,8 @@ logger.info("Bot object создан")
 dp = Dispatcher()
 logger.info("Dispatcher создан")
 
-# Подключаем middleware для проверки прав доступа
-dp.message.middleware(AdminCheckMiddleware())
-dp.callback_query.middleware(AdminCheckMiddleware())
-logger.info("AdminCheckMiddleware подключен")
+# Доступ открыт для всех преподавателей; мидлварь проверки отключена
+logger.info("AdminCheckMiddleware отключен: доступ открыт")
 
 # Подключаем все роутеры
 dp.include_router(menu.router)

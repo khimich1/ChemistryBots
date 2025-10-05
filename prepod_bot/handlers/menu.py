@@ -20,7 +20,7 @@ from keyboards import (
 )
 from services.acquisition import get_ad_stats
 from services.students import get_all_students
-from services.teachers import get_teacher_moniker
+from services.teachers import get_teacher_moniker, upsert_teacher_minimal, get_teacher_record
 from services.groups import (
     add_student_to_group,
     is_student_in_group,
@@ -44,16 +44,29 @@ from aiogram.fsm.context import FSMContext
 from config import DEEPLINK_HINT
 from states import StudentsList, WorkGroups
 from services.teacher_tests import list_task_sets, list_tasks_in_set, get_task_set_by_id  # type: ignore
+from services.teacher_tests import list_task_sets_async  # type: ignore
 from services.pdf_export import render_questions_to_pdf
 from utils.message_manager import message_manager
+
+# Асинхронные обёртки для групповых операций (не блокируем event loop)
+from services.groups import (
+    get_all_group_numbers_async,
+    get_work_group_members_async,
+    list_group_tasks_async,
+    create_group_task_async,
+    compute_group_task_results_async,
+    find_user_id_by_username_async,
+)
 
 router = Router()
 
 
-async def _show_teacher_sets(message_or_cb_message: types.Message, state: FSMContext) -> None:
+async def _show_teacher_sets(message_or_cb_message: types.Message, state: FSMContext, viewer_id: int | None = None) -> None:
     """Показывает список наборов преподавателя из test_teacher.db для назначения группе."""
     try:
-        sets = list_task_sets()
+        # В колбэках message_or_cb_message.from_user — это бот. Используем viewer_id (id преподавателя).
+        tid = viewer_id or (message_or_cb_message.from_user.id if getattr(message_or_cb_message, "from_user", None) else None)
+        sets = await list_task_sets_async(teacher_id=tid)
     except Exception:
         sets = []
     if not sets:
@@ -71,6 +84,18 @@ async def _show_teacher_sets(message_or_cb_message: types.Message, state: FSMCon
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
     tg_id = message.from_user.id
+    # Авто-регистрация преподавателя: если нет в users.db → попросим имя и сохраним
+    try:
+        rec = get_teacher_record(tg_id)
+    except Exception:
+        rec = None
+    if not rec or not (rec.get("name") or rec.get("moniker")):
+        # Пытаемся собрать имя из Telegram, иначе попросим в явном виде
+        fullname = (message.from_user.full_name or "").strip()
+        username = (message.from_user.username or "").strip()
+        shown = fullname or username or f"ID {tg_id}"
+        # Сохраним хотя бы минимальные данные; env трогать нельзя
+        upsert_teacher_minimal(tg_id=tg_id, name=fullname or shown, nickname=("@" + username) if username else None, moniker=fullname or None)
     moniker = get_teacher_moniker(tg_id) or (message.from_user.full_name or "")
     greeting_name = moniker.strip() or "Коллега"
     await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
@@ -215,7 +240,15 @@ async def manage_groups_back(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "wg_broadcast_start")
 async def wg_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    groups = get_all_group_numbers()
+    # Покажем только группы текущего преподавателя
+    all_groups = await get_all_group_numbers_async()
+    groups: list[int] = []
+    for g in all_groups:
+        try:
+            if await get_work_group_members_async(int(g), teacher_id=callback.from_user.id):
+                groups.append(int(g))
+        except Exception:
+            continue
     if not groups:
         await callback.message.answer("Группы пока не созданы. Сначала добавьте участников.")
         return
@@ -309,7 +342,7 @@ async def remove_from_work_group(cb: types.CallbackQuery):
     except Exception:
         pass
     # Обновим список участников этой группы в текущем сообщении
-    user_ids = get_work_group_members(group_no)
+    user_ids = await get_work_group_members_async(group_no, teacher_id=cb.from_user.id)
     students = get_all_students_with_plans()
     by_id = {s["user_id"]: s for s in students}
     members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
@@ -328,12 +361,12 @@ async def wg_broadcast_text(message: types.Message, state: FSMContext):
         return
     data = await state.get_data()
     group_no = int(data.get("broadcast_group") or 0)
-    user_ids = get_work_group_members(group_no)
+    user_ids = await get_work_group_members_async(group_no, teacher_id=message.from_user.id)
     if not user_ids:
         await message.answer(f"В группе {group_no} нет участников.")
         await state.set_state(None)
         return
-    ok, fail = await broadcast_message_to_group_via_govr(group_no, text)
+    ok, fail = await broadcast_message_to_group_via_govr(group_no, text, teacher_id=message.from_user.id)
     await message.answer(f"Отправлено: {ok}. Ошибок: {fail}.")
     await state.set_state(None)
 
@@ -342,7 +375,14 @@ async def wg_broadcast_text(message: types.Message, state: FSMContext):
 async def wg_add_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     # Одно сообщение: выбор группы для добавления ученика
-    groups = get_all_group_numbers()
+    all_groups = await get_all_group_numbers_async()
+    groups: list[int] = []
+    for g in all_groups:
+        try:
+            if await get_work_group_members_async(int(g), teacher_id=callback.from_user.id):
+                groups.append(int(g))
+        except Exception:
+            continue
     try:
         await callback.message.edit_text(
             "Выберите группу, куда добавить ученика:",
@@ -391,7 +431,7 @@ async def pick_add_group(cb: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(group_no=group_no)
     # Покажем текущих участников и кнопку «Добавить в группу»
-    user_ids = get_work_group_members(group_no)
+    user_ids = await get_work_group_members_async(group_no, teacher_id=cb.from_user.id)
     students = get_all_students_with_plans()
     by_id = {s["user_id"]: s for s in students}
     members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
@@ -418,7 +458,7 @@ async def wg_task_results(cb: types.CallbackQuery):
         await cb.answer("Не понимаю id", show_alert=True)
         return
 
-    info = compute_group_task_results(task_id)
+    info = await compute_group_task_results_async(task_id)
     group_no = info.get('group_no')
     title = info.get('title') or f"Набор {task_id}"
     qids = info.get('qids') or []
@@ -463,14 +503,14 @@ async def wg_input_username(message: types.Message, state: FSMContext):
     data = await state.get_data()
     group_no = int(data.get("group_no") or 0)
 
-    user_id = find_user_id_by_username(username)
+    user_id = await find_user_id_by_username_async(username)
     if not user_id:
         await message.answer("Не нашли такого пользователя в базе. Попросите его написать боту, затем повторите.")
         await state.set_state(None)
         return
 
     # 1) Добавляем в рабочую группу
-    add_user_to_work_group(group_no, user_id)
+    add_user_to_work_group(group_no, user_id, teacher_id=message.from_user.id)
     # 2) Автоматически выдаём доступ к групповому тарифу (teacher_groups)
     try:
         add_student_to_group(user_id)
@@ -489,7 +529,7 @@ async def wg_input_username(message: types.Message, state: FSMContext):
         f"✅ Пользователь {username} (id={user_id}) добавлен в рабочую группу {group_no} и получил доступ к групповому тарифу."
     )
     # После добавления сразу обновим список участников
-    user_ids = get_work_group_members(group_no)
+    user_ids = await get_work_group_members_async(group_no, teacher_id=message.from_user.id)
     students = get_all_students_with_plans()
     by_id = {s["user_id"]: s for s in students}
     members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
@@ -506,7 +546,17 @@ async def wg_input_username(message: types.Message, state: FSMContext):
 @router.callback_query(lambda c: c.data == "manage_groups_list")
 async def manage_groups_list(callback: types.CallbackQuery):
     await callback.answer()
-    groups = get_all_group_numbers()
+    # Фильтрация списков групп: показываем только те, где есть участники текущего преподавателя
+    all_groups = await get_all_group_numbers_async()
+    # Фильтруем номера групп по наличию участников текущего преподавателя
+    my_groups: list[int] = []
+    for g in all_groups:
+        try:
+            if await get_work_group_members_async(int(g), teacher_id=callback.from_user.id):
+                my_groups.append(int(g))
+        except Exception:
+            continue
+    groups = my_groups or []
     if not groups:
         await callback.message.edit_text("Группы пока не созданы. Нажмите '➕ Добрать в рабочие группы' чтобы начать.", reply_markup=get_manage_groups_keyboard())
         return
@@ -523,7 +573,7 @@ async def wg_open_group(callback: types.CallbackQuery):
         group_no = int(callback.data.split(":")[1])
     except Exception:
         group_no = 0
-    user_ids = get_work_group_members(group_no)
+    user_ids = await get_work_group_members_async(group_no, teacher_id=callback.from_user.id)
     # Обогатим данными (label)
     students = get_all_students_with_plans()
     by_id = {s["user_id"]: s for s in students}
@@ -563,7 +613,14 @@ async def wg_prompt_add(cb: types.CallbackQuery, state: FSMContext):
 @router.callback_query(lambda c: c.data == "wg_tasks_start")
 async def wg_tasks_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    groups = get_all_group_numbers()
+    all_groups = await get_all_group_numbers_async()
+    groups: list[int] = []
+    for g in all_groups:
+        try:
+            if await get_work_group_members_async(int(g), teacher_id=callback.from_user.id):
+                groups.append(int(g))
+        except Exception:
+            continue
     if not groups:
         await callback.message.answer("Группы пока не созданы. Сначала добавьте участников.")
         return
@@ -582,7 +639,7 @@ async def wg_tasks_group(message: types.Message, state: FSMContext):
         await message.answer("Пожалуйста, введите целое число (например, 1). Попробуйте ещё раз:")
         return
     await state.update_data(tasks_group=group_no)
-    tasks = list_group_tasks(group_no)
+    tasks = await list_group_tasks_async(group_no, teacher_id=message.from_user.id)
     if tasks:
         try:
             await message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
@@ -618,7 +675,7 @@ async def pick_tasks_group(cb: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(tasks_group=group_no)
     # Показать уже имеющиеся наборы и кнопку «Создать задание»
-    tasks = list_group_tasks(group_no)
+    tasks = await list_group_tasks_async(group_no, teacher_id=cb.from_user.id)
     if tasks:
         try:
             await _safe_edit_text(cb.message, "У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
@@ -650,7 +707,7 @@ async def wg_tasks_exam(message: types.Message, state: FSMContext):
     exam = (message.text or "").strip().lower()
     if exam in {"ege", "егэ", "oge", "огэ", "teacher", "преподаватель"}:
         if exam in {"teacher", "преподаватель"}:
-            await _show_teacher_sets(message, state)
+            await _show_teacher_sets(message, state, viewer_id=message.from_user.id)
             return
         canonical = "ege" if exam in {"ege", "егэ"} else "oge"
         await state.update_data(tasks_exam=canonical)
@@ -718,13 +775,13 @@ async def wg_tasks_ids(message: types.Message, state: FSMContext):
 
     # Сохраним в общем CSV формате ege:1, ege:5 ... или oge:...
     items = ", ".join(f"{exam}:{p}" for p in ids)
-    create_group_task(group_no, title, items)
+    await create_group_task_async(group_no, title, items)
     ids_str = ", ".join(str(i) for i in ids)
     await message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {ids_str})")
     await state.set_state(None)
     # Показать обновлённый список наборов сразу
     try:
-        tasks = list_group_tasks(group_no)
+        tasks = await list_group_tasks_async(group_no)
         await message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     except Exception:
         pass
@@ -790,13 +847,13 @@ async def wg_types_done(cb: types.CallbackQuery, state: FSMContext):
     group_no = int(data.get("tasks_group") or 0)
     title = data.get("tasks_title") or "Набор"
     items = ", ".join(f"{exam}:{p}" for p in ids)
-    create_group_task(group_no, title, items)
+    await create_group_task_async(group_no, title, items)
     # Покажем подтверждение и обновлённый список наборов
     try:
         await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
     except Exception:
         await cb.message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
-    tasks = list_group_tasks(group_no)
+    tasks = await list_group_tasks_async(group_no, teacher_id=cb.from_user.id)
     try:
         await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     except Exception:
@@ -810,7 +867,7 @@ async def wg_pick_exam(cb: types.CallbackQuery, state: FSMContext):
     canonical = (cb.data.split(":", 1)[1] or "ege").lower()
     if canonical == "teacher":
         await cb.answer()
-        await _show_teacher_sets(cb.message, state)
+        await _show_teacher_sets(cb.message, state, viewer_id=cb.from_user.id)
         return
     if canonical not in {"ege", "oge"}:
         canonical = "ege"
@@ -905,13 +962,13 @@ async def wg_ids_done(cb: types.CallbackQuery, state: FSMContext):
         await cb.answer("Ничего не выбрано", show_alert=True)
         return
     items = ", ".join(f"{exam}:{i}" for i in ids_selected)
-    create_group_task(group_no, title, items)
+    await create_group_task_async(group_no, title, items, teacher_id=cb.from_user.id)
     try:
         await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids_selected))})")
     except Exception:
         await cb.message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids_selected))})")
     # Обновим список наборов
-    tasks = list_group_tasks(group_no)
+    tasks = await list_group_tasks_async(group_no, teacher_id=cb.from_user.id)
     try:
         await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     except Exception:
@@ -960,7 +1017,7 @@ async def wg_task_delete(cb: types.CallbackQuery):
     if group_no is None:
         await cb.answer("Набор не найден", show_alert=True)
         return
-    tasks = list_group_tasks(group_no)
+    tasks = await list_group_tasks_async(group_no, teacher_id=cb.from_user.id)
     try:
         # Обновим только клавиатуру у того же сообщения
         await cb.message.edit_reply_markup(reply_markup=get_group_tasks_kb(tasks, group_no))
@@ -1134,7 +1191,7 @@ async def wg_tasks_list(cb: types.CallbackQuery):
     except Exception:
         await cb.answer()
         return
-    tasks = list_group_tasks(group_no)
+    tasks = list_group_tasks(group_no, teacher_id=cb.from_user.id)
     try:
         await cb.message.edit_text("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     except Exception:
@@ -1167,13 +1224,13 @@ async def wg_pick_teacher_set(cb: types.CallbackQuery, state: FSMContext):
         return
     items = ", ".join(f"teacher:{qid}" for qid in qids)
     title = title_state or (info.get("title") or f"Teacher set {set_id}")
-    create_group_task(group_no, title, items)
+    await create_group_task_async(group_no, title, items)
     try:
         await cb.message.edit_text(f"✅ Набор ‘{title}’ назначен группе {group_no}. (TEACHER IDs: {', '.join(map(str, qids))})")
     except Exception:
         await cb.message.answer(f"✅ Набор ‘{title}’ назначен группе {group_no}. (TEACHER IDs: {', '.join(map(str, qids))})")
     # Показать обновлённый список наборов
-    tasks_list = list_group_tasks(group_no)
+    tasks_list = await list_group_tasks_async(group_no, teacher_id=cb.from_user.id)
     try:
         await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks_list, group_no))
     except Exception:
@@ -1218,13 +1275,13 @@ async def wg_pick_variant(cb: types.CallbackQuery, state: FSMContext):
     group_no = int(data.get("tasks_group") or 0)
     title = data.get("tasks_title") or f"Вариант {filename}"
     items = ", ".join(f"{exam}:{p}" for p in ids)
-    create_group_task(group_no, title, items)
+    await create_group_task_async(group_no, title, items)
     try:
         await cb.message.edit_text(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
     except Exception:
         await cb.message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
     # После создания сразу показываем список наборов с новой кнопкой
-    tasks = list_group_tasks(group_no)
+    tasks = await list_group_tasks_async(group_no)
     try:
         await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     except Exception:

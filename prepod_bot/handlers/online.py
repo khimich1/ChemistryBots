@@ -334,7 +334,8 @@ async def start_notifier(bot: Bot, poll_interval_sec: int = 10):
     while True:
         try:
             await asyncio.sleep(poll_interval_sec)
-            events = get_activity_updates_since(last_ts)
+            # выполняем синхронный запрос к БД в отдельном потоке, чтобы не блокировать event loop
+            events = await asyncio.to_thread(get_activity_updates_since, last_ts)
             if not events:
                 continue
 
@@ -362,7 +363,19 @@ async def start_notifier(bot: Bot, poll_interval_sec: int = 10):
                 for teacher_id in list(subscribers):
                     try:
                         await bot.send_message(teacher_id, msg)
-                    except Exception:
-                        pass
-        except Exception:
+                        # лёгкий троттлинг, чтобы избежать локальных всплесков
+                        await asyncio.sleep(0.03)
+                    except Exception as e:
+                        # логируем, чтобы видеть реальные сбои
+                        try:
+                            import logging
+                            logging.getLogger("prepod_bot").warning(f"notify send failed to {teacher_id}: {e}")
+                        except Exception:
+                            pass
+        except Exception as e:
+            try:
+                import logging
+                logging.getLogger("prepod_bot").exception(f"notifier loop error: {e}")
+            except Exception:
+                pass
             await asyncio.sleep(poll_interval_sec)

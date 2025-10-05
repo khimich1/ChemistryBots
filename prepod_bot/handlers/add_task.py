@@ -48,8 +48,8 @@ async def manage_back(message: types.Message, state: FSMContext):
         pass
 
 
-def _sets_list_kb() -> InlineKeyboardMarkup:
-    sets = list_task_sets()
+def _sets_list_kb(teacher_id: int | None = None) -> InlineKeyboardMarkup:
+    sets = list_task_sets(teacher_id=teacher_id)
     rows: list[list[InlineKeyboardButton]] = []
     for s in sets:
         title = s.get("title") or f"Набор {s.get('id')}"
@@ -70,7 +70,7 @@ def _sets_list_kb() -> InlineKeyboardMarkup:
 async def manage_add_start(message: types.Message, state: FSMContext):
     await state.clear()
     # При первом входе показываем список наборов построчно: название + 📊 + 🖨 + 🗑
-    kb = _sets_list_kb()
+    kb = _sets_list_kb(teacher_id=message.from_user.id)
     sent = await message.answer("Выберите набор или создайте новый:", reply_markup=kb)
     try:
         message_manager.add_message(message.from_user.id, sent.message_id)
@@ -360,7 +360,7 @@ async def tt_receive_set_title(message: types.Message, state: FSMContext):
     if not title:
         await message.answer("Название пустое. Введите название ещё раз:")
         return
-    set_id = create_task_set(title)
+    set_id = create_task_set(title, teacher_id=message.from_user.id)
     await state.update_data(current_set_id=set_id)
     # Теперь переходим к добавлению первого вопроса
     await state.set_state(AddTeacherTask.waiting_question_and_image)
@@ -406,9 +406,9 @@ async def tt_sets_back(cb: types.CallbackQuery, state: FSMContext):
         data = await state.get_data()
         current_set_id = data.get("current_set_id")
         await cb.message.edit_text("Выберите набор или создайте новый:")
-        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb())
+        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
     except Exception:
-        await cb.message.answer("Выберите набор или создайте новый:", reply_markup=_sets_list_kb())
+        await cb.message.answer("Выберите набор или создайте новый:", reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
 
 
 @router.callback_query(lambda c: c.data.startswith("tt_add_choose:"))
@@ -423,9 +423,9 @@ async def tt_add_choose(cb: types.CallbackQuery, state: FSMContext):
     # Показываем выбор набора (как на второй картинке) + ряд 📊🖨🗑 для текущего набора
     try:
         await cb.message.edit_text("Выберите набор или создайте новый:")
-        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb())
+        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
     except Exception:
-        await cb.message.answer("Выберите набор или создайте новый:", reply_markup=_sets_list_kb())
+        await cb.message.answer("Выберите набор или создайте новый:", reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
 
 
 @router.callback_query(lambda c: c.data.startswith("tt_add_more:"))
@@ -450,9 +450,9 @@ async def tt_finish(cb: types.CallbackQuery, state: FSMContext):
     # После завершения показываем список наборов (новая кнопка с названием уже будет в списке)
     try:
         await cb.message.edit_text("Выберите набор или создайте новый:")
-        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb())
+        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
     except Exception:
-        await cb.message.answer("Выберите набор или создайте новый:", reply_markup=_sets_list_kb())
+        await cb.message.answer("Выберите набор или создайте новый:", reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
     await state.clear()
 
 
@@ -467,9 +467,9 @@ async def tt_delete_set(cb: types.CallbackQuery, state: FSMContext):
     msg = "✅ Набор удалён." if ok else "❌ Не удалось удалить набор."
     try:
         await cb.message.edit_text(msg)
-        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb())
+        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
     except Exception:
-        await cb.message.answer(msg, reply_markup=_sets_list_kb())
+        await cb.message.answer(msg, reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
 
 
 @router.callback_query(lambda c: c.data.startswith("tt_stats:"))
@@ -506,7 +506,7 @@ async def tt_stats(cb: types.CallbackQuery):
 @router.callback_query(lambda c: c.data.startswith("tt_print:"))
 async def tt_print(cb: types.CallbackQuery):
     from services.pdf_export import render_questions_to_pdf
-    import os, tempfile
+    import os, tempfile, shutil
     await cb.answer()
     try:
         set_id = int(cb.data.split(":", 1)[1])
@@ -536,3 +536,9 @@ async def tt_print(cb: types.CallbackQuery):
         await cb.message.answer_document(FSInputFile(pdf_path), caption=f"📄 Набор #{set_id}")
     except Exception:
         await cb.answer("PDF создан, но не удалось отправить", show_alert=True)
+    finally:
+        # Удалим временную директорию с PDF
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
