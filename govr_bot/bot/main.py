@@ -22,12 +22,14 @@ from bot.handlers.menu import router as menu_router
 from bot.handlers.topics import router as topics_router
 from bot.handlers.tests import router as tests_router
 from bot.handlers import tests_oge
+from bot.handlers.tests_teacher import router as tests_teacher_router
 
 from bot.handlers.flashcards import router as flashcards_router
 from bot.handlers.billing import router as billing_router
 from bot.services.plan import init_billing_tables
 from bot.handlers.admin import router as admin_router
 # from bot.handlers.giveaway import router as giveaway_router  # Розыгрыш отключен
+from bot.services.reminders import reminders_loop
 
 # --- Конфиг и токен ---
 from dotenv import load_dotenv
@@ -74,6 +76,17 @@ async def shutdown_bot():
                 await asyncio.wait_for(cleanup_task, timeout=5.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+        # Останавливаем задачу напоминаний, если была создана
+        try:
+            rt = globals().get('reminder_task', None)
+            if rt:
+                rt.cancel()
+                try:
+                    await asyncio.wait_for(rt, timeout=5.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+        except Exception:
+            pass
         
         # Останавливаем polling
         if dp_instance:
@@ -168,6 +181,7 @@ async def main():
     dp_instance.include_router(topics_router)    # topics ПЕРЕД tests!
     dp_instance.include_router(tests_router)     # tests ПОСЛЕ topics!
     dp_instance.include_router(tests_oge.router) # ОГЭ тесты
+    dp_instance.include_router(tests_teacher_router) # Задания от преподавателя
     dp_instance.include_router(flashcards_router)
     dp_instance.include_router(admin_router)     # Админские команды
     # dp_instance.include_router(giveaway_router)  # Розыгрыш отключен
@@ -178,8 +192,10 @@ async def main():
     if not commands_set:
         print("⚠️ Команды бота не установлены, но бот будет работать")
 
-    # --- Запуск rate limiter cleanup ---
+    # --- Запуск фоновых задач ---
     cleanup_task = asyncio.create_task(cleanup_rate_limiters())
+    # Сохраняем ссылку глобально, чтобы корректно останавливать при shutdown
+    globals()['reminder_task'] = asyncio.create_task(reminders_loop(bot_instance))
 
     # --- Проверка токена перед запуском ---
     try:

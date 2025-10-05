@@ -2,6 +2,9 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+_LOCAL_ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_LOCAL_ENV):
+    load_dotenv(_LOCAL_ENV, override=True)
 
 # Абсолютные пути к корню репозитория и каталогу shared
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -70,6 +73,10 @@ TESTS_DB_OGE = _expand_path(os.getenv("TESTS_DB_OGE")) or os.path.join(_SHARED_D
 # База для заданий, добавляемых преподавателями (teacher)
 # В .env предусмотрена переменная TESTS_DB_TEACHER с абсолютным путём
 TESTS_DB_TEACHER = _expand_path(os.getenv("TESTS_DB_TEACHER")) or os.path.join(_SHARED_DIR, "test_teacher.db")
+
+# База для заданий, добавляемых преподавателями (teacher)
+# В .env предусмотрена переменная TESTS_DB_TEACHER с абсолютным путём
+TESTS_DB_TEACHER = os.getenv("TESTS_DB_TEACHER") or os.path.join(_SHARED_DIR, "test_teacher.db")
 
 # Путь к базе пользователей (регистрируется через admin_bot, таблица teacher)
 # По умолчанию shared/users.db рядом с репозиторием

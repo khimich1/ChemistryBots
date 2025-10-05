@@ -31,6 +31,24 @@ class Database:
                 )
                 """
             )
+            # Миграция: добавляем недостающие столбцы, если таблица уже существовала
+            cur = conn.execute("PRAGMA table_info(teacher)")
+            existing_columns = {row[1] for row in cur.fetchall()}
+            required_columns = [
+                ("nickname", "TEXT", "''"),
+                ("name", "TEXT", "''"),
+                ("moniker", "TEXT", "NULL"),
+                ("discipline", "TEXT", "NULL"),
+                ("rate", "TEXT", "NULL"),
+            ]
+            for col_name, col_type, default_sql in required_columns:
+                if col_name not in existing_columns:
+                    if default_sql == "NULL":
+                        conn.execute(f"ALTER TABLE teacher ADD COLUMN {col_name} {col_type}")
+                    else:
+                        conn.execute(
+                            f"ALTER TABLE teacher ADD COLUMN {col_name} {col_type} DEFAULT {default_sql}"
+                        )
             conn.commit()
 
     def upsert_teacher(self, teacher: Dict[str, Optional[str]]) -> None:

@@ -1,6 +1,6 @@
 from aiogram import Router, types
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import StateFilter
 
 from keyboards import get_manage_tasks_keyboard, get_teacher_keyboard

@@ -19,6 +19,9 @@ from bot.services.answer_db import (
     save_test_debug,
     get_last_results_for_questions,
     reset_test_results,
+    save_group_task_progress,
+    load_group_task_progress,
+    clear_group_task_progress,
 )
 from bot.services.test_sql import get_all_tests_types, get_questions_by_type, get_question_by_id, mark_question_issue, copy_question_to_tests_bug
 
@@ -140,7 +143,6 @@ def tests_instruction_text() -> str:
 # 1. Клавиатура для выбора тестов
 # =========================
 def get_tests_types_kb(with_menu: bool = False, include_back: bool = False, user_id: int = None):
-    from bot.services.teacher_access import is_student_approved_by_teacher
     
     types = get_all_tests_types()
     
@@ -159,10 +161,6 @@ def get_tests_types_kb(with_menu: bool = False, include_back: bool = False, user
             row.append(InlineKeyboardButton(text=f"Тест {types[i + 2]}", callback_data=f"choose_test_{types[i + 2]}"))
         if row:  # Добавляем ряд только если в нем есть кнопки
             keyboard.append(row)
-    
-    # --- Кнопка "Задания для группы" (только для студентов в группе)
-    if user_id and is_student_approved_by_teacher(user_id):
-        keyboard.append([InlineKeyboardButton(text="📂 Задания для группы", callback_data="group_assignments")])
     
     # --- Кнопка "Работа над ошибками"
     keyboard.append([InlineKeyboardButton(text="💡 Работа над ошибками", callback_data="work_on_mistakes")])
@@ -1068,11 +1066,20 @@ async def start_group_task(cb: CallbackQuery):
         await cb.message.answer("❌ Задание не найдено.")
         return
     
-    # Парсим items (формат: "ege:1, ege:5, oge:3")
-    items = task['items']
+    # 1) Если есть сохранённая пауза — загрузим и используем снимок items
+    resume = load_group_task_progress(user_id, task_id)
+    items_text = None
+    correct_answers_saved = 0
+    current_question_saved = 0
+    title_saved = None
+    if resume:
+        current_question_saved, correct_answers_saved, items_text, title_saved = resume
+    
+    # Парсим items (формат: "ege:1, ege:5, oge:3") — из snapshot либо из задания
+    items_raw = (items_text or task['items'] or "")
     question_ids = []
     
-    for item in items.split(','):
+    for item in items_raw.split(','):
         item = item.strip()
         if ':' in item:
             exam_type, q_id = item.split(':', 1)
@@ -1131,16 +1138,20 @@ async def start_group_task(cb: CallbackQuery):
     user_test_state[user_id].update({
         'is_group_task': True,
         'group_task_id': task_id,
-        'group_task_title': task['title'],
+        'group_task_title': (title_saved or task['title']),
         'questions': questions,
-        'current_question': 0,
-        'correct_answers': 0,
+        'current_question': int(current_question_saved or 0),
+        'correct_answers': int(correct_answers_saved or 0),
         'total_questions': len(questions),
         'start_time': None,
         'grid_msg_id': None
     })
     
-    # Запускаем первый вопрос
+    # Сообщение о продолжении, если возобновляемся
+    if resume:
+        await cb.message.answer(f"Продолжаем «{title_saved or task['title']}» с вопроса {int(current_question_saved)+1}/{len(questions)}.")
+    
+    # Запускаем следующий вопрос
     await start_group_question(cb, user_id)
 
 
@@ -1180,6 +1191,7 @@ async def start_group_question(cb: CallbackQuery, user_id: int):
     keyboard = []
     
     # Кнопки управления
+    keyboard.append([InlineKeyboardButton(text="⏸️ Пауза", callback_data=f"pause_group_test_{state.get('group_task_id')}")])
     keyboard.append([InlineKeyboardButton(text="⏹️ Завершить", callback_data="stop_group_test")])
     kb_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
@@ -1267,6 +1279,11 @@ async def finish_group_test(cb: CallbackQuery, user_id: int):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
     
+    # Очистить сохранённую паузу (если была)
+    try:
+        clear_group_task_progress(user_id, int(state.get('group_task_id', 0)))
+    except Exception:
+        pass
     # Очищаем состояние
     user_test_state.pop(user_id, None)
 
@@ -1285,6 +1302,121 @@ async def stop_group_test(cb: CallbackQuery):
     
     # Завершаем тест досрочно
     await finish_group_test(cb, user_id)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("pause_group_test_"))
+async def pause_group_test(cb: CallbackQuery):
+    await cb.answer()
+    user_id = cb.from_user.id
+    state = user_test_state.get(user_id, {})
+    if not state.get('is_group_task'):
+        await cb.message.answer("❌ Нет активного группового задания.")
+        return
+    try:
+        task_id = int(cb.data.split("_")[-1])
+    except ValueError:
+        await cb.message.answer("❌ Неверный ID задания для паузы.")
+        return
+    if state.get('group_task_id') != task_id:
+        await cb.message.answer("❌ Это не текущее задание.")
+        return
+
+    # Собираем snapshot items из текущего списка вопросов
+    parts: list[str] = []
+    for q in state.get('questions', []):
+        exam_type = (q.get('exam_type') or 'ege').lower()
+        qid = int(q.get('id') or 0)
+        parts.append(f"{exam_type}:{qid}")
+    items_snapshot = ", ".join(parts)
+    title = state.get('group_task_title', '')
+
+    save_group_task_progress(
+        user_id=user_id,
+        task_id=task_id,
+        current_question=int(state.get('current_question', 0)),
+        correct_answers=int(state.get('correct_answers', 0)),
+        items=items_snapshot,
+        title=title,
+    )
+
+    # Выходим из режима задания
+    user_test_state.pop(user_id, None)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="▶️ Продолжить сейчас", callback_data=f"resume_group_task_{task_id}")],
+        [InlineKeyboardButton(text="📋 К заданиям группы", callback_data="group_assignments")],
+    ])
+    await cb.message.answer("⏸️ Пауза. Можно вернуться позже и продолжить с того же места.", reply_markup=kb)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("resume_group_task_"))
+async def resume_group_task(cb: CallbackQuery):
+    await cb.answer()
+    user_id = cb.from_user.id
+    try:
+        task_id = int(cb.data.split("_")[-1])
+    except ValueError:
+        await cb.message.answer("❌ Неверный ID задания для продолжения.")
+        return
+
+    prog = load_group_task_progress(user_id, task_id)
+    if not prog:
+        await cb.message.answer("Нет сохранённой паузы по этому заданию.")
+        return
+    current_question, correct_answers, items_text, title_saved = prog
+
+    # Восстанавливаем список вопросов из snapshot
+    question_ids: list[tuple[str, int]] = []
+    for item in (items_text or "").split(","):
+        item = item.strip()
+        if ":" in item:
+            exam_type, qid = item.split(":", 1)
+            exam_type = exam_type.strip().lower()
+            if qid.strip().isdigit():
+                question_ids.append((exam_type, int(qid.strip())))
+
+    # Загружаем вопросы
+    questions = []
+    for exam_type, q_id in question_ids:
+        try:
+            if exam_type == 'ege':
+                from bot.services.test_sql import get_question_with_image as get_q
+            else:
+                from bot.services.test_sql_oge import get_question_with_image as get_q
+            q = get_q(int(q_id))
+            if q:
+                questions.append({
+                    'id': q.get('id'),
+                    'type': q.get('type'),
+                    'question': q.get('question', ''),
+                    'options': q.get('options', ''),
+                    'correct_answer': q.get('correct_answer', ''),
+                    'explanation': q.get('explanation', ''),
+                    'hint': q.get('hint', ''),
+                    'exam_type': exam_type,
+                    'image': q.get('image'),
+                    'images': q.get('images')
+                })
+        except Exception:
+            pass
+
+    if not questions:
+        await cb.message.answer("❌ Не удалось восстановить вопросы.")
+        return
+
+    user_test_state[user_id] = {
+        'is_group_task': True,
+        'group_task_id': task_id,
+        'group_task_title': title_saved or "",
+        'questions': questions,
+        'current_question': int(current_question),
+        'correct_answers': int(correct_answers),
+        'total_questions': len(questions),
+        'start_time': None,
+        'grid_msg_id': None
+    }
+    await cb.message.answer(f"Продолжаем «{title_saved or ''}» с вопроса {int(current_question)+1}/{len(questions)}.")
+    await start_group_question(cb, user_id)
 
 
 
@@ -1410,6 +1542,7 @@ async def start_group_question_text(m: types.Message, user_id: int):
     
     # Кнопки управления
     keyboard = [
+        [InlineKeyboardButton(text="⏸️ Пауза", callback_data=f"pause_group_test_{state.get('group_task_id')}")],
         [InlineKeyboardButton(text="⏹️ Завершить", callback_data="stop_group_test")]
     ]
     kb_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -1474,6 +1607,11 @@ async def finish_group_test_text(m: types.Message, user_id: int):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
     
+    # Очистить сохранённую паузу (если была)
+    try:
+        clear_group_task_progress(user_id, int(state.get('group_task_id', 0)))
+    except Exception:
+        pass
     # Очищаем состояние
     user_test_state.pop(user_id, None)
 
