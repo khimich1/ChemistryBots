@@ -26,7 +26,9 @@ from services.teachers import get_teacher_moniker, upsert_teacher_minimal, get_t
 from services.groups import (
     add_student_to_group,
     is_student_in_group,
+    is_student_in_teacher_group,
     get_all_students_with_plans,
+    get_teacher_students_with_plans,
     add_user_to_work_group,
     find_user_id_by_username,
     get_all_group_numbers,
@@ -41,6 +43,7 @@ from services.groups import (
     get_question_ids_by_type,
     remove_user_from_work_group,
     compute_group_task_results,
+    resolve_user_id_from_target,
 )
 from aiogram.fsm.context import FSMContext
 from config import DEEPLINK_HINT
@@ -51,6 +54,7 @@ from services.pdf_export import render_questions_to_pdf
 from keyboards import get_pick_students_for_day_kb
 from datetime import datetime as _dt
 from utils.message_manager import message_manager
+from services.lessons import get_lessons_in_week, add_lesson
 
 # Асинхронные обёртки для групповых операций (не блокируем event loop)
 from services.groups import (
@@ -121,6 +125,75 @@ async def schedule_entry(message: types.Message, state: FSMContext):
     """Точка входа в расписание: показываем локальную неделю."""
     await state.clear()
     await _show_week_schedule(message, state, tg_id=message.from_user.id)
+
+
+# ── Справка: Как работает бот ─────────────────────────────────────────────────────────────────────────────────────
+
+@router.message(StateFilter('*'), lambda m: m.text == "❓ Как работает бот?")
+async def show_help(message: types.Message, state: FSMContext):
+    """Показывает краткую инструкцию по кнопкам и возвращает кнопку Назад.
+    Сообщение отправляется отдельным блоком и может быть удалено по нажатию Назад.
+    """
+    await state.clear()
+    # Текст справки максимально простой для преподавателя
+    help_text = (
+        "Как работает бот\n\n"
+        "Этот бот помогает преподавателю управлять учениками, группами, заданиями и занятиями прямо в Telegram. Ниже — что делает каждая кнопка и зачем это нужно.\n\n"
+        "👨‍🎓 Ученики онлайн\n"
+        "- Видите тех, кто сейчас активен (за последние минуты). Сверху есть кнопка 🔄 Обновить.\n"
+        "- ▶ Начать практику — запуск сессии. История по ученикам будет показываться \"с этого момента\". Чтобы остановить — ⏹ Закончить практику.\n"
+        "- 🔔 Включить оповещения — бот присылает события: начал вопрос, ответил верно/неверно. Нажмите ещё раз, чтобы выключить.\n"
+        "- 📜 История: Имя — откроет подробную историю действий выбранного ученика. Внутри есть ⬅️ Назад — удалит историю и вернёт назад.\n"
+        "- ⬅️ Выход в главное меню — вернуться в основное меню в один тап.\n\n"
+        "📈 Успеваемость\n"
+        "- Сводка по решённым тестам и темам, можно открыть детали по наборам.\n"
+        "- Зачем: быстро видеть прогресс и давать повторение по слабым типам задач.\n\n"
+        "🛠 Управление заданиями\n"
+        "- Создавайте или редактируйте свои наборы заданий. Поддерживаются ЕГЭ/ОГЭ и авторские задания.\n"
+        "- Зачем: быстро собрать домашку/вариант и выдать группе без лишних файлов.\n\n"
+        "📚 Управление группами\n"
+        "- Создавайте группы (например: 10А, ЕГЭ, Индивидуальные).\n"
+        "- Добавляйте учеников, назначайте наборы, отправляйте сообщения. Смотрите результаты.\n"
+        "- Зачем: каждому классу — свои задания и объявления.\n\n"
+        "📅 Расписание\n"
+        "- Планирование занятий на неделю и переключение недель.\n"
+        "- Зачем: держать план под рукой и не забывать о переносах.\n\n"
+        "Подсказки\n"
+        "- Внутри разделов пользуйтесь кнопкой ⬅️ Назад.\n"
+        "- Если в чате много старых сообщений — вернитесь в главное меню, бот очистит лишнее.\n"
+    )
+    rows: list[list[types.InlineKeyboardButton]] = [
+        [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="help_back")],
+    ]
+    kb = types.InlineKeyboardMarkup(inline_keyboard=rows)
+    sent = await message.answer(help_text, reply_markup=kb)
+    # Запомним это сообщение, чтобы удалить по кнопке Назад
+    try:
+        await state.update_data(help_msg_id=int(sent.message_id))
+    except Exception:
+        pass
+
+
+@router.callback_query(lambda c: c.data == "help_back")
+async def help_back(callback: types.CallbackQuery, state: FSMContext):
+    """Удаляет текст справки и возвращает главное меню."""
+    try:
+        data = await state.get_data()
+        mid = data.get("help_msg_id")
+        if mid:
+            with contextlib.suppress(Exception):
+                await callback.bot.delete_message(chat_id=callback.message.chat.id, message_id=int(mid))
+            await state.update_data(help_msg_id=None)
+    except Exception:
+        pass
+    # Переход в главное меню
+    await message_manager.delete_user_messages_fast(callback.bot, callback.from_user.id, callback.message.chat.id)
+    sent = await callback.message.answer(
+        "Выберите действие:",
+        reply_markup=get_teacher_keyboard()
+    )
+    message_manager.add_message(callback.from_user.id, sent.message_id)
+    await callback.answer()
 
 
 def _unused():
@@ -541,15 +614,24 @@ async def on_add_until_menu(cb: types.CallbackQuery, state: FSMContext):
     while cur <= end_date:
         days.append(cur.strftime("%Y-%m-%d"))
         cur = cur + timedelta(days=7)
-    # Сохраним в состоянии
-    await state.update_data(lesson_days=days, lesson_until_may30=True)
-    rows = [
-        [types.InlineKeyboardButton(text="➕ Группа (до 30 мая)", callback_data=f"add_lesson_group_until:{base_day.strftime('%Y-%m-%d')}")],
-        [types.InlineKeyboardButton(text="➕ Ученик (до 30 мая)", callback_data=f"add_lesson_student_until:{base_day.strftime('%Y-%m-%d')}")],
-        # Назад к сетке дней (простой шаг назад)
-        [types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"calendar_back:{base_day.strftime('%Y-%m-%d')}")],
-    ]
-    await cb.message.answer("Что добавить до 30 мая?", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=rows))
+    # Сохраним в состоянии и сразу предложим выбрать группу
+    await state.update_data(lesson_days=days, lesson_until_may30=True, lesson_kind="group")
+    # Показываем только те номера групп, где есть участники текущего преподавателя
+    all_groups = await get_all_group_numbers_async()
+    groups: list[int] = []
+    for g in all_groups:
+        try:
+            if await get_work_group_members_async(int(g), teacher_id=cb.from_user.id):
+                groups.append(int(g))
+        except Exception:
+            continue
+    if groups:
+        await cb.message.answer(
+            "Выберите группу (уроки будут созданы до 30 мая):",
+            reply_markup=get_group_pick_keyboard(groups, prefix="pick_lesson_group")
+        )
+    else:
+        await cb.message.answer("Пока нет ваших групп с участниками. Сначала добавьте учеников в группу.")
 
 
 @router.callback_query(lambda c: c.data and (c.data.startswith("add_lesson_student_until:") or c.data.startswith("add_lesson_group_until:")))
@@ -564,7 +646,7 @@ async def on_add_lesson_until(cb: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(lesson_kind=kind)
     if kind == "student":
-        students = get_all_students()
+        students = get_teacher_students_with_plans(cb.from_user.id)
         kb = get_pick_students_for_day_kb(students, day=day0, page=1)
         await cb.message.answer("Выберите ученика (уроки будут созданы до 30 мая):", reply_markup=kb)
     else:
@@ -605,7 +687,7 @@ async def on_add_lesson8(cb: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(lesson_kind=kind)
     if kind == "student":
-        students = get_all_students()
+        students = get_teacher_students_with_plans(cb.from_user.id)
         kb = get_pick_students_for_day_kb(students, day=day0, page=1)
         await cb.message.answer("Выберите ученика (уроки будут созданы на 8 недель):", reply_markup=kb)
     else:
@@ -629,7 +711,7 @@ async def on_add_lesson(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(lesson_day=day, lesson_kind=kind)
     if kind == "student":
         # покажем список учеников на выбор
-        students = get_all_students()
+        students = get_teacher_students_with_plans(cb.from_user.id)
         kb = get_pick_students_for_day_kb(students, day=day, page=1)
         await cb.message.answer("Выберите ученика:", reply_markup=kb)
         # временно запомним день и что ждём ученика
@@ -680,7 +762,7 @@ async def on_lesson_time(message: types.Message, state: FSMContext):
         # Попробуем найти username/label
         target = f"ID {user_id}"
         try:
-            students = get_all_students()
+            students = get_teacher_students_with_plans(message.from_user.id)
             for s in students:
                 if str(s.get("user_id")) == str(user_id):
                     uname = (s.get("username") or "").strip()
@@ -717,18 +799,52 @@ async def on_lesson_time(message: types.Message, state: FSMContext):
         await message.answer("✅ Уроки до 30 мая добавлены." if until and days8 else "✅ Урок(и) добавлен(ы).")
         await state.set_state(None)
         return
+    elif (data.get("lesson_kind") == "group"):
+        # Создаём запись(и) для ранее выбранной группы
+        group_no = data.get("lesson_group_no")
+        try:
+            start_s, end_s = text_norm.split("-", 1)
+        except Exception:
+            await message.answer("Ошибка времени. Начните заново: нажмите кнопку добавления ещё раз.")
+            await state.set_state(None)
+            return
+        days8 = data.get("lesson_days")
+        if days8:
+            for d in list(days8):
+                add_lesson(message.from_user.id, day=d, start=start_s, end=end_s, kind="group", target=str(group_no))
+            first_day = days8[0]
+            await _refresh_week(message, state, first_day)
+            until = bool(data.get("lesson_until_may30"))
+            await message.answer("✅ Уроки до 30 мая добавлены." if until else "✅ Уроки на 8 недель добавлены.")
+        else:
+            day = data.get("lesson_day")
+            add_lesson(message.from_user.id, day=day, start=start_s, end=end_s, kind="group", target=str(group_no))
+            await _refresh_week(message, state, day)
+            await message.answer("✅ Урок добавлен.")
+        await state.set_state(None)
+        return
     else:
         # Новый порядок: после ввода времени показываем выбор ученика/группы кнопками
         day = data.get("lesson_day")
-        students = get_all_students()
+        students = get_teacher_students_with_plans(message.from_user.id)
         kb_students = get_pick_students_for_day_kb(students, day=day, page=1)
         await message.answer("Кого добавить? Выберите ученика или группу:")
         await message.answer("Список учеников:", reply_markup=kb_students)
-        groups = get_all_group_numbers()
+        # Показываем только те номера групп, где есть участники текущего преподавателя
+        all_groups = await get_all_group_numbers_async()
+        groups: list[int] = []
+        for g in all_groups:
+            try:
+                if await get_work_group_members_async(int(g), teacher_id=message.from_user.id):
+                    groups.append(int(g))
+            except Exception:
+                continue
         if groups:
             await message.answer("Список групп:", reply_markup=get_group_pick_keyboard(groups, prefix="pick_lesson_group"))
-        # На этом этапе ждём инлайн-выбор, поэтому состояние не требуется
-        await state.set_state(None)
+        # Также можно прислать @username ученика или номер группы сообщением
+        await message.answer("Или отправьте @username ученика или номер группы сообщением.")
+        # Разрешим текстовый ввод цели
+        await state.set_state(LessonStates.waiting_target)
 
 
 @router.message(LessonStates.waiting_target)
@@ -737,6 +853,14 @@ async def on_lesson_target(message: types.Message, state: FSMContext):
     data = await state.get_data()
     day = data.get("lesson_day")
     kind = data.get("lesson_kind")
+    # Если вид цели ещё не выбран (клик по кнопкам не был сделан), определим из ввода
+    if not kind:
+        if target.startswith("@"):
+            kind = "student"
+            await state.update_data(lesson_kind="student")
+        else:
+            kind = "group"
+            await state.update_data(lesson_kind="group")
     time_str = data.get("lesson_time")
     try:
         start, end = [t.strip() for t in time_str.split("-", 1)]
@@ -778,7 +902,7 @@ async def on_pick_student(cb: types.CallbackQuery, state: FSMContext):
             page = int(page)
         except Exception:
             return
-        students = get_all_students()
+        students = get_teacher_students_with_plans(cb.from_user.id)
         kb = get_pick_students_for_day_kb(students, day=day, page=page)
         try:
             await cb.message.edit_reply_markup(reply_markup=kb)
@@ -806,7 +930,7 @@ async def on_pick_student(cb: types.CallbackQuery, state: FSMContext):
         # Попробуем найти username/label
         target = f"ID {user_id}"
         try:
-            students = get_all_students()
+            students = get_teacher_students_with_plans(cb.from_user.id)
             for s in students:
                 if str(s.get("user_id")) == str(user_id):
                     uname = (s.get("username") or "").strip()
@@ -848,9 +972,10 @@ async def on_pick_group(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     day = data.get("lesson_day")
     time_str = data.get("lesson_time")
-    if not (day and time_str):
-        # Нет времени — попросим ввести
-        await state.update_data(lesson_kind="group")
+    days8 = data.get("lesson_days")
+    if not time_str:
+        # Нет времени — попросим ввести (день может быть как одиночный, так и список недель)
+        await state.update_data(lesson_kind="group", lesson_group_no=group_no)
         await cb.message.answer(f"Введите время для {day or 'выбранного дня'} в формате HH:MM-HH:MM (например, 18:00-19:00):")
         await state.set_state(LessonStates.waiting_time)
         return
@@ -861,7 +986,6 @@ async def on_pick_group(cb: types.CallbackQuery, state: FSMContext):
         await state.set_state(None)
         return
     # Добавление на несколько недель при необходимости
-    days8 = data.get("lesson_days")
     if days8:
         for d in list(days8):
             add_lesson(cb.from_user.id, day=d, start=start, end=end, kind="group", target=str(group_no))
@@ -924,7 +1048,7 @@ async def show_students_list(message: types.Message, state: FSMContext):
     """Показывает список всех зарегистрированных учеников"""
     await state.clear()
     await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
-    students = get_all_students_with_plans()
+    students = get_teacher_students_with_plans(int(message.from_user.id))
     
     if not students:
         await message.answer("Пока нет зарегистрированных учеников.")
@@ -932,7 +1056,7 @@ async def show_students_list(message: types.Message, state: FSMContext):
     
     # Добавляем информацию о том, кто уже в группе
     for student in students:
-        student["is_in_group"] = is_student_in_group(student["user_id"])
+        student["is_in_group"] = is_student_in_teacher_group(int(student["user_id"]), int(message.from_user.id))
 
     # Сохраняем исходный список в FSM (для фильтров/поиска)
     await state.update_data(
@@ -958,11 +1082,11 @@ async def show_group_students(message: types.Message, state: FSMContext):
     """Показывает список только тех учеников, кто уже в группе"""
     await state.clear()
     await message_manager.delete_user_messages_fast(message.bot, message.from_user.id, message.chat.id)
-    students = get_all_students_with_plans()
+    students = get_teacher_students_with_plans(int(message.from_user.id))
 
     # Отметим статус и отфильтруем
     for s in students:
-        s["is_in_group"] = is_student_in_group(s["user_id"])
+        s["is_in_group"] = is_student_in_teacher_group(int(s["user_id"]), int(message.from_user.id))
     students = [s for s in students if s.get("is_in_group")]
 
     if not students:
@@ -1055,9 +1179,13 @@ async def pick_broadcast_group(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(broadcast_group=group_no)
     # Сообщим выбор и попросим текст
     try:
-        await cb.message.edit_text(f"Группа {group_no} выбрана. Введите текст сообщения:")
+        msg = await cb.message.edit_text(f"Группа {group_no} выбрана. Введите текст сообщения:")
+        with contextlib.suppress(Exception):
+            await _add_temp_msg(state, msg.message_id)
     except Exception:
-        await cb.message.answer(f"Группа {group_no} выбрана. Введите текст сообщения:")
+        msg = await cb.message.answer(f"Группа {group_no} выбрана. Введите текст сообщения:")
+        with contextlib.suppress(Exception):
+            await _add_temp_msg(state, msg.message_id)
     await state.set_state(WorkGroups.waiting_broadcast_text)
 
 
@@ -1076,9 +1204,9 @@ async def remove_from_teacher_group(cb: types.CallbackQuery, state: FSMContext):
 
     # Обновим текущую страницу
     data = await state.get_data()
-    students = data.get("students") or get_all_students_with_plans()
+    students = data.get("students") or get_teacher_students_with_plans(int(cb.from_user.id))
     for s in students:
-        s["is_in_group"] = is_student_in_group(s["user_id"])
+        s["is_in_group"] = is_student_in_teacher_group(int(s["user_id"]), int(cb.from_user.id))
     only_not_in_group = bool((await state.get_data()).get("only_not_in_group"))
     search_query = (await state.get_data()).get("search_query") or ""
     filtered = _apply_students_filters(students, only_not_in_group=only_not_in_group, search_query=search_query)
@@ -1113,7 +1241,7 @@ async def remove_from_work_group(cb: types.CallbackQuery):
         pass
     # Обновим список участников этой группы в текущем сообщении
     user_ids = await get_work_group_members_async(group_no, teacher_id=cb.from_user.id)
-    students = get_all_students_with_plans()
+    students = get_teacher_students_with_plans(int(cb.from_user.id))
     by_id = {s["user_id"]: s for s in students}
     members = [by_id.get(uid, {"user_id": uid, "label": f"ID {uid}"}) for uid in user_ids]
     try:
@@ -1137,8 +1265,45 @@ async def wg_broadcast_text(message: types.Message, state: FSMContext):
         await state.set_state(None)
         return
     ok, fail = await broadcast_message_to_group_via_govr(group_no, text, teacher_id=message.from_user.id)
-    await message.answer(f"Отправлено: {ok}. Ошибок: {fail}.")
+    # Клавиатура с кнопкой Назад — очищает служебные сообщения и возвращает к списку групп
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="⬅️ Назад", callback_data="wg_broadcast_back")]])
+    await message.answer(f"Отправлено: {ok}. Ошибок: {fail}.", reply_markup=kb)
     await state.set_state(None)
+
+
+@router.callback_query(lambda c: c.data == "wg_broadcast_back")
+async def wg_broadcast_back(cb: types.CallbackQuery, state: FSMContext):
+    """Удаляет временные служебные сообщения и показывает список групп."""
+    await cb.answer()
+    # Почистим временные сообщения (например, подсказку "Группа N выбрана...")
+    with contextlib.suppress(Exception):
+        await _clear_temp_msgs(cb.message, state)
+    # Показать список рабочих групп преподавателя
+    all_groups = await get_all_group_numbers_async()
+    my_groups: list[int] = []
+    for g in all_groups:
+        try:
+            if await get_work_group_members_async(int(g), teacher_id=cb.from_user.id):
+                my_groups.append(int(g))
+        except Exception:
+            continue
+    groups = my_groups or []
+    if not groups:
+        try:
+            await cb.message.edit_text(
+                "Группы пока не созданы. Нажмите '➕ Добрать в рабочие группы' чтобы начать.",
+                reply_markup=get_manage_groups_keyboard(),
+            )
+        except Exception:
+            await cb.message.answer(
+                "Группы пока не созданы. Нажмите '➕ Добрать в рабочие группы' чтобы начать.",
+                reply_markup=get_manage_groups_keyboard(),
+            )
+        return
+    try:
+        await cb.message.edit_text("Список групп:", reply_markup=get_group_numbers_keyboard(groups))
+    except Exception:
+        await cb.message.answer("Список групп:", reply_markup=get_group_numbers_keyboard(groups))
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("open_day:"))
@@ -1421,6 +1586,15 @@ async def on_lesson_delete(cb: types.CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await _clear_temp_msgs(cb.message, state)
+    # Обновим клавиатуру дня, чтобы удалённое занятие исчезло из списка
+    try:
+        data2 = await state.get_data()
+        day_menu_msg_id = data2.get("day_menu_msg_id")
+        day_menu_day = data2.get("day_menu_day")
+        if day_menu_msg_id and day_menu_day:
+            await _rebuild_day_menu(cb.message, int(day_menu_msg_id), str(day_menu_day))
+    except Exception:
+        pass
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("lesson_cancel:"))
@@ -1470,6 +1644,15 @@ async def on_lesson_cancel(cb: types.CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await _clear_temp_msgs(cb.message, state)
+    # Обновим клавиатуру дня, чтобы удалённое занятие исчезло из списка
+    try:
+        data2 = await state.get_data()
+        day_menu_msg_id = data2.get("day_menu_msg_id")
+        day_menu_day = data2.get("day_menu_day")
+        if day_menu_msg_id and day_menu_day:
+            await _rebuild_day_menu(cb.message, int(day_menu_msg_id), str(day_menu_day))
+    except Exception:
+        pass
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("lesson_broadcast:"))
@@ -1965,7 +2148,7 @@ async def wg_tasks_ids(message: types.Message, state: FSMContext):
     await state.set_state(None)
     # Показать обновлённый список наборов сразу
     try:
-        tasks = await list_group_tasks_async(group_no)
+        tasks = await list_group_tasks_async(group_no, teacher_id=message.from_user.id)
         await message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     except Exception:
         pass
@@ -2465,7 +2648,7 @@ async def wg_pick_variant(cb: types.CallbackQuery, state: FSMContext):
     except Exception:
         await cb.message.answer(f"✅ Набор '{title}' сохранён для группы {group_no}. ({exam.upper()} IDs: {', '.join(map(str, ids))})")
     # После создания сразу показываем список наборов с новой кнопкой
-    tasks = await list_group_tasks_async(group_no)
+    tasks = await list_group_tasks_async(group_no, teacher_id=cb.from_user.id)
     try:
         await cb.message.answer("У этой группы уже есть наборы:", reply_markup=get_group_tasks_kb(tasks, group_no))
     except Exception:
@@ -2572,13 +2755,13 @@ async def students_page_handler(callback: types.CallbackQuery, state: FSMContext
         page = 1
 
     data = await state.get_data()
-    students = data.get("students") or get_all_students_with_plans()
+    students = data.get("students") or get_teacher_students_with_plans(int(callback.from_user.id))
     if not students:
         await callback.answer("Список пуст", show_alert=True)
         return
 
     for s in students:
-        s["is_in_group"] = is_student_in_group(s["user_id"])
+        s["is_in_group"] = is_student_in_teacher_group(int(s["user_id"]), int(callback.from_user.id))
 
     only_not_in_group = bool(data.get("only_not_in_group"))
     search_query = data.get("search_query") or ""
@@ -2643,10 +2826,10 @@ async def students_start_search(callback: types.CallbackQuery, state: FSMContext
 async def students_apply_search(message: types.Message, state: FSMContext):
     query = (message.text or "").strip()
     data = await state.get_data()
-    students = data.get("students") or get_all_students_with_plans()
+    students = data.get("students") or get_teacher_students_with_plans(int(message.from_user.id))
 
     for s in students:
-        s["is_in_group"] = is_student_in_group(s["user_id"])
+        s["is_in_group"] = is_student_in_teacher_group(int(s["user_id"]), int(message.from_user.id))
 
     only_not_in_group = bool(data.get("only_not_in_group"))
     filtered = _apply_students_filters(students, only_not_in_group=only_not_in_group, search_query=query)
@@ -2668,12 +2851,12 @@ async def students_apply_search(message: types.Message, state: FSMContext):
 @router.callback_query(lambda c: c.data == "students_toggle_filter")
 async def students_toggle_only_not_in_group(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    students = data.get("students") or get_all_students_with_plans()
+    students = data.get("students") or get_teacher_students_with_plans(int(callback.from_user.id))
     only_not_in_group = not bool(data.get("only_not_in_group"))
     search_query = data.get("search_query") or ""
 
     for s in students:
-        s["is_in_group"] = is_student_in_group(s["user_id"])
+        s["is_in_group"] = is_student_in_teacher_group(int(s["user_id"]), int(callback.from_user.id))
 
     filtered = _apply_students_filters(students, only_not_in_group=only_not_in_group, search_query=search_query)
     await state.update_data(only_not_in_group=only_not_in_group, students=students)

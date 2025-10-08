@@ -43,40 +43,6 @@ def _group_test_type(q: dict) -> int:
     t = int(q.get('type') or 0)
     return t if (q.get('exam_type') == 'ege') else (OGE_TYPE_OFFSET + t)
 
-# === Текстовая кнопка "Задания для группы" из подменю «Тесты» ===
-@router.message(lambda m: (m.text or "").strip().lower() == "📂 задания для группы")
-async def show_group_assignments_text(m: types.Message):
-    """Открывает список групповых заданий по текстовой кнопке.
-    Дублирует функциональность callback 'group_assignments'.
-    """
-    from bot.services.teacher_access import get_group_tasks_for_user, get_user_group_number
-
-    user_id = m.from_user.id
-    group_no = get_user_group_number(user_id)
-    if not group_no:
-        await m.answer("❌ Вы не состоите в группе или произошла ошибка.")
-        return
-
-    tasks = get_group_tasks_for_user(user_id)
-    if not tasks:
-        await m.answer(
-            f"📂 <b>Задания для группы {group_no}</b>\n\nПока нет заданий от преподавателя.",
-            parse_mode="HTML",
-        )
-        return
-
-    tasks_text = f"📂 <b>Задания для группы {group_no}</b>\n\n"
-    keyboard: list[list[InlineKeyboardButton]] = []
-    for task in tasks:
-        tasks_text += f"📋 {task['title']}\n"
-        tasks_text += f"📅 Создано: {task['created_at']}\n\n"
-        keyboard.append([
-            InlineKeyboardButton(text=f"▶️ {task['title']}", callback_data=f"start_group_task_{task['id']}")
-        ])
-
-    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="tests_go_back")])
-    await m.answer(tasks_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
 # Небольшое форматирование текста задания: переносы строк перед А), Б), В), Г)
 # и выделение заголовков типа "Реагенты:" / "Продукты:" на отдельную строку.
 def _format_question_text(text: str) -> str:

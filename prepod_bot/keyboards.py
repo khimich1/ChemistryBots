@@ -3,7 +3,8 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 def get_teacher_keyboard():
     kb = [
         [KeyboardButton(text="👨‍🎓 Ученики онлайн"), KeyboardButton(text="📈 Успеваемость")],
-        [KeyboardButton(text="🛠 Управление заданиями"), KeyboardButton(text="📚 Управление группами")]
+        [KeyboardButton(text="🛠 Управление заданиями"), KeyboardButton(text="📚 Управление группами")],
+        [KeyboardButton(text="📅 Расписание"), KeyboardButton(text="❓ Как работает бот?")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 

@@ -424,18 +424,25 @@ async def broadcast_message_to_group_via_govr(group_no: int, text: str, *, teach
         # aiogram точно есть, но если что — без отправки
         return 0, len(get_work_group_members(group_no))
 
-    # Пытаемся вытащить токен govr-бота из разных имён переменных
+    # Пытаемся вытащить токен govr-бота из разных имён переменных.
+    # ВАЖНО: не используем BOT_TOKEN (токен препод-бота), иначе сообщения
+    # будут отправляться от wrong-бота и падать с 403, если пользователь
+    # не стартовал препод-бот.
     token = (
-        os.getenv("BOT_TOKEN_govor")
+        os.getenv("GOVR_BOT_TOKEN")
+        or os.getenv("BOT_TOKEN_govor")
         or os.getenv("BOT_TOKEN_GOVOR")
         or os.getenv("BOT_TOKEN_govr")
         or os.getenv("BOT_TOKEN_GOVR")
-        or os.getenv("GOVR_BOT_TOKEN")
-        or os.getenv("BOT_TOKEN")  # добавим основной токен
     )
     
-    print(f"[DEBUG] broadcast: Переменные окружения: BOT_TOKEN={'***' if os.getenv('BOT_TOKEN') else 'НЕТ'}, "
-          f"GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}")
+    print(
+        f"[DEBUG] broadcast: Переменные окружения: GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}, "
+        f"BOT_TOKEN_govor={'***' if os.getenv('BOT_TOKEN_govor') else 'НЕТ'}, "
+        f"BOT_TOKEN_GOVOR={'***' if os.getenv('BOT_TOKEN_GOVOR') else 'НЕТ'}, "
+        f"BOT_TOKEN_govr={'***' if os.getenv('BOT_TOKEN_govr') else 'НЕТ'}, "
+        f"BOT_TOKEN_GOVR={'***' if os.getenv('BOT_TOKEN_GOVR') else 'НЕТ'}"
+    )
     
     if not token:
         print(f"[DEBUG] broadcast: Токен не найден в переменных окружения, проверяем .env файл")
@@ -460,7 +467,7 @@ async def broadcast_message_to_group_via_govr(group_no: int, text: str, *, teach
             print(f"[DEBUG] broadcast: Ошибка при чтении .env: {e}")
             token = None
 
-    print(f"[DEBUG] broadcast: Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'}")
+    print(f"[DEBUG] broadcast: Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'} (только govr)")
     
     if not token:
         return 0, len(get_work_group_members(group_no, teacher_id=teacher_id))
@@ -564,16 +571,20 @@ async def send_message_to_user_via_govr(user_id: int, text: str) -> bool:
         return False
 
     token = (
-        os.getenv("BOT_TOKEN_govor")
+        os.getenv("GOVR_BOT_TOKEN")
+        or os.getenv("BOT_TOKEN_govor")
         or os.getenv("BOT_TOKEN_GOVOR")
         or os.getenv("BOT_TOKEN_govr")
         or os.getenv("BOT_TOKEN_GOVR")
-        or os.getenv("GOVR_BOT_TOKEN")
-        or os.getenv("BOT_TOKEN")  # добавим основной токен
     )
     
-    print(f"[DEBUG] Переменные окружения: BOT_TOKEN={'***' if os.getenv('BOT_TOKEN') else 'НЕТ'}, "
-          f"GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}")
+    print(
+        f"[DEBUG] Переменные окружения: GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}, "
+        f"BOT_TOKEN_govor={'***' if os.getenv('BOT_TOKEN_govor') else 'НЕТ'}, "
+        f"BOT_TOKEN_GOVOR={'***' if os.getenv('BOT_TOKEN_GOVOR') else 'НЕТ'}, "
+        f"BOT_TOKEN_govr={'***' if os.getenv('BOT_TOKEN_govr') else 'НЕТ'}, "
+        f"BOT_TOKEN_GOVR={'***' if os.getenv('BOT_TOKEN_GOVR') else 'НЕТ'}"
+    )
     
     if not token:
         print(f"[DEBUG] Токен не найден в переменных окружения, проверяем .env файл")
@@ -597,7 +608,7 @@ async def send_message_to_user_via_govr(user_id: int, text: str) -> bool:
             print(f"[DEBUG] Ошибка при чтении .env: {e}")
             token = None
     
-    print(f"[DEBUG] Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'}")
+    print(f"[DEBUG] Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'} (только govr)")
     
     if not token:
         print(f"[DEBUG] Токен не найден, отправка невозможна")
