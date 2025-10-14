@@ -1,0 +1,724 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chemistry Platform — автоматизация для преподавателей химии</title>
+    <meta name="description" content="Telegram‑платформа автоматизирует расписание, оплату, тесты и отчёты для преподавателей химии. Без Excel и хаоса." />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://chemistrybots.site/" />
+    <meta property="og:title" content="Chemistry Platform — автоматизация для преподавателей химии" />
+    <meta property="og:description" content="Расписание, оплаты, тесты и отчёты в Telegram. Без Excel и хаоса." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://chemistrybots.site/og-image.jpg" />
+    <meta property="og:locale" content="ru_RU" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Chemistry Platform — автоматизация для преподавателей химии" />
+    <meta name="twitter:description" content="Расписание, оплаты, тесты и отчёты в Telegram. Без Excel и хаоса." />
+    <meta name="twitter:image" content="https://chemistrybots.site/og-image.jpg" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "Chemistry Platform",
+        "url": "https://chemistrybots.site/",
+        "potentialAction": {
+          "@type": "Action",
+          "name": "Подключиться",
+          "target": "https://t.me/controlhim_bot?start=sales"
+        }
+      }
+    </script>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+    <!-- Tailwind config BEFORE CDN -->
+    <script>
+      tailwind = {
+        config: {
+          theme: {
+            extend: {
+              colors: {
+                brand: "#0066FF",
+                soft: "#DDF4FF",
+                text: "#333333",
+              },
+              fontFamily: {
+                inter: ["Inter", "system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"],
+              },
+              boxShadow: {
+                card: "0 8px 30px rgba(0,0,0,0.06)",
+              },
+              borderRadius: {
+                xl2: "1rem",
+                xl3: "1.5rem",
+              },
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+      html { scroll-behavior: smooth; }
+      body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #333; background: #fff; }
+      ::selection { background: #DDF4FF; color: #0b3b8d; }
+    </style>
+
+    <link rel="icon" href="data:," />
+  </head>
+  <body class="bg-gradient-to-b from-[#E6F3FF] via-white to-[#D2EAFF] text-text">
+    <div id="root"></div>
+
+    <!-- React + ReactDOM + Babel (для JSX без сборки) -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Приложение: один файл, один компонент -->
+    <script type="text/babel">
+      const { useEffect, useRef, useState } = React;
+
+      // Общие UI-компоненты
+      const Container = ({ id, className = "", children }) => (
+        <section id={id} className={`mx-auto w-full max-w-7xl px-5 sm:px-8 ${className}`}>{children}</section>
+      );
+
+      const PrimaryButton = ({ href = "#signup", children, className = "" }) => (
+        <a
+          href={href}
+          className={`inline-flex items-center justify-center rounded-full bg-brand px-6 py-3 text-white shadow-sm transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2 ${className}`}
+        >
+          {children}
+        </a>
+      );
+
+      const GhostButton = ({ href = "#", children, className = "" }) => (
+        <a
+          href={href}
+          className={`inline-flex items-center justify-center rounded-full border border-brand/30 bg-white px-6 py-3 text-brand transition hover:bg-soft ${className}`}
+        >
+          {children}
+        </a>
+      );
+
+      const SectionTitle = ({ eyebrow, title, subtitle, center = true }) => (
+        <div className={`mb-10 ${center ? "text-center" : ""}`}>
+          {eyebrow && <p className="mb-2 text-sm font-semibold uppercase tracking-wider text-brand">{eyebrow}</p>}
+          <h2 className="text-3xl font-semibold leading-tight text-gray-900 sm:text-4xl">{title}</h2>
+          {subtitle && <p className="mx-auto mt-3 max-w-2xl text-base text-gray-600">{subtitle}</p>}
+        </div>
+      );
+
+      const Card = ({ className = "", children }) => (
+        <div className={`rounded-xl border border-gray-200 bg-white p-6 shadow-card ${className}`}>{children}</div>
+      );
+
+      const SectionFrame = ({ children, className = "" }) => (
+        <div className={`rounded-2xl border border-sky-200/70 bg-white/80 shadow-card backdrop-blur-sm ${className}`}>{children}</div>
+      );
+
+      // Image with graceful fallback: try webp → jpg → inline SVG
+      const FALLBACK_IMG =
+        "data:image/svg+xml;utf8," +
+        encodeURIComponent(
+          `<svg xmlns='http://www.w3.org/2000/svg' width='800' height='1000' viewBox='0 0 800 1000'>
+            <defs>
+              <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+                <stop offset='0%' stop-color='#E6F3FF'/>
+                <stop offset='100%' stop-color='#D2EAFF'/>
+              </linearGradient>
+            </defs>
+            <rect width='800' height='1000' fill='url(#g)'/>
+            <g fill='none' stroke='#8CC4FF' stroke-width='6' opacity='0.6'>
+              <path d='M140 780l60-200 60 200z'/>
+              <circle cx='600' cy='240' r='80'/>
+              <rect x='480' y='520' width='180' height='120' rx='18'/>
+            </g>
+            <text x='50%' y='95%' dominant-baseline='middle' text-anchor='middle' fill='#567' font-family='Inter, Arial' font-size='32'>изображение скоро будет</text>
+          </svg>`
+        );
+
+      const ImageWithFallback = ({ srcWebp, srcPng, srcJpg, alt, className = "" }) => {
+        const [src, setSrc] = React.useState(srcWebp || srcPng || srcJpg || FALLBACK_IMG);
+        const [step, setStep] = React.useState(0);
+        const handleError = () => {
+          if (step === 0 && srcPng && src !== srcPng) {
+            setSrc(srcPng);
+            setStep(1);
+            return;
+          }
+          if (step <= 1 && srcJpg && src !== srcJpg) {
+            setSrc(srcJpg);
+            setStep(2);
+            return;
+          }
+          if (src !== FALLBACK_IMG) {
+            setSrc(FALLBACK_IMG);
+            setStep(3);
+          }
+        };
+        return <img src={src} alt={alt} loading="lazy" onError={handleError} className={className} />;
+      };
+
+      // Плавное появление блоков через IntersectionObserver + Tailwind transitions
+      const Reveal = ({ children, delay = 0 }) => {
+        const ref = useRef(null);
+        const [shown, setShown] = useState(false);
+
+        useEffect(() => {
+          const el = ref.current;
+          if (!el) return;
+          const obs = new IntersectionObserver(
+            ([entry]) => {
+              if (entry.isIntersecting) {
+                const t = setTimeout(() => setShown(true), delay * 1000);
+                obs.disconnect();
+                return () => clearTimeout(t);
+              }
+            },
+            { threshold: 0.15 }
+          );
+          obs.observe(el);
+          return () => obs.disconnect();
+        }, [delay]);
+
+        return (
+          <div
+            ref={ref}
+            className={`transform transition-all duration-700 ease-out ${shown ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}
+          >
+            {children}
+          </div>
+        );
+      };
+
+      const FeatureCard = ({ icon, title, text }) => (
+        <Card className="h-full">
+          <div className="mb-3 text-2xl">{icon}</div>
+          <h3 className="mb-2 text-lg font-semibold text-gray-900">{title}</h3>
+          <p className="text-gray-600">{text}</p>
+        </Card>
+      );
+
+      const FeatureCardImage = ({ image, icon, title, text }) => (
+        <Card className="h-full">
+          <img src={image} alt={title} loading="lazy" className="mb-4 h-36 w-full rounded-lg object-cover" />
+          <div className="mb-3 text-2xl">{icon}</div>
+          <h3 className="mb-2 text-lg font-semibold text-gray-900">{title}</h3>
+          <p className="text-gray-600">{text}</p>
+        </Card>
+      );
+
+      const StatCard = ({ icon, title }) => (
+        <Card className="h-full text-center">
+          <div className="mb-2 text-2xl">{icon}</div>
+          <p className="text-lg font-semibold text-gray-900">{title}</p>
+        </Card>
+      );
+
+      const BenefitCard = ({ icon, title, desc }) => (
+        <Card className="h-full">
+          <div className="mb-2 text-2xl">{icon}</div>
+          <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+          <p className="mt-1 text-sm text-gray-600">{desc}</p>
+        </Card>
+      );
+
+      const PlanCard = ({ name, price, period = "мес", features = [], ctaHref, popular = false }) => (
+        <div className={`relative flex h-full flex-col rounded-2xl border ${popular ? "border-sky-300" : "border-gray-200"} bg-white p-6 shadow-card`}>
+          {popular && (
+            <span className="absolute -top-3 left-6 rounded-full bg-sky-600 px-3 py-1 text-xs font-semibold text-white">Выбор преподавателей</span>
+          )}
+          <h3 className="text-lg font-semibold text-gray-900">{name}</h3>
+          <div className="mt-3 flex items-end gap-1">
+            <span className="text-3xl font-semibold text-gray-900">{price}</span>
+            {period && <span className="pb-1 text-sm text-gray-500">₽ / {period}</span>}
+          </div>
+          <ul className="mt-4 space-y-2 text-sm text-gray-700">
+            {features.map((f, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <svg viewBox="0 0 20 20" className="mt-0.5 h-5 w-5 text-brand" fill="currentColor"><path d="M8.7 13.3L5.4 10a1 1 0 10-1.4 1.4l4 4a1 1 0 001.4 0l7-7a1 1 0 10-1.4-1.4l-6.3 6.3z"/></svg>
+                <span>{f}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-6">
+            <a href={ctaHref} className="inline-flex w-full items-center justify-center rounded-full bg-brand px-6 py-3 text-white transition hover:brightness-110">Подключиться</a>
+          </div>
+        </div>
+      );
+
+      const TestimonialCard = ({ quote, name }) => (
+        <Card>
+          <p className="text-gray-800">“{quote}”</p>
+          <p className="mt-3 text-sm text-gray-500">— {name}</p>
+        </Card>
+      );
+
+      const AccordionItem = ({ q, a }) => {
+        const [open, setOpen] = useState(false);
+        return (
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+            <button
+              className="flex w-full items-center justify-between px-5 py-4 text-left text-gray-900"
+              onClick={() => setOpen((o) => !o)}
+            >
+              <span className="font-medium">{q}</span>
+              <svg
+                className={`h-5 w-5 transform transition ${open ? "rotate-180" : ""}`}
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M5.23 7.21a.75.75 0 011.06.02L10 10.17l3.71-2.94a.75.75 0 111.04 1.08l-4.24 3.36a.75.75 0 01-.94 0L5.21 8.31a.75.75 0 01.02-1.1z" />
+              </svg>
+            </button>
+            <div className={`px-5 transition-all duration-300 ${open ? "max-h-40 opacity-100" : "max-h-0 opacity-0"}`}>
+              <div className="pb-4 text-gray-600">{a}</div>
+            </div>
+          </div>
+        );
+      };
+
+      const TelegramMockup = () => (
+        <div className="relative mx-auto w-full max-w-md rounded-3xl border border-gray-200 bg-white p-4 shadow-card">
+          <div className="mb-3 rounded-xl bg-sky-50 px-3 py-2 text-[13px] font-medium text-sky-800">Telegram</div>
+          <div className="mb-4 flex items-center gap-3">
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-soft text-brand">TG</span>
+            <div>
+              <p className="text-sm font-semibold text-gray-900">Бот</p>
+              <p className="text-xs text-gray-500">Chemistry Platform</p>
+            </div>
+          </div>
+          <div className="space-y-2 text-[13px] leading-relaxed">
+            <div className="inline-block max-w-[85%] rounded-2xl bg-sky-50 px-3 py-2 text-gray-700">Привет! Начнём с расписания. Укажи дни занятий.</div>
+            <div className="ml-auto inline-block max-w-[85%] rounded-2xl bg-brand/90 px-3 py-2 text-white">Пн, Ср, Пт — 17:00</div>
+            <div className="inline-block max-w-[85%] rounded-2xl bg-sky-50 px-3 py-2 text-gray-700">Подключаю напоминания и оплату. Добавить учеников?</div>
+            <div className="ml-auto inline-block max-w-[85%] rounded-2xl bg-brand/90 px-3 py-2 text-white">Добавить 12А и 12Б</div>
+            <div className="inline-block max-w-[85%] rounded-2xl bg-sky-50 px-3 py-2 text-gray-700">Готово ✅ Еженедельные отчёты будут по понедельникам.</div>
+          </div>
+          <div className="mt-4 flex items-end justify-between">
+            <div className="h-16 w-40 rounded-lg bg-sky-50" />
+            <svg viewBox="0 0 64 64" className="h-20 w-20 text-sky-500" fill="currentColor" aria-hidden="true">
+              <path d="M50 16h-6l-6 36a6 6 0 01-5.9 5h-0.2a6 6 0 01-5.9-5l-6-36H14a2 2 0 100 4h3.1l5.7 34.2A10 10 0 0031.9 60h0.2A10 10 0 0041.2 54.2L46.9 20H50a2 2 0 100-4z" />
+            </svg>
+          </div>
+        </div>
+      );
+
+      const SocialIcon = ({ type, href }) => {
+        const common = "h-5 w-5";
+        const icons = {
+          telegram: (
+            <svg viewBox="0 0 24 24" className={common} fill="currentColor" aria-hidden="true">
+              <path d="M9.8 16.7l-.4 4c.6 0 .8-.2 1-.5l2.4-2.3 4.9 3.6c.9.5 1.5.3 1.7-.8l3.1-14.5c.3-1.2-.4-1.7-1.3-1.4L1.3 9.7c-1.2.4-1.2 1.1-.2 1.4l4.8 1.5 11.2-7c.5-.3 1-.1.6.2l-9 8.8z" />
+            </svg>
+          ),
+          vk: (
+            <svg viewBox="0 0 24 24" className={common} fill="currentColor" aria-hidden="true">
+              <path d="M3 7c0-.6.4-1 1-1h3c.5 0 .8.3 1 .7 1 2 2.2 3.9 3.6 5.6.3.4.8.4 1.1 0 1.2-1.3 2.3-2.7 3.3-4.2.3-.5.1-1.1-.4-1.1H14c-.6 0-1-.4-1-1V4c0-.6.4-1 1-1h6c.6 0 1 .4 1 1v2c0 6.1-4.9 11-11 11H8c-.6 0-1-.4-1-1v-2c0-.6-.4-1-1-1H4c-.6 0-1-.4-1-1V7z" />
+            </svg>
+          ),
+          youtube: (
+            <svg viewBox="0 0 24 24" className={common} fill="currentColor" aria-hidden="true">
+              <path d="M23 7.5c0-1.2-.9-2.2-2.1-2.3C18.8 4.9 15.5 4.5 12 4.5s-6.8.4-8.9.7C1.9 5.4 1 6.3 1 7.5 1 8.9 1 10.6 1 12s0 3.1 1.1 3.3c2.1.3 5.4.7 8.9.7s6.8-.4 8.9-.7c1.2-.1 2.1-1.1 2.1-2.3V7.5zM10 9.8l4.9 2.2L10 14.2V9.8z" />
+            </svg>
+          ),
+        };
+        return (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-700 transition hover:text-brand"
+          >
+            {icons[type]}
+          </a>
+        );
+      };
+
+      function App() {
+        return (
+          <div className="relative min-h-screen">
+            {/* airy gradient blobs */}
+            <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+              <div className="absolute -top-32 -left-20 h-80 w-80 rounded-full bg-[radial-gradient(ellipse_at_center,_rgba(157,217,255,0.7),_transparent_60%)] blur-2xl" />
+              <div className="absolute -bottom-40 -right-20 h-96 w-96 rounded-full bg-[radial-gradient(ellipse_at_center,_rgba(0,102,255,0.4),_transparent_60%)] blur-3xl" />
+            </div>
+            {/* Header */}
+            <header className="sticky top-0 z-40 border-b border-gray-100 bg-white/70 backdrop-blur">
+              <Container className="flex h-16 items-center justify-between">
+                <a href="#hero" className="flex items-center gap-2">
+                  <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-soft font-bold text-brand">Ch</span>
+                  <span className="text-sm font-semibold text-gray-900">Chemistry Platform</span>
+                </a>
+                <nav className="hidden gap-6 text-sm text-gray-600 md:flex">
+                  <a href="#about" className="hover:text-gray-900">О проекте</a>
+                  <a href="#how" className="hover:text-gray-900">Как работает</a>
+                  <a href="#pain" className="hover:text-gray-900">Решения</a>
+                  <a href="#pricing" className="hover:text-gray-900">Тарифы</a>
+                  <a href="#stats" className="hover:text-gray-900">Выгоды</a>
+                  <a href="#why" className="hover:text-gray-900">Почему Telegram</a>
+                  <a href="#testimonials" className="hover:text-gray-900">Отзывы</a>
+                  <a href="#faq" className="hover:text-gray-900">FAQ</a>
+                </nav>
+                <div className="hidden md:block">
+                  <PrimaryButton href="https://t.me/controlhim_bot?start=sales">🚀 Подключиться</PrimaryButton>
+                </div>
+              </Container>
+            </header>
+
+            {/* Mobile sticky CTA */}
+            <div className="fixed inset-x-0 bottom-3 z-40 mx-auto w-[92%] max-w-md rounded-full border border-sky-200 bg-white/90 p-2 shadow-card backdrop-blur sm:hidden">
+              <div className="flex items-center gap-2">
+                        <a href="https://t.me/controlhim_bot?start=sales" className="flex-1 rounded-full bg-[#00FFFF] px-4 py-2 text-center text-sm font-medium text-gray-900">🚀 Подключиться</a>
+                <a href="#pricing" className="rounded-full border border-brand/30 px-4 py-2 text-center text-sm text-brand">Тарифы</a>
+              </div>
+            </div>
+
+            <main>
+              {/* 1) Hero */}
+              <Container id="hero" className="pt-16 sm:pt-24 lg:pt-28">
+                <SectionFrame className="p-6 sm:p-10">
+                  <div className="grid items-center gap-10 md:grid-cols-2">
+                  <Reveal>
+                    <div>
+                      <div className="mb-3 flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-800">⭐ 4.9/5 отзывы</span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-800">🧪 Пилот по химии</span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-800">📚 2000+ заданий</span>
+                      </div>
+                      <h1 className="text-4xl font-semibold leading-tight text-gray-900 sm:text-5xl">
+                        Преврати преподавание химии в системный и прибыльный бизнес
+                      </h1>
+                      <p className="mt-4 max-w-xl text-lg text-gray-600">
+                        Умная Telegram‑платформа автоматизирует расписание, оплату, тесты и отчёты. Больше никаких Excel и хаоса.
+                      </p>
+                      <ul className="mt-5 grid max-w-xl grid-cols-1 gap-2 text-gray-700 sm:grid-cols-2">
+                        <li className="flex items-start gap-2"><svg viewBox="0 0 20 20" className="mt-0.5 h-5 w-5 text-brand" fill="currentColor"><path d="M8.7 13.3L5.4 10a1 1 0 10-1.4 1.4l4 4a1 1 0 001.4 0l7-7a1 1 0 10-1.4-1.4l-6.3 6.3z"/></svg><span>Оплаты в один клик</span></li>
+                        <li className="flex items-start gap-2"><svg viewBox="0 0 20 20" className="mt-0.5 h-5 w-5 text-brand" fill="currentColor"><path d="M8.7 13.3L5.4 10a1 1 0 10-1.4 1.4l4 4a1 1 0 001.4 0l7-7a1 1 0 10-1.4-1.4l-6.3 6.3z"/></svg><span>Отчёты для родителей</span></li>
+                        <li className="flex items-start gap-2"><svg viewBox="0 0 20 20" className="mt-0.5 h-5 w-5 text-brand" fill="currentColor"><path d="M8.7 13.3L5.4 10a1 1 0 10-1.4 1.4l4 4a1 1 0 001.4 0l7-7a1 1 0 10-1.4-1.4l-6.3 6.3z"/></svg><span>Готовые тесты и конспекты</span></li>
+                        <li className="flex items-start gap-2"><svg viewBox="0 0 20 20" className="mt-0.5 h-5 w-5 text-brand" fill="currentColor"><path d="M8.7 13.3L5.4 10a1 1 0 10-1.4 1.4l4 4a1 1 0 001.4 0l7-7a1 1 0 10-1.4-1.4l-6.3 6.3z"/></svg><span>Напоминания без спама</span></li>
+                      </ul>
+                      <div className="relative mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <a
+                          href="https://t.me/controlhim_bot?start=sales"
+                          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#00FFFF] px-7 py-3 text-lg font-extrabold text-gray-900 shadow-sm transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-[#00FFFF] focus:ring-offset-2 sm:w-auto"
+                        >
+                          <span>🚀</span>
+                          <span>Подключиться сейчас</span>
+                        </a>
+                        {/* decorative chemistry formulas background */}
+                        <svg viewBox="0 0 200 60" className="pointer-events-none absolute -right-10 -top-10 hidden h-24 w-48 text-sky-100 sm:block" fill="none" stroke="currentColor" strokeWidth="1.2">
+                          <path d="M10 30h20m10 0h20M40 10l10 20-10 20-10-20 10-20zM90 12l8 8-8 8-8-8 8-8zM120 15h15l5 10-5 10h-15l-5-10 5-10z" />
+                        </svg>
+                      </div>
+                      <div className="mt-4 flex items-center gap-3 text-sm text-gray-500">
+                        <div className="flex -space-x-2">
+                          <span className="h-7 w-7 rounded-full border border-white bg-sky-200" />
+                          <span className="h-7 w-7 rounded-full border border-white bg-sky-300" />
+                          <span className="h-7 w-7 rounded-full border border-white bg-sky-400" />
+                        </div>
+                        <p>30+ преподавателей уже тестируют платформу</p>
+                      </div>
+                    </div>
+                  </Reveal>
+
+                  <Reveal delay={0.1}>
+                    <div className="relative">
+                      <div className="absolute inset-0 -z-10 rounded-3xl bg-soft blur-2xl" />
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <figure className="rounded-2xl border-2 border-dashed border-sky-200 bg-white/80 p-3 text-center shadow-card">
+                          <ImageWithFallback
+                            srcWebp="./assets/bot_students.webp"
+                            srcPng="./assets/bot_students.png"
+                            srcJpg="./assets/bot_students.jpg"
+                            alt="Бот для учеников"
+                            className="h-[360px] w-full rounded-xl object-contain bg-white sm:h-[440px] lg:h-[520px]"
+                          />
+                          <figcaption className="mt-2 text-sm font-bold text-gray-700">бот для учеников</figcaption>
+                        </figure>
+                        <figure className="rounded-2xl border-2 border-dashed border-sky-200 bg-white/80 p-3 text-center shadow-card">
+                          <ImageWithFallback
+                            srcWebp="./assets/bot_teachers.webp"
+                            srcPng="./assets/bot_teachers.png"
+                            srcJpg="./assets/bot_teachers.jpg"
+                            alt="Бот для учителей"
+                            className="h-[360px] w-full rounded-xl object-contain bg-white sm:h-[440px] lg:h-[520px]"
+                          />
+                          <figcaption className="mt-2 text-sm font-bold text-gray-700">бот для учителей</figcaption>
+                        </figure>
+                      </div>
+                    </div>
+                  </Reveal>
+                  </div>
+                </SectionFrame>
+              </Container>
+
+              {/* 2) Как это работает */}
+              <Container id="how" className="relative py-20">
+                <div className="pointer-events-none absolute -top-10 left-1/2 h-64 w-64 -translate-x-1/2 rounded-full bg-[radial-gradient(ellipse_at_center,_rgba(221,244,255,0.7),_transparent_60%)] blur-2xl" />
+                <SectionFrame className="p-6 sm:p-10">
+                  <SectionTitle eyebrow="Презентация" title="Как это работает" subtitle="Три ключевых блока для стабильной работы без рутины." />
+                  <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                    <Reveal>
+                      <FeatureCardImage
+                        image="https://images.unsplash.com/photo-1558655146-d09347e92766?auto=format&fit=crop&w=900&q=60"
+                        icon="📅"
+                        title="Расписание и оплата"
+                        text="Бот напоминает, кто оплатил и кто пропустил. Умные напоминания и повторные уведомления."
+                      />
+                    </Reveal>
+                    <Reveal delay={0.05}>
+                      <FeatureCardImage
+                        image="https://images.unsplash.com/photo-1581093448799-58d27b995af1?auto=format&fit=crop&w=900&q=60"
+                        icon="🧪"
+                        title="Учебные материалы и тесты"
+                        text="Ученики проходят тесты прямо в Telegram. Теория и тренажёры с подсказками."
+                      />
+                    </Reveal>
+                    <Reveal delay={0.1}>
+                      <FeatureCardImage
+                        image="https://images.unsplash.com/photo-1551281044-8c5e5423d6fc?auto=format&fit=crop&w=900&q=60"
+                        icon="📊"
+                        title="Отчёты и аналитика"
+                        text="Преподаватель и родители видят прогресс и успеваемость. Сводки по группам."
+                      />
+                    </Reveal>
+                  </div>
+                </SectionFrame>
+              </Container>
+
+              {/* Pricing */}
+              <Container id="pricing" className="py-20">
+                <SectionFrame className="p-6 sm:p-10">
+                  <SectionTitle eyebrow="Тарифы" title="Подключись за 15 минут" subtitle="Начни со старта — перейди на расширенный когда будет рост" />
+                  <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                    <Reveal>
+                      <PlanCard
+                        name="Старт"
+                        price="990"
+                        features={["Боты, конспекты и тренажёры","Напоминания об оплате","До 2 групп"]}
+                        ctaHref="https://t.me/controlhim_bot?start=sales"
+                      />
+                    </Reveal>
+                    <Reveal delay={0.05}>
+                      <PlanCard
+                        name="Наставник"
+                        price="3990"
+                        popular
+                        features={["Всё из Старта","Отчёты и аналитика","Поддержка внедрения","До 6 групп"]}
+                        ctaHref="https://t.me/controlhim_bot?start=sales"
+                      />
+                    </Reveal>
+                    <Reveal delay={0.1}>
+                      <PlanCard
+                        name="Студия"
+                        price="По запросу"
+                        period=""
+                        features={["Команда и роли","Безлимит групп","Оплата по счёту (ИП/ООО)","Приоритетная поддержка"]}
+                        ctaHref="https://t.me/controlhim_bot?start=sales"
+                      />
+                    </Reveal>
+                  </div>
+                </SectionFrame>
+              </Container>
+
+              {/* 3) Боли → Решения */}
+              <Container id="pain" className="py-20">
+                <SectionFrame className="p-6 sm:p-10">
+                  <SectionTitle eyebrow="Боли и решения" title="Закрываем ключевые проблемы преподавателя" />
+                  <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-card">
+                    <div className="grid grid-cols-2 bg-gray-50 px-5 py-3 text-sm font-semibold text-gray-700">
+                      <div>Боль</div>
+                      <div>Решение</div>
+                    </div>
+                    <div className="divide-y divide-gray-100">
+                      {[
+                        ["Разрозненные Excel и чаты", "Единая CRM прямо в Telegram"],
+                        ["Усталость от рутины", "Автоматизация 80% задач"],
+                        ["Нет аналитики", "Прогресс и статистика по каждому ученику"],
+                        ["Пропуски и неоплаты", "Напоминания и встроенные платежи"],
+                        ["Нет роста", "Группы и мини‑курсы в Telegram"],
+                      ].map(([pain, sol], i) => (
+                        <div key={i} className="grid grid-cols-1 gap-0 px-5 py-4 sm:grid-cols-2">
+                          <div className="text-gray-800">{pain}</div>
+                          <div className="text-gray-600">{sol}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-6 text-center">
+                    <PrimaryButton href="#signup">💡 Попробовать демо‑бота</PrimaryButton>
+                  </div>
+                </SectionFrame>
+              </Container>
+
+              {/* 4) Выгоды в цифрах */}
+              <Container id="stats" className="py-20">
+                <SectionFrame className="p-6 sm:p-10">
+                  <SectionTitle eyebrow="Выгоды" title="Что вы получите уже в первый месяц" subtitle="Конкретные результаты, которые ценят преподаватели" />
+                  <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                    <Reveal>
+                      <BenefitCard icon="⏱" title="–5…–10 часов рутины/неделя" desc="Напоминания, оплаты и отчёты идут автоматически. Вы занимаетесь преподаванием, а не админкой." />
+                    </Reveal>
+                    <Reveal delay={0.05}>
+                      <BenefitCard icon="📈" title="+20…+30% к доходу" desc="Платящие вовремя, меньше пропусков, удобная запись и донабор в группы без хаоса." />
+                    </Reveal>
+                    <Reveal delay={0.1}>
+                      <BenefitCard icon="🤝" title="Прозрачность для родителей" desc="Личный прогресс каждого ученика и кнопка «Оплатить» в один клик — меньше вопросов вам." />
+                    </Reveal>
+                    <Reveal delay={0.15}>
+                      <BenefitCard icon="👩‍🏫" title="До 100 учеников — спокойно" desc="Группы, мини‑курсы и повторяющиеся платежи. Масштаб без Excel и бесконечных чатов." />
+                    </Reveal>
+                  </div>
+                </SectionFrame>
+              </Container>
+
+              {/* 5) Почему Telegram */}
+              <Container id="why" className="py-20">
+                <SectionFrame className="p-6 sm:p-10">
+                  <div className="grid items-center gap-10 md:grid-cols-2">
+                    <Reveal>
+                      <div>
+                        <SectionTitle center={false} title="Потому что всё уже здесь" subtitle="Ученики и родители уже в Telegram — не нужно скачивать приложения. Просто добавляешь ученика → бот делает всё сам." />
+                      </div>
+                    </Reveal>
+                    <Reveal delay={0.1}>
+                      <TelegramMockup />
+                    </Reveal>
+                  </div>
+                </SectionFrame>
+              </Container>
+
+              {/* NEW 5.5) Про меня и историю создания */}
+              <Container id="about" className="py-20">
+                <SectionFrame className="p-6 sm:p-10">
+                  <SectionTitle eyebrow="О проекте" title="Роман Алексеевич — 8 лет в преподавании химии" subtitle="История создания платформы" />
+                  <div className="grid items-start gap-8 md:grid-cols-2">
+                    <div className="text-gray-700">
+                      <p className="leading-relaxed">
+                        Я — Роман Алексеевич. Преподаю химию уже 8 лет. Чтобы облегчить работу себе и другим преподавателям,
+                        я решил окунуться в IT и создать удобную платформу на базе Telegram. Здесь собрано всё: расписание,
+                        оплата, тесты, отчёты и аналитика. Меньше рутины — больше времени на преподавание.
+                      </p>
+                      <p className="mt-4 leading-relaxed">
+                        Платформа развивается вместе с сообществом. Если у вас есть идеи — с радостью внедрим.
+                      </p>
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="flex aspect-[4/5] items-center justify-center rounded-xl border-2 border-dashed border-sky-300 bg-white text-sky-700">
+                        Место для моего фото
+                      </div>
+                      <div className="flex aspect-square items-center justify-center rounded-xl border-2 border-dashed border-sky-300 bg-white text-sky-700">
+                        Место для моего логотипа
+                      </div>
+                    </div>
+                  </div>
+                </SectionFrame>
+              </Container>
+
+              {/* 6) Отзывы */}
+              <Container id="testimonials" className="py-20">
+                <SectionFrame className="p-6 sm:p-10">
+                  <SectionTitle title="Отзывы преподавателей" />
+                  <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                    <Reveal>
+                      <TestimonialCard quote="Раньше я вела 3 группы в Excel, теперь всё в Telegram. Освободилось полдня в неделю." name="Анна, Екатеринбург" />
+                    </Reveal>
+                    <Reveal delay={0.05}>
+                      <TestimonialCard quote="Родители довольны: есть отчёты и кнопка ‘Оплатить’." name="Игорь, Москва" />
+                    </Reveal>
+                    <Reveal delay={0.1}>
+                      <TestimonialCard quote="Внедрили за один вечер — теперь аккуратно растим набор." name="Марина, Казань" />
+                    </Reveal>
+                  </div>
+                </SectionFrame>
+              </Container>
+
+              {/* 7) FAQ */}
+              <Container id="faq" className="py-20">
+                <SectionFrame className="p-6 sm:p-10">
+                  <SectionTitle title="FAQ" subtitle="Коротко ответили на частые вопросы." />
+                  <div className="space-y-3">
+                    <AccordionItem q="Это сложно настроить?" a="Нет. Базовая настройка занимает 10–15 минут. Поможем подключить и перенести текущие группы." />
+                    <AccordionItem q="Это платно?" a="Есть бесплатный старт. Полный функционал доступен по подписке, можно отменить в любой момент." />
+                    <AccordionItem q="Можно ли вести другие предметы?" a="Да. Платформа универсальная — химия просто первый пилот." />
+
+                    <AccordionItem q="Какие способы оплаты доступны?" a="Банк‑карта, СБП, выставление счёта для ИП/ООО. Автоплатёж можно отключить в один клик." />
+                    <AccordionItem q="Есть ли помесячная и годовая оплата?" a="Да. Месяц — для старта; год — со скидкой. Можно перейти с месяца на год в любой момент." />
+                    <AccordionItem q="Сколько учеников и групп можно вести?" a="Практически без ограничений. В тарифе предусмотрены щедрые лимиты; при росте поможем масштабироваться." />
+                    <AccordionItem q="Можно ли добавить ассистента или со‑преподавателя?" a="Да. Выдаём отдельные роли с правами: просмотр отчётов, отметки оплат, рассылки и т.д." />
+                    <AccordionItem q="Как перенести текущие таблицы и тесты?" a="Импортируем из Google Sheets/Excel. Банк тестов можно загрузить CSV/Google‑таблицей — поможем подготовить шаблон." />
+                    <AccordionItem q="Безопасность данных и 152‑ФЗ?" a="Данные хранятся на защищённых серверах, доступ по ролям, шифрование в транзите. Готовы предоставить договор и политику обработки ПДн." />
+                    <AccordionItem q="Можно ли отменить подписку? Что будет с данными?" a="Отменить можно в любой момент. Все данные можно экспортировать (ученики, платежи, результаты тестов)." />
+                    <AccordionItem q="Выдаёте ли документы для бухгалтерии?" a="Да. Счёт/акт/чек для ИП/ООО. Поддерживаем оплату по безналу." />
+                    <AccordionItem q="Есть ли демо или пробный период?" a="Да. Доступ к демо‑боту и тестовому кабинету — сразу после подключения." />
+                    <AccordionItem q="Сколько времени занимает запуск?" a="От 15 минут. Мы помогаем настроить бота, перенести группы и первые сценарии." />
+                    <AccordionItem q="Как быстро отвечает поддержка?" a="В рабочие часы — обычно в течение 1–2 часов. Есть приоритетная линия для активных тарифов." />
+                  </div>
+                </SectionFrame>
+              </Container>
+
+              {/* 8) Финальный CTA */}
+              <div id="signup" className="py-20">
+                <Container className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-soft to-white p-10 sm:p-14">
+                  <Reveal>
+                    <div className="mx-auto max-w-3xl text-center">
+                      <h3 className="text-3xl font-semibold text-gray-900 sm:text-4xl">Преподавай с умом. Автоматизируй. Масштабируй.</h3>
+                      <p className="mx-auto mt-3 max-w-2xl text-gray-600">Подключись бесплатно и получи демо‑бота с готовыми сценариями.</p>
+                      <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
+                        <PrimaryButton href="https://t.me/controlhim_bot?start=sales">🚀 Подключиться бесплатно</PrimaryButton>
+                        <GhostButton href="#how">Посмотреть как это работает</GhostButton>
+                      </div>
+                      {/* mini lead form */}
+                      <form action="https://formspree.io/f/xbldjajk" method="POST" className="mx-auto mt-6 grid max-w-xl grid-cols-1 gap-3 sm:grid-cols-3">
+                        <input required name="name" type="text" placeholder="Имя" className="rounded-xl border border-gray-200 px-4 py-3 outline-none focus:ring-2 focus:ring-soft" />
+                        <input required name="contact" type="text" placeholder="Телефон или @telegram" className="rounded-xl border border-gray-200 px-4 py-3 outline-none focus:ring-2 focus:ring-soft" />
+                        <button type="submit" className="rounded-xl bg-brand px-4 py-3 font-medium text-white transition hover:brightness-110">Оставить контакт</button>
+                        <input type="hidden" name="_subject" value="Лид с лендинга Chemistry Platform" />
+                      </form>
+                      <div className="mt-6 flex items-center justify-center gap-3 text-gray-500">
+                        <SocialIcon type="telegram" href="https://t.me/your_telegram" />
+                        <SocialIcon type="vk" href="https://vk.com/" />
+                        <SocialIcon type="youtube" href="https://youtube.com/" />
+                      </div>
+                    </div>
+                  </Reveal>
+                  <div className="pointer-events-none absolute -right-20 -top-20 h-64 w-64 rounded-full bg-soft blur-3xl" />
+                </Container>
+              </div>
+            </main>
+
+            {/* Footer */}
+            <footer className="border-t border-gray-100 py-10">
+              <Container className="flex flex-col items-center justify-between gap-4 text-sm text-gray-500 sm:flex-row">
+                <p>© {new Date().getFullYear()} Chemistry Platform</p>
+                <div className="flex flex-wrap items-center justify-center gap-6">
+                  <a href="#about" className="hover:text-gray-700">О проекте</a>
+                  <a href="#how" className="hover:text-gray-700">Как работает</a>
+                  <a href="#pain" className="hover:text-gray-700">Решения</a>
+                  <a href="#pricing" className="hover:text-gray-700">Тарифы</a>
+                  <a href="#stats" className="hover:text-gray-700">Выгоды</a>
+                  <a href="#why" className="hover:text-gray-700">Почему Telegram</a>
+                  <a href="#testimonials" className="hover:text-gray-700">Отзывы</a>
+                  <a href="#faq" className="hover:text-gray-700">FAQ</a>
+                </div>
+              </Container>
+            </footer>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+  </html>
+
+
