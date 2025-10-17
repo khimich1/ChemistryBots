@@ -8,7 +8,22 @@ from contextlib import contextmanager
 # Единая БД ответов в корне проекта: ChemistryBots/shared/test_answers.db
 _THIS_DIR = os.path.dirname(__file__)  # govr_bot/bot/services
 _PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
-DB_FILE = os.getenv("DB_ANSWERS") or os.path.join(_PROJECT_ROOT, "shared", "test_answers.db")
+
+def _clean_expand_path(value: str | None) -> str | None:
+    if not value:
+        return value
+    v = value.strip().strip('"').strip("'")
+    v = os.path.expandvars(os.path.expanduser(v))
+    if not os.path.isabs(v):
+        v = os.path.normpath(os.path.join(_PROJECT_ROOT, v))
+    return v
+
+# Унифицируем источник пути к answers БД между ботами:
+# 1) DB_ANSWERS (govr)
+# 2) DB_PATH (препод)
+# 3) shared/test_answers.db по умолчанию
+_DB_FROM_ENV = _clean_expand_path(os.getenv("DB_ANSWERS")) or _clean_expand_path(os.getenv("DB_PATH"))
+DB_FILE = _DB_FROM_ENV or os.path.join(_PROJECT_ROOT, "shared", "test_answers.db")
   # Имя файла с базой данных
 
 # Пул соединений для высокой нагрузки
@@ -94,6 +109,18 @@ def init_db():
                 username TEXT,
                 full_name TEXT,
                 created_at TEXT
+            )
+        ''')
+        conn.commit()
+        # --- Таблица преподавателей ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS teacher (
+                tg_id INTEGER PRIMARY KEY,
+                nickname TEXT,
+                name TEXT,
+                moniker TEXT,
+                discipline TEXT,
+                rate REAL
             )
         ''')
         conn.commit()

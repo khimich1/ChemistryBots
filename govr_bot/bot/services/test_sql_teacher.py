@@ -134,6 +134,20 @@ def teacher_test_type(filename: str) -> int:
         return base + 9999
 
 
+def teacher_set_test_type(teacher_id: int, set_id: int) -> int:
+    """Стабильный test_type для конкретного набора преподавателя.
+
+    Используем отдельный ключ (teacher_id:set_id), чтобы разные наборы у одного преподавателя
+    не конфликтовали между собой и с filename-группами.
+    """
+    base = 20000
+    try:
+        h = abs(hash(f"{int(teacher_id)}:{int(set_id)}")) % 10000
+        return base + int(h)
+    except Exception:
+        return base + 9998
+
+
 def get_questions_by_filename(filename: str, limit: int = 30) -> List[Dict]:
     """Возвращает до 30 вопросов из таблицы tests для указанного filename."""
     try:
@@ -151,6 +165,63 @@ def get_questions_by_filename(filename: str, limit: int = 30) -> List[Dict]:
                 """
             )
             c.execute(sql, (filename,))
+            return [
+                dict(
+                    id=row[0],
+                    question=row[1],
+                    options=row[2] or "",
+                    correct_answer=row[3] or "",
+                    explanation=row[4] or "",
+                    hint=row[5] or "",
+                    detailed_explanation=row[6] or "",
+                )
+                for row in c.fetchall()
+            ]
+    except Exception:
+        return []
+
+
+def list_sets_by_teacher(teacher_id: int) -> List[Dict]:
+    """Список наборов (teacher_task_sets) для указанного преподавателя.
+
+    Возвращает элементы вида: { 'id': set_id, 'title': str, 'questions_count': int }
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            # set_id в tests и заголовок в teacher_task_sets
+            c.execute(
+                """
+                SELECT s.id, s.title, COUNT(t.id) as cnt
+                FROM teacher_task_sets s
+                JOIN tests t ON t.set_id = s.id
+                WHERE TRIM(COALESCE(t.filename,'')) = ?
+                GROUP BY s.id, s.title
+                ORDER BY s.id DESC
+                """,
+                (str(int(teacher_id)),),
+            )
+            rows = c.fetchall()
+            return [{"id": int(r[0]), "title": r[1] or "", "questions_count": int(r[2] or 0)} for r in rows]
+    except Exception:
+        return []
+
+
+def get_questions_by_set(set_id: int) -> List[Dict]:
+    """Все вопросы из набора set_id (без лимита)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            ans_col = _detect_answer_column(conn)
+            c.execute(
+                f"""
+                SELECT id, question, options, {ans_col} AS correct_answer, explanation, hint, detailed_explanation
+                FROM tests
+                WHERE set_id=?
+                ORDER BY id
+                """,
+                (int(set_id),),
+            )
             return [
                 dict(
                     id=row[0],

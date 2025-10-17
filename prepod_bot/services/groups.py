@@ -1,7 +1,13 @@
 import sqlite3
+import asyncio
 from typing import List, Dict, Any
 import os
 from config import DB_PATH, TESTS_DB_EGE, TESTS_DB_OGE
+
+# Переиспользуемый бот для govr-рассылок и простой троттлинг
+_govr_bot_singleton = None
+_govr_last_send_ts: float | None = None
+_GOVR_SEND_MIN_INTERVAL = 0.035  # ~35ms между сообщениями (~28 msg/s), запас к лимитам
 from services.students import get_all_students
 from typing import Optional
 
@@ -94,7 +100,81 @@ def _ensure_work_groups_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Добавим teacher_id колонку при необходимости (для фильтрации по преподавателю)
+    try:
+        cur.execute("PRAGMA table_info(work_groups)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "teacher_id" not in cols:
+            try:
+                cur.execute("ALTER TABLE work_groups ADD COLUMN teacher_id INTEGER")
+            except Exception:
+                pass
+    except Exception:
+        pass
     conn.commit()
+
+
+def _backfill_teacher_links(conn: sqlite3.Connection, teacher_id: int) -> None:
+    """Проставляет teacher_id в старых записях (NULL) по эвристике:
+    - work_groups: для всех пользователей, которые уже привязаны к преподавателю в teacher_groups
+    - group_tasks: для всех наборов групп, где есть участники этого преподавателя
+    """
+    try:
+        _ensure_groups_table(conn)
+        _ensure_work_groups_table(conn)
+        cur = conn.cursor()
+        # 1) work_groups ← teacher_groups
+        try:
+            cur.execute(
+                """
+                UPDATE work_groups
+                SET teacher_id = ?
+                WHERE teacher_id IS NULL
+                  AND user_id IN (
+                    SELECT user_id FROM teacher_groups WHERE teacher_id = ?
+                  )
+                """,
+                (int(teacher_id), int(teacher_id)),
+            )
+        except sqlite3.OperationalError:
+            pass
+        # 2) group_tasks ← work_groups
+        try:
+            cur.execute(
+                """
+                UPDATE group_tasks
+                SET teacher_id = ?
+                WHERE teacher_id IS NULL
+                  AND group_no IN (
+                    SELECT DISTINCT group_no FROM work_groups WHERE teacher_id = ?
+                  )
+                """,
+                (int(teacher_id), int(teacher_id)),
+            )
+        except sqlite3.OperationalError:
+            pass
+        # 3) work_groups ← group_tasks (обратная синхронизация)
+        try:
+            cur.execute(
+                """
+                UPDATE work_groups
+                SET teacher_id = ?
+                WHERE teacher_id IS NULL
+                  AND group_no IN (
+                    SELECT DISTINCT group_no FROM group_tasks WHERE teacher_id = ?
+                  )
+                """,
+                (int(teacher_id), int(teacher_id)),
+            )
+        except sqlite3.OperationalError:
+            pass
+        conn.commit()
+    except Exception:
+        # Тихо игнорируем — это вспомогательная миграция
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 def _ensure_group_tasks_table(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
@@ -109,31 +189,63 @@ def _ensure_group_tasks_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Добавим teacher_id для приватности наборов по группам
+    try:
+        cur.execute("PRAGMA table_info(group_tasks)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "teacher_id" not in cols:
+            try:
+                cur.execute("ALTER TABLE group_tasks ADD COLUMN teacher_id INTEGER")
+            except Exception:
+                pass
+    except Exception:
+        pass
     conn.commit()
 
-def create_group_task(group_no: int, title: str, items_csv: str) -> int:
+def create_group_task(group_no: int, title: str, items_csv: str, *, teacher_id: int | None = None) -> int:
     """Создаёт набор заданий для группы. items_csv формат: "ege:1, oge:3, ege:5""" 
     with sqlite3.connect(DB_PATH) as conn:
         _ensure_group_tasks_table(conn)
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO group_tasks (group_no, title, items, created_at)
-            VALUES (?, ?, ?, datetime('now','localtime'))
+            INSERT INTO group_tasks (group_no, title, items, created_at, teacher_id)
+            VALUES (?, ?, ?, datetime('now','localtime'), ?)
             """,
-            (group_no, title.strip(), items_csv.strip()),
+            (group_no, title.strip(), items_csv.strip(), int(teacher_id) if teacher_id else None),
         )
         conn.commit()
         return int(cur.lastrowid)
 
-def list_group_tasks(group_no: int) -> list[dict]:
+def list_group_tasks(group_no: int, *, teacher_id: int | None = None) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         _ensure_group_tasks_table(conn)
+        if teacher_id is not None:
+            _backfill_teacher_links(conn, int(teacher_id))
         cur = conn.cursor()
-        cur.execute(
-            "SELECT id, title, items, created_at FROM group_tasks WHERE group_no=? ORDER BY id DESC",
-            (group_no,),
-        )
+        if teacher_id is not None:
+            try:
+                cur.execute(
+                    "SELECT id, title, items, created_at FROM group_tasks WHERE group_no=? AND teacher_id=? ORDER BY id DESC",
+                    (group_no, int(teacher_id)),
+                )
+            except sqlite3.OperationalError as e:
+                if "no such column: teacher_id" in str(e).lower():
+                    try:
+                        cur.execute("ALTER TABLE group_tasks ADD COLUMN teacher_id INTEGER")
+                    except Exception:
+                        pass
+                    cur.execute(
+                        "SELECT id, title, items, created_at FROM group_tasks WHERE group_no=? AND teacher_id=? ORDER BY id DESC",
+                        (group_no, int(teacher_id)),
+                    )
+                else:
+                    raise
+        else:
+            cur.execute(
+                "SELECT id, title, items, created_at FROM group_tasks WHERE group_no=? ORDER BY id DESC",
+                (group_no,),
+            )
         rows = cur.fetchall()
     return [
         {"id": r[0], "title": r[1], "items": r[2], "created_at": r[3]}
@@ -170,28 +282,56 @@ def get_group_task_by_id(task_id: int) -> dict | None:
             return None
         return {"id": int(row[0]), "group_no": int(row[1]), "title": row[2], "items": row[3], "created_at": row[4]}
 
-def add_user_to_work_group(group_no: int, user_id: int) -> None:
+def add_user_to_work_group(group_no: int, user_id: int, *, teacher_id: int | None = None) -> None:
     """Добавляет пользователя в рабочую группу."""
     with sqlite3.connect(DB_PATH) as conn:
         _ensure_work_groups_table(conn)
         cur = conn.cursor()
-        cur.execute(
+        sql = (
             """
-            INSERT INTO work_groups (group_no, user_id, added_at)
-            VALUES (?, ?, datetime('now','localtime'))
+            INSERT INTO work_groups (group_no, user_id, added_at, teacher_id)
+            VALUES (?, ?, datetime('now','localtime'), ?)
             ON CONFLICT(group_no, user_id) DO UPDATE SET
-                added_at = excluded.added_at
-            """,
-            (group_no, user_id),
+                added_at = excluded.added_at,
+                teacher_id = COALESCE(excluded.teacher_id, work_groups.teacher_id)
+            """
         )
+        params = (group_no, user_id, int(teacher_id) if teacher_id else None)
+        try:
+            cur.execute(sql, params)
+        except sqlite3.OperationalError as e:
+            # Миграция на лету: если нет колонки teacher_id — добавим и повторим вставку
+            if "no such column: teacher_id" in str(e).lower():
+                try:
+                    cur.execute("ALTER TABLE work_groups ADD COLUMN teacher_id INTEGER")
+                except Exception:
+                    pass
+                cur.execute(sql, params)
+            else:
+                raise
         conn.commit()
 
 
-def get_work_group_members(group_no: int) -> List[int]:
+def get_work_group_members(group_no: int, *, teacher_id: int | None = None) -> List[int]:
     with sqlite3.connect(DB_PATH) as conn:
         _ensure_work_groups_table(conn)
+        if teacher_id is not None:
+            _backfill_teacher_links(conn, int(teacher_id))
         cur = conn.cursor()
-        cur.execute("SELECT user_id FROM work_groups WHERE group_no = ? ORDER BY user_id", (group_no,))
+        if teacher_id is not None:
+            try:
+                cur.execute("SELECT user_id FROM work_groups WHERE group_no = ? AND teacher_id=? ORDER BY user_id", (group_no, int(teacher_id)))
+            except sqlite3.OperationalError as e:
+                if "no such column: teacher_id" in str(e).lower():
+                    try:
+                        cur.execute("ALTER TABLE work_groups ADD COLUMN teacher_id INTEGER")
+                    except Exception:
+                        pass
+                    cur.execute("SELECT user_id FROM work_groups WHERE group_no = ? AND teacher_id=? ORDER BY user_id", (group_no, int(teacher_id)))
+                else:
+                    raise
+        else:
+            cur.execute("SELECT user_id FROM work_groups WHERE group_no = ? ORDER BY user_id", (group_no,))
         return [row[0] for row in cur.fetchall()]
 
 
@@ -273,7 +413,7 @@ def get_all_group_numbers() -> List[int]:
         return [int(row[0]) for row in cur.fetchall()]
 
 
-async def broadcast_message_to_group_via_govr(group_no: int, text: str) -> tuple[int, int]:
+async def broadcast_message_to_group_via_govr(group_no: int, text: str, *, teacher_id: int | None = None) -> tuple[int, int]:
     """Отправляет сообщение всем участникам группы через govr_bot.
     Требует переменной окружения GOVR_BOT_TOKEN (токен govr_bot).
     Возвращает (успешно, ошибок).
@@ -284,18 +424,25 @@ async def broadcast_message_to_group_via_govr(group_no: int, text: str) -> tuple
         # aiogram точно есть, но если что — без отправки
         return 0, len(get_work_group_members(group_no))
 
-    # Пытаемся вытащить токен govr-бота из разных имён переменных
+    # Пытаемся вытащить токен govr-бота из разных имён переменных.
+    # ВАЖНО: не используем BOT_TOKEN (токен препод-бота), иначе сообщения
+    # будут отправляться от wrong-бота и падать с 403, если пользователь
+    # не стартовал препод-бот.
     token = (
-        os.getenv("BOT_TOKEN_govor")
+        os.getenv("GOVR_BOT_TOKEN")
+        or os.getenv("BOT_TOKEN_govor")
         or os.getenv("BOT_TOKEN_GOVOR")
         or os.getenv("BOT_TOKEN_govr")
         or os.getenv("BOT_TOKEN_GOVR")
-        or os.getenv("GOVR_BOT_TOKEN")
-        or os.getenv("BOT_TOKEN")  # добавим основной токен
     )
     
-    print(f"[DEBUG] broadcast: Переменные окружения: BOT_TOKEN={'***' if os.getenv('BOT_TOKEN') else 'НЕТ'}, "
-          f"GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}")
+    print(
+        f"[DEBUG] broadcast: Переменные окружения: GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}, "
+        f"BOT_TOKEN_govor={'***' if os.getenv('BOT_TOKEN_govor') else 'НЕТ'}, "
+        f"BOT_TOKEN_GOVOR={'***' if os.getenv('BOT_TOKEN_GOVOR') else 'НЕТ'}, "
+        f"BOT_TOKEN_govr={'***' if os.getenv('BOT_TOKEN_govr') else 'НЕТ'}, "
+        f"BOT_TOKEN_GOVR={'***' if os.getenv('BOT_TOKEN_GOVR') else 'НЕТ'}"
+    )
     
     if not token:
         print(f"[DEBUG] broadcast: Токен не найден в переменных окружения, проверяем .env файл")
@@ -320,38 +467,52 @@ async def broadcast_message_to_group_via_govr(group_no: int, text: str) -> tuple
             print(f"[DEBUG] broadcast: Ошибка при чтении .env: {e}")
             token = None
 
-    print(f"[DEBUG] broadcast: Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'}")
+    print(f"[DEBUG] broadcast: Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'} (только govr)")
     
     if not token:
-        print(f"[DEBUG] broadcast: Токен не найден, отправка невозможна")
-        return 0, len(get_work_group_members(group_no))
+        return 0, len(get_work_group_members(group_no, teacher_id=teacher_id))
 
-    user_ids = get_work_group_members(group_no)
+    user_ids = get_work_group_members(group_no, teacher_id=teacher_id)
     if not user_ids:
         return 0, 0
-
-    bot = Bot(token=token)
+    # ленивое создание и переиспользование бота
+    global _govr_bot_singleton
+    if _govr_bot_singleton is None:
+        _govr_bot_singleton = Bot(token=token)
     ok = 0
     fail = 0
     for uid in user_ids:
         try:
-            # Проверка наличия пользователя в любой доступной базе (prepod или govr)
-            if not _user_exists_anywhere(int(uid)):
-                print(f"[DEBUG] broadcast: Пользователь {uid} не найден ни в одной базе, пропускаем")
-                fail += 1
-                continue
-            
-            await bot.send_message(uid, text)
-            print(f"[DEBUG] broadcast: Сообщение отправлено пользователю {uid}")
+            # простой троттлинг (между сообщениями)
+            try:
+                import time
+                global _govr_last_send_ts
+                now = time.monotonic()
+                if _govr_last_send_ts is not None:
+                    delta = now - _govr_last_send_ts
+                    if delta < _GOVR_SEND_MIN_INTERVAL:
+                        await asyncio.sleep(_GOVR_SEND_MIN_INTERVAL - delta)
+                _govr_last_send_ts = time.monotonic()
+            except Exception:
+                pass
+            await _govr_bot_singleton.send_message(uid, text)
             ok += 1
         except Exception as e:
-            print(f"[DEBUG] broadcast: Ошибка отправки пользователю {uid}: {e}")
+            # Попытаемся распознать FloodWait и подождать, затем продолжить
+            try:
+                from aiogram.exceptions import TelegramRetryAfter
+                if isinstance(e, TelegramRetryAfter):
+                    await asyncio.sleep(float(getattr(e, "retry_after", 1.0)))
+                    try:
+                        await _govr_bot_singleton.send_message(uid, text)
+                        ok += 1
+                        continue
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             fail += 1
             continue
-    try:
-        await bot.session.close()
-    except Exception:
-        pass
     return ok, fail
 
 
@@ -410,16 +571,20 @@ async def send_message_to_user_via_govr(user_id: int, text: str) -> bool:
         return False
 
     token = (
-        os.getenv("BOT_TOKEN_govor")
+        os.getenv("GOVR_BOT_TOKEN")
+        or os.getenv("BOT_TOKEN_govor")
         or os.getenv("BOT_TOKEN_GOVOR")
         or os.getenv("BOT_TOKEN_govr")
         or os.getenv("BOT_TOKEN_GOVR")
-        or os.getenv("GOVR_BOT_TOKEN")
-        or os.getenv("BOT_TOKEN")  # добавим основной токен
     )
     
-    print(f"[DEBUG] Переменные окружения: BOT_TOKEN={'***' if os.getenv('BOT_TOKEN') else 'НЕТ'}, "
-          f"GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}")
+    print(
+        f"[DEBUG] Переменные окружения: GOVR_BOT_TOKEN={'***' if os.getenv('GOVR_BOT_TOKEN') else 'НЕТ'}, "
+        f"BOT_TOKEN_govor={'***' if os.getenv('BOT_TOKEN_govor') else 'НЕТ'}, "
+        f"BOT_TOKEN_GOVOR={'***' if os.getenv('BOT_TOKEN_GOVOR') else 'НЕТ'}, "
+        f"BOT_TOKEN_govr={'***' if os.getenv('BOT_TOKEN_govr') else 'НЕТ'}, "
+        f"BOT_TOKEN_GOVR={'***' if os.getenv('BOT_TOKEN_GOVR') else 'НЕТ'}"
+    )
     
     if not token:
         print(f"[DEBUG] Токен не найден в переменных окружения, проверяем .env файл")
@@ -443,7 +608,7 @@ async def send_message_to_user_via_govr(user_id: int, text: str) -> bool:
             print(f"[DEBUG] Ошибка при чтении .env: {e}")
             token = None
     
-    print(f"[DEBUG] Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'}")
+    print(f"[DEBUG] Итоговый токен: {'***' if token else 'НЕ НАЙДЕН'} (только govr)")
     
     if not token:
         print(f"[DEBUG] Токен не найден, отправка невозможна")
@@ -565,6 +730,35 @@ def get_all_students_with_plans() -> List[Dict[str, Any]]:
     return students
 
 
+def get_teacher_student_ids(teacher_id: int) -> List[int]:
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_groups_table(conn)
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT user_id FROM teacher_groups WHERE teacher_id=?", (int(teacher_id),))
+            return [int(r[0]) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+
+def is_student_in_teacher_group(user_id: int, teacher_id: int) -> bool:
+    with sqlite3.connect(DB_PATH) as conn:
+        _ensure_groups_table(conn)
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT 1 FROM teacher_groups WHERE user_id=? AND teacher_id=? LIMIT 1", (int(user_id), int(teacher_id)))
+            return cur.fetchone() is not None
+        except sqlite3.OperationalError:
+            return False
+
+
+def get_teacher_students_with_plans(teacher_id: int) -> List[Dict[str, Any]]:
+    """Возвращает учеников текущего преподавателя (по teacher_groups) с тарифами."""
+    all_students = get_all_students_with_plans()
+    ids = set(get_teacher_student_ids(int(teacher_id)))
+    return [s for s in all_students if int(s.get("user_id", 0)) in ids]
+
+
 def _get_plan_name(plan_code: str) -> str:
     """Возвращает название тарифа на русском языке"""
     plan_names = {
@@ -576,6 +770,55 @@ def _get_plan_name(plan_code: str) -> str:
         'full': 'Полный доступ'
     }
     return plan_names.get(plan_code, 'Бесплатный')
+
+
+async def send_message_to_user_via_govr(user_id: int, text: str) -> bool:
+    """Отправляет одиночное сообщение пользователю через govr_bot.
+    Возвращает True при успехе.
+    """
+    try:
+        from aiogram import Bot
+    except Exception:
+        return False
+
+    token = (
+        os.getenv("BOT_TOKEN_govor")
+        or os.getenv("BOT_TOKEN_GOVOR")
+        or os.getenv("BOT_TOKEN_govr")
+        or os.getenv("BOT_TOKEN_GOVR")
+        or os.getenv("GOVR_BOT_TOKEN")
+    )
+
+    if not token:
+        # Попробуем прочитать .env govr_bot
+        try:
+            from dotenv import dotenv_values
+            repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+            env_path = os.path.join(repo_root, "govr_bot", ".env")
+            vals = dotenv_values(env_path)
+            if vals:
+                token = (
+                    vals.get("BOT_TOKEN_govor")
+                    or vals.get("BOT_TOKEN_GOVOR")
+                    or vals.get("BOT_TOKEN")
+                )
+        except Exception:
+            token = None
+
+    if not token:
+        return False
+
+    bot = Bot(token=token)
+    try:
+        await bot.send_message(int(user_id), text)
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
 
 
 def get_students_with_group_access() -> List[Dict[str, Any]]:
@@ -961,3 +1204,31 @@ def compute_group_task_results(task_id: int) -> dict:
         # сортировка по убыванию верных, затем по имени
         results.sort(key=lambda r: (-r['correct'], str(r['label']).lower()))
         return {'group_no': group_no, 'title': title, 'qids': qids, 'results': results}
+
+
+# =====================
+# Async wrappers to offload blocking sqlite calls to a thread
+# =====================
+
+async def get_all_group_numbers_async() -> List[int]:
+    return await asyncio.to_thread(get_all_group_numbers)
+
+
+async def get_work_group_members_async(group_no: int, *, teacher_id: int | None = None) -> List[int]:
+    return await asyncio.to_thread(get_work_group_members, group_no, teacher_id=teacher_id)
+
+
+async def list_group_tasks_async(group_no: int, *, teacher_id: int | None = None) -> list[dict]:
+    return await asyncio.to_thread(list_group_tasks, group_no, teacher_id=teacher_id)
+
+
+async def create_group_task_async(group_no: int, title: str, items_csv: str, *, teacher_id: int | None = None) -> int:
+    return await asyncio.to_thread(create_group_task, group_no, title, items_csv, teacher_id=teacher_id)
+
+
+async def compute_group_task_results_async(task_id: int) -> dict:
+    return await asyncio.to_thread(compute_group_task_results, task_id)
+
+
+async def find_user_id_by_username_async(username: str) -> int | None:
+    return await asyncio.to_thread(find_user_id_by_username, username)

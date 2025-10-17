@@ -1070,6 +1070,9 @@ async def start_group_task(cb: CallbackQuery):
             elif exam_type == 'oge':
                 from bot.services.test_sql_oge import get_question_with_image as get_oge_question
                 q = get_oge_question(int(q_id))
+            elif exam_type == 'teacher':
+                from bot.services.test_sql_teacher import get_question_with_image as get_teacher_question
+                q = get_teacher_question(int(q_id))
             else:
                 q = None
             

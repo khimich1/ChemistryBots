@@ -2,6 +2,9 @@ from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
+import asyncio
 from bot.services.analytics import UserAnalytics
 from bot.services.answer_db import get_db_connection
 from bot.services.plan import set_user_plan, get_plan_name, FULL
@@ -16,6 +19,10 @@ ADMIN_IDS = [727117860]  # Замени на свой Telegram ID
 def is_admin(user_id: int) -> bool:
     """Проверяет, является ли пользователь администратором"""
     return user_id in ADMIN_IDS
+
+
+class BroadcastStates(StatesGroup):
+    waiting_text = State()
 
 @router.message(Command("stats"))
 async def show_stats(message: Message):
@@ -133,6 +140,79 @@ async def show_users(message: Message):
         
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}")
+
+@router.message(Command("broadcast"))
+async def start_broadcast(message: Message, state: FSMContext):
+    """Запускает рассылку: спрашивает у админа текст сообщения."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ У тебя нет доступа к этой команде")
+        return
+    await state.set_state(BroadcastStates.waiting_text)
+    await message.answer("✍️ Пришли текст рассылки. Markdown поддерживается. Для отмены — /cancel")
+
+@router.message(BroadcastStates.waiting_text)
+async def do_broadcast(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Сообщение пустое. Пришли текст или /cancel")
+        return
+
+    # Собираем всех пользователей из БД
+    users: list[int] = []
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT DISTINCT user_id FROM user_profiles")
+            users = [row[0] for row in c.fetchall()]
+    except Exception as e:
+        await message.answer(f"❌ Не смог получить список пользователей: {e}")
+        await state.clear()
+        return
+
+    if not users:
+        await message.answer("Пользователей нет.")
+        await state.clear()
+        return
+
+    sent = 0
+    failed = 0
+    batch = 30  # отправляем пачками, чтобы не уткнуться в лимиты
+    await message.answer(f"🚀 Начинаю рассылку {len(users)} пользователям…")
+    try:
+        for i in range(0, len(users), batch):
+            chunk = users[i:i+batch]
+            tasks = []
+            for uid in chunk:
+                tasks.append(_safe_send(message, uid, text))
+            results = await asyncio.gather(*tasks)
+            for ok in results:
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+            await asyncio.sleep(0.6)  # лёгкая пауза между пачками
+    except Exception as e:
+        await message.answer(f"⚠️ Рассылка остановлена из‑за ошибки: {e}")
+    finally:
+        await message.answer(f"✅ Готово. Отправлено: {sent}, не доставлено: {failed}.")
+        await state.clear()
+
+async def _safe_send(src_message: Message, user_id: int, text: str) -> bool:
+    try:
+        await src_message.bot.send_message(user_id, text, parse_mode="Markdown")
+        return True
+    except (TelegramForbiddenError, TelegramBadRequest):
+        return False
+    except TelegramAPIError:
+        await asyncio.sleep(0.5)
+        try:
+            await src_message.bot.send_message(user_id, text, parse_mode="Markdown")
+            return True
+        except Exception:
+            return False
 
 @router.message(Command("daily"))
 async def show_daily_stats(message: Message):
@@ -658,6 +738,9 @@ async def show_admin_help(message: Message):
 
 💳 **Управление тарифами:**
 • `/set_plan <ID> <тариф>` - установить тариф пользователю
+
+📣 **Рассылка:**
+• `/broadcast` — отправить сообщение всем пользователям (Markdown)
 
 💡 **Полезные советы:**
 • Используй `/stats` каждый день

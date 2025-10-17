@@ -23,6 +23,7 @@ class WorkGroups(StatesGroup):
     waiting_tasks_title = State()
     waiting_tasks_exam = State()
     waiting_tasks_ids = State()
+    waiting_teacher_set = State()
 
 
 class ReportSearch(StatesGroup):
@@ -30,5 +31,6 @@ class ReportSearch(StatesGroup):
 
 
 class AddTeacherTask(StatesGroup):
+    waiting_set_title = State()
     waiting_question_and_image = State()
     waiting_correct_answer = State()

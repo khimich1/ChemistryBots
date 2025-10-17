@@ -10,7 +10,17 @@ from services.tasks import (
     update_task_field,
     unhide_task,
 )
-from services.teacher_tests import save_image, add_teacher_task
+from services.teacher_tests import (
+    save_image,
+    add_teacher_task,
+    list_task_sets,
+    create_task_set,
+    list_tasks_in_set,
+    get_task_set_by_id,
+    count_tasks_in_set,
+    delete_task_set,
+    compute_teacher_set_results,
+)
 from states import EditTask, AddTeacherTask
 from utils.message_manager import message_manager
 
@@ -38,14 +48,30 @@ async def manage_back(message: types.Message, state: FSMContext):
         pass
 
 
+def _sets_list_kb(teacher_id: int | None = None) -> InlineKeyboardMarkup:
+    sets = list_task_sets(teacher_id=teacher_id)
+    rows: list[list[InlineKeyboardButton]] = []
+    for s in sets:
+        title = s.get("title") or f"Набор {s.get('id')}"
+        if len(title) > 40:
+            title = title[:37] + "…"
+        sid = s.get("id")
+        open_btn = InlineKeyboardButton(text=title, callback_data=f"tt_set_open:{sid}")
+        stats_btn = InlineKeyboardButton(text="📊", callback_data=f"tt_stats:{sid}")
+        print_btn = InlineKeyboardButton(text="🖨", callback_data=f"tt_print:{sid}")
+        del_btn = InlineKeyboardButton(text="🗑", callback_data=f"tt_delete:{sid}")
+        rows.append([open_btn, stats_btn, print_btn, del_btn])
+    rows.append([InlineKeyboardButton(text="➕ Создать задание", callback_data="tt_set_create")])
+    rows.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="tt_back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.message(lambda m: m.text == "➕ Добавить")
 async def manage_add_start(message: types.Message, state: FSMContext):
-    await state.set_state(AddTeacherTask.waiting_question_and_image)
-    sent = await message.answer(
-        "Отправьте текст задания. Можно сразу прикрепить 1 фото.\n" 
-        "Когда будете готовы — просто пришлите сообщение.",
-        reply_markup=get_manage_tasks_keyboard(),
-    )
+    await state.clear()
+    # При первом входе показываем список наборов построчно: название + 📊 + 🖨 + 🗑
+    kb = _sets_list_kb(teacher_id=message.from_user.id)
+    sent = await message.answer("Выберите набор или создайте новый:", reply_markup=kb)
     try:
         message_manager.add_message(message.from_user.id, sent.message_id)
     except Exception:
@@ -66,14 +92,6 @@ async def on_question_and_image(message: types.Message, state: FSMContext):
         return
 
     text = (message.caption or message.text or "").strip()
-    if not text:
-        sent = await message.answer("Текст задания пуст. Отправьте текст ещё раз.")
-        try:
-            message_manager.add_message(message.from_user.id, sent.message_id)
-        except Exception:
-            pass
-        return
-
     image_id: int | None = None
     # Если прислано фото — сохраняем максимальное по размеру
     if message.photo:
@@ -85,6 +103,14 @@ async def on_question_and_image(message: types.Message, state: FSMContext):
             image_id = save_image(filename=f"tg_{photo.file_unique_id}.jpg", mime_type="image/jpeg", data=data)
         except Exception:
             image_id = None
+
+    if not text and image_id is None:
+        sent = await message.answer("Отправьте текст и/или фото задания (можно одно из двух).")
+        try:
+            message_manager.add_message(message.from_user.id, sent.message_id)
+        except Exception:
+            pass
+        return
 
     await state.update_data(add_question=text, add_image_id=image_id)
     await state.set_state(AddTeacherTask.waiting_correct_answer)
@@ -120,14 +146,20 @@ async def on_correct_answer(message: types.Message, state: FSMContext):
     q_text = data.get("add_question") or ""
     image_id = data.get("add_image_id")
     # teacher id = message.from_user.id
+    set_id = (await state.get_data()).get("current_set_id")
     new_id = add_teacher_task(
         teacher_tg_id=message.from_user.id,
         question_text=q_text,
         image_id=int(image_id) if (image_id is not None) else None,
         correct_answer=raw,
+        set_id=int(set_id) if set_id else None,
     )
-    await state.clear()
-    sent = await message.answer(f"✅ Задание сохранено (id={new_id}).", reply_markup=get_manage_tasks_keyboard())
+    # После добавления показываем мини-меню: «➕ Добавить ещё» и «✅ Закончить»
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить ещё в этот набор", callback_data=f"tt_add_more:{set_id or 0}")],
+        [InlineKeyboardButton(text="✅ Закончить", callback_data="tt_finish")],
+    ])
+    sent = await message.answer(f"✅ Задание сохранено (id={new_id}). Что дальше?", reply_markup=kb)
     try:
         message_manager.add_message(message.from_user.id, sent.message_id)
     except Exception:
@@ -301,3 +333,212 @@ async def unhide_and_back(cb: types.CallbackQuery):
         except Exception:
             pass
     await cb.answer()
+
+
+# ── Новый раздел: управление наборами «Добавить» ─────────────────────────────────────
+
+@router.callback_query(lambda c: c.data == "tt_back_main")
+async def tt_back_main(cb: types.CallbackQuery):
+    await cb.answer()
+    try:
+        await cb.message.edit_text("Главное меню:")
+        await cb.message.edit_reply_markup(reply_markup=get_teacher_keyboard())
+    except Exception:
+        await cb.message.answer("Главное меню:", reply_markup=get_teacher_keyboard())
+
+
+@router.callback_query(lambda c: c.data == "tt_set_create")
+async def tt_set_create(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await state.set_state(AddTeacherTask.waiting_set_title)
+    await cb.message.answer("Введите название задания (набора):")
+
+
+@router.message(StateFilter(AddTeacherTask.waiting_set_title))
+async def tt_receive_set_title(message: types.Message, state: FSMContext):
+    title = (message.text or "").strip()
+    if not title:
+        await message.answer("Название пустое. Введите название ещё раз:")
+        return
+    set_id = create_task_set(title, teacher_id=message.from_user.id)
+    await state.update_data(current_set_id=set_id)
+    # Теперь переходим к добавлению первого вопроса
+    await state.set_state(AddTeacherTask.waiting_question_and_image)
+    await message.answer(
+        "Отправьте текст и/или фото первого задания (одно сообщение).",
+        reply_markup=get_manage_tasks_keyboard(),
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("tt_set_open:"))
+async def tt_set_open(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        set_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    await state.update_data(current_set_id=set_id)
+    info = get_task_set_by_id(set_id) or {"title": f"Набор {set_id}"}
+    tasks = list_tasks_in_set(set_id)
+    header = f"📋 {info.get('title')}\nВсего вопросов: {count_tasks_in_set(set_id)}"
+    rows: list[list[InlineKeyboardButton]] = []
+    for t in tasks[:20]:
+        txt = (t.get("question") or "").strip()
+        if len(txt) > 40:
+            txt = txt[:37] + "…"
+        rows.append([InlineKeyboardButton(text=f"#{t.get('id')} • {txt}", callback_data="noop")])
+    # Кнопка добавления сразу запускает добавление в текущий набор
+    rows.append([InlineKeyboardButton(text="➕ Добавить ещё", callback_data=f"tt_add_more:{set_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="tt_sets_back")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await cb.message.edit_text(header)
+        await cb.message.edit_reply_markup(reply_markup=kb)
+    except Exception:
+        await cb.message.answer(header, reply_markup=kb)
+
+
+@router.callback_query(lambda c: c.data == "tt_sets_back")
+async def tt_sets_back(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        # Если в состоянии запомнен текущий набор — покажем к нему кнопки 📊🖨🗑
+        data = await state.get_data()
+        current_set_id = data.get("current_set_id")
+        await cb.message.edit_text("Выберите набор или создайте новый:")
+        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
+    except Exception:
+        await cb.message.answer("Выберите набор или создайте новый:", reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
+
+
+@router.callback_query(lambda c: c.data.startswith("tt_add_choose:"))
+async def tt_add_choose(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        set_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        set_id = None
+    if set_id:
+        await state.update_data(current_set_id=set_id)
+    # Показываем выбор набора (как на второй картинке) + ряд 📊🖨🗑 для текущего набора
+    try:
+        await cb.message.edit_text("Выберите набор или создайте новый:")
+        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
+    except Exception:
+        await cb.message.answer("Выберите набор или создайте новый:", reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
+
+
+@router.callback_query(lambda c: c.data.startswith("tt_add_more:"))
+async def tt_add_more(cb: types.CallbackQuery, state: FSMContext):
+    # Старое поведение: сразу перейти к добавлению в текущий набор
+    await cb.answer()
+    try:
+        set_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        set_id = None
+    if set_id:
+        await state.update_data(current_set_id=set_id)
+    await state.set_state(AddTeacherTask.waiting_question_and_image)
+    await cb.message.answer("Отправьте текст задания. Можно сразу прикрепить 1 фото.")
+
+
+@router.callback_query(lambda c: c.data == "tt_finish")
+async def tt_finish(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    data = await state.get_data()
+    set_id = data.get("current_set_id")
+    # После завершения показываем список наборов (новая кнопка с названием уже будет в списке)
+    try:
+        await cb.message.edit_text("Выберите набор или создайте новый:")
+        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
+    except Exception:
+        await cb.message.answer("Выберите набор или создайте новый:", reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
+    await state.clear()
+
+
+@router.callback_query(lambda c: c.data.startswith("tt_delete:"))
+async def tt_delete_set(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        set_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    ok = delete_task_set(set_id)
+    msg = "✅ Набор удалён." if ok else "❌ Не удалось удалить набор."
+    try:
+        await cb.message.edit_text(msg)
+        await cb.message.edit_reply_markup(reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
+    except Exception:
+        await cb.message.answer(msg, reply_markup=_sets_list_kb(teacher_id=cb.from_user.id))
+
+
+@router.callback_query(lambda c: c.data.startswith("tt_stats:"))
+async def tt_stats(cb: types.CallbackQuery):
+    await cb.answer()
+    try:
+        set_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    info = compute_teacher_set_results(set_id)
+    title = info.get('title') or f"Набор {set_id}"
+    qids = info.get('qids') or []
+    results = info.get('results') or []
+    lines: list[str] = []
+    lines.append(f"📊 Результаты набора «{title}»")
+    lines.append(f"Всего вопросов в наборе: {len(qids)}")
+    lines.append("")
+    if not results:
+        lines.append("Пока нет ответов по этому набору.")
+    else:
+        lines.append("<b>Ученик — верных/всего (точность)</b>")
+        for r in results:
+            label = str(r.get('label') or f"ID {r.get('user_id')}")
+            if len(label) > 30:
+                label = label[:27] + "…"
+            lines.append(f"{label} — {r['correct']}/{r['total']} ({r['pct']}%)")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tt_set_open:{set_id}")]])
+    try:
+        await cb.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(lambda c: c.data.startswith("tt_print:"))
+async def tt_print(cb: types.CallbackQuery):
+    from services.pdf_export import render_questions_to_pdf
+    import os, tempfile, shutil
+    await cb.answer()
+    try:
+        set_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    tasks = list_tasks_in_set(set_id)
+    if not tasks:
+        await cb.answer("Набор пуст.", show_alert=True)
+        return
+    # Преобразуем вопросы в формат pages для PDF
+    pages: list[dict] = []
+    for t in tasks:
+        pages.append({
+            "title": f"Задание #{t.get('id')}",
+            "question": t.get("question") or "",
+            # для teacher-наборов options хранит id изображения (или список id)
+            "options": t.get("options") or "",
+            "exam": "teacher",
+            "qid": t.get("id"),
+            "type": None,
+        })
+    tmp_dir = tempfile.mkdtemp(prefix="tt_pdf_")
+    out_path = os.path.join(tmp_dir, f"teacher_set_{set_id}.pdf")
+    pdf_path = render_questions_to_pdf(out_path, pages)
+    try:
+        from aiogram.types import FSInputFile
+        await cb.message.answer_document(FSInputFile(pdf_path), caption=f"📄 Набор #{set_id}")
+    except Exception:
+        await cb.answer("PDF создан, но не удалось отправить", show_alert=True)
+    finally:
+        # Удалим временную директорию с PDF
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass

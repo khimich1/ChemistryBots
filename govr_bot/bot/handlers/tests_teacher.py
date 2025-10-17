@@ -9,7 +9,7 @@ from bot.services.answer_db import (
 )
 from bot.services.test_sql_teacher import (
     list_test_groups, _filename_by_key, get_questions_by_filename, get_question_by_id,
-    teacher_test_type, get_question_with_image
+    teacher_test_type, get_question_with_image, list_sets_by_teacher, get_questions_by_set, teacher_set_test_type
 )
 from bot.utils_pkg.message_manager import message_manager
 
@@ -69,12 +69,59 @@ async def start_teacher_test(cb: CallbackQuery):
     if not filename:
         await cb.answer()
         return
+    # 1) Попробуем определить teacher_id из filename (первое число в имени)
+    import re
+    m = re.search(r"(\d+)", str(filename))
+    teacher_id = int(m.group(1)) if m else None
+    # 2) Если teacher_id найден — покажем список наборов этого преподавателя
+    if teacher_id is not None:
+        sets = list_sets_by_teacher(teacher_id)
+        if sets:
+            rows: list[list[InlineKeyboardButton]] = []
+            for s in sets:
+                title = s.get("title") or f"Набор {s.get('id')}"
+                rows.append([InlineKeyboardButton(text=title, callback_data=f"teach_set_open:{teacher_id}:{s.get('id')}")])
+            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="tests_go_back")])
+            rows.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu")])
+            try:
+                await cb.message.edit_text("Выбери набор преподавателя:")
+                await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+            except Exception:
+                await cb.message.answer("Выбери набор преподавателя:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+            await cb.answer()
+            return
+    # 3) Фолбэк: старый режим по filename (если наборов нет)
     questions = get_questions_by_filename(filename)
     if not questions:
         await cb.message.answer("Нет вопросов от этого преподавателя.")
         await cb.answer()
         return
     test_type = teacher_test_type(filename)
+    q_ids = [q["id"] for q in questions]
+    clear_test_progress(cb.from_user.id, test_type)
+    save_test_progress(cb.from_user.id, test_type, 0, q_ids)
+    kb = _grid_keyboard(cb.from_user.id, test_type, q_ids)
+    sent = await cb.message.answer("Выбери номер задания:", reply_markup=kb)
+    message_manager.add_message(cb.from_user.id, sent.message_id)
+    await cb.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("teach_set_open:"))
+async def open_teacher_set(cb: CallbackQuery):
+    # Формат: teach_set_open:{teacher_id}:{set_id}
+    try:
+        _, teacher_id, set_id = cb.data.split(":", 2)
+        teacher_id = int(teacher_id)
+        set_id = int(set_id)
+    except Exception:
+        await cb.answer()
+        return
+    questions = get_questions_by_set(set_id)
+    if not questions:
+        await cb.message.answer("Набор пуст или недоступен.")
+        await cb.answer()
+        return
+    test_type = teacher_set_test_type(teacher_id, set_id)
     q_ids = [q["id"] for q in questions]
     clear_test_progress(cb.from_user.id, test_type)
     save_test_progress(cb.from_user.id, test_type, 0, q_ids)
@@ -163,6 +210,17 @@ async def teacher_answer(m: types.Message):
         return
     test_type, idx, q_ids = found
     q = get_question_by_id(q_ids[idx])
+    if not q:
+        # Вопрос удалён или недоступен — пропустим и перейдём дальше
+        idx += 1
+        if idx >= len(q_ids):
+            clear_test_progress(m.from_user.id, test_type)
+            await m.answer("Тест завершён! Возвращаюсь в меню.", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ В меню")]], resize_keyboard=True))
+            return
+        save_test_progress(m.from_user.id, test_type, idx, q_ids)
+        await m.answer("Этот вопрос недоступен, перехожу к следующему…")
+        await send_teacher_question(m.from_user.id, m, test_type)
+        return
     user_answer = ''.join(filter(str.isdigit, m.text))
     correct = ''.join(filter(str.isdigit, str(q.get("correct_answer", ""))))
     is_correct = (user_answer == correct)
