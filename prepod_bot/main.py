@@ -1,30 +1,68 @@
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
 from handlers import menu, online, report, add_task
+import logging
+from logging.handlers import RotatingFileHandler
 
-print("[LOG] main.py ЗАПУЩЕН")
-print(f"[LOG] BOT_TOKEN (начало): {BOT_TOKEN[:10]}...")
+# Логирование в файл с ротацией
+logger = logging.getLogger("prepod_bot")
+logger.setLevel(logging.INFO)
+_handler = RotatingFileHandler("prepod_bot.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+_handler.setFormatter(_fmt)
+logger.addHandler(_handler)
+
+logger.info("main.py ЗАПУЩЕН")
+logger.info("BOT_TOKEN загружен" if BOT_TOKEN else "BOT_TOKEN НЕ НАЙДЕН!")
 
 bot = Bot(token=BOT_TOKEN)
-print("[LOG] Bot object создан")
+logger.info("Bot object создан")
 
 dp = Dispatcher()
-print("[LOG] Dispatcher создан")
+logger.info("Dispatcher создан")
+
+# Доступ открыт для всех преподавателей; мидлварь проверки отключена
+logger.info("AdminCheckMiddleware отключен: доступ открыт")
 
 # Подключаем все роутеры
 dp.include_router(menu.router)
-print("[LOG] Router menu registered")
+logger.info("Router menu registered")
 dp.include_router(online.router)
-print("[LOG] Router online registered")
+logger.info("Router online registered")
 dp.include_router(report.router)
-print("[LOG] Router report registered")
+logger.info("Router report registered")
 dp.include_router(add_task.router)
-print("[LOG] Router add_task registered")
+logger.info("Router add_task registered")
 
 if __name__ == "__main__":
     import asyncio
-    print("[LOG] Перед dp.start_polling(bot)")
+    logger.info("Перед dp.start_polling(bot)")
+
+    async def _run():
+        # Убираем webhook, чтобы не было конфликта с polling
+        try:
+            info = await bot.get_webhook_info()
+            logger.info(f"Webhook BEFORE: {getattr(info, 'url', '')!r}")
+        except Exception as e:
+            logger.exception(f"get_webhook_info error: {e}")
+
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook deleted (drop_pending_updates=True)")
+        except Exception as e:
+            logger.exception(f"delete_webhook error: {e}")
+
+        # Запуск фонового оповещателя онлайн-активности
+        try:
+            from handlers import online as online_handlers
+            asyncio.create_task(online_handlers.start_notifier(bot))
+            logger.info("Online notifier started")
+        except Exception as e:
+            logger.exception(f"start_notifier error: {e}")
+
+        await dp.start_polling(bot)
+
     try:
-        asyncio.run(dp.start_polling(bot))
+        asyncio.run(_run())
     except Exception as e:
-        print(f"[LOG] Ошибка при запуске polling: {e}")
+        logger.exception(f"Ошибка при запуске polling: {e}")

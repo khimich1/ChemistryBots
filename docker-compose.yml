@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  govr_bot:
+    build: .
+    image: chemistrybots:latest
+    working_dir: /app/govr_bot
+    command: python -m bot.main
+    env_file: envs/govr.env
+    volumes:
+      - ./shared:/app/shared
+    restart: unless-stopped
+
+  prepod_bot:
+    image: chemistrybots:latest
+    working_dir: /app/prepod_bot
+    command: python main.py
+    env_file: envs/prepod.env
+    volumes:
+      - ./shared:/app/shared
+    restart: unless-stopped
+
+  parent_bot:
+    image: chemistrybots:latest
+    working_dir: /app/parent_bot
+    command: python -m bot.main
+    env_file: envs/parent.env
+    volumes:
+      - ./shared:/app/shared
+    restart: unless-stopped
+
+

@@ -1,30 +1,150 @@
+import os
 import sqlite3
+from dotenv import load_dotenv
 
-# Абсолютный путь к базе данных
-DB_FILE = r"C:\Users\Роман\Desktop\govr_bot\bot\tests1.db"
+# Загружаем .env и корректно определяем путь к базе с тестами
+load_dotenv()
+
+# База с тестами ЕГЭ (таблица `tests`).
+# 1) Если задано в .env (TESTS_DB_EGE) — используем его
+# 2) Иначе берём дефолт: ChemistryBots/shared/test_ege.db
+_THIS_DIR = os.path.dirname(__file__)                             # govr_bot/bot/services
+_PROJECT_ROOT = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", ".."))
+DB_FILE = os.getenv("TESTS_DB_EGE") or os.path.join(_PROJECT_ROOT, "shared", "test_ege.db")
+
+
+def _ensure_issue_columns():
+    """
+    Гарантирует наличие столбцов для жалоб в таблице tests ЕГЭ:
+      - has_issue INTEGER DEFAULT 0         (флаг скрытия вопроса до исправления)
+      - issue_reason TEXT DEFAULT ''        (последняя причина)
+      - issue_reported_at TEXT DEFAULT ''   (когда пожаловались)
+    Функция безопасна при многократном вызове.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tests (
+                    id INTEGER PRIMARY KEY,
+                    type INTEGER,
+                    question TEXT,
+                    options TEXT,
+                    correct_answer TEXT,
+                    explanation TEXT,
+                    hint TEXT,
+                    detailed_explanation TEXT
+                )
+                """
+            )
+            cols = {row[1] for row in c.execute("PRAGMA table_info(tests)")}
+            if "has_issue" not in cols:
+                c.execute("ALTER TABLE tests ADD COLUMN has_issue INTEGER DEFAULT 0")
+            if "issue_reason" not in cols:
+                c.execute("ALTER TABLE tests ADD COLUMN issue_reason TEXT DEFAULT ''")
+            if "issue_reported_at" not in cols:
+                c.execute("ALTER TABLE tests ADD COLUMN issue_reported_at TEXT DEFAULT ''")
+            conn.commit()
+    except Exception:
+        # Не падаем, если БД только для чтения/без таблицы tests – просто пропускаем.
+        pass
+
+
+_ensure_issue_columns()
+
+
+def _detect_answer_column(conn: sqlite3.Connection) -> str:
+    """
+    Возвращает корректное имя колонки с правильным ответом в таблице `tests`.
+    Поддерживает оба варианта: `correct_answer` (старое имя) и `correct_ans` (новое имя).
+    """
+    c = conn.cursor()
+    c.execute("PRAGMA table_info(tests)")
+    cols = {row[1] for row in c.fetchall()}  # row[1] = name
+    if "correct_answer" in cols:
+        return "correct_answer"
+    if "correct_ans" in cols:
+        return "correct_ans"
+    # Если ни одной знакомой колонки нет — бросаем понятную ошибку
+    raise sqlite3.OperationalError(
+        "В таблице tests нет колонки с правильным ответом (correct_answer/correct_ans)."
+    )
+
+
+def _ensure_tests_bug_table() -> None:
+    """Создаёт таблицу tests_bug в test_ege.db с теми же столбцами, что у tests.
+
+    Используем создание по схеме исходной таблицы с нулевой выборкой: CREATE TABLE ... AS SELECT * FROM tests WHERE 0.
+    Повторный вызов безопасен.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            # Если таблица уже есть — выходим
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tests_bug'")
+            if c.fetchone():
+                return
+            # Убедимся, что есть исходная таблица
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tests'")
+            if not c.fetchone():
+                return
+            c.execute("CREATE TABLE tests_bug AS SELECT * FROM tests WHERE 0")
+            conn.commit()
+    except Exception:
+        pass
+
+
+def copy_question_to_tests_bug(q_id: int) -> None:
+    """Копирует строку вопроса из таблицы tests в таблицу tests_bug (UPSERT по id).
+
+    Вызывается при жалобе, чтобы зафиксировать состояние задания для дальнейшей правки в препод-боте.
+    """
+    _ensure_tests_bug_table()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            # Если строки с таким id ещё нет — вставим; если есть — заменим текущей версией
+            c.execute("INSERT OR REPLACE INTO tests_bug SELECT * FROM tests WHERE id=?", (int(q_id),))
+            conn.commit()
+    except Exception:
+        # Безопасно игнорируем любые ошибки копирования, чтобы не ломать пользовательский сценарий
+        pass
+
 
 def get_all_tests_types():
     """
-    Получает список уникальных типов тестов (например, 1...28)
+    Получает список уникальных типов тестов ЕГЭ (например, 1...28)
     """
+    _ensure_issue_columns()
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
         c.execute("SELECT DISTINCT type FROM tests ORDER BY type")
         # Оставляем только значения, которые не None и не пустые строки
         return [row[0] for row in c.fetchall() if row[0] not in (None, '')]
 
-def get_questions_by_type(test_type):
+
+def get_questions_by_type(test_type, limit: int = 30):
     """
-    Получает все вопросы для заданного типа теста (по порядку id)
+    Получает все вопросы для заданного типа теста ЕГЭ (по порядку id)
     Возвращает список dict-ов: id, question, options, correct_answer, explanation, hint, detailed_explanation
+    Не более `limit` (по умолчанию 30) вопросов.
     """
+    _ensure_issue_columns()
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        c.execute(
-            "SELECT id, question, options, correct_answer, explanation, hint, detailed_explanation "
-            "FROM tests WHERE type=? ORDER BY id",
-            (test_type,)
+        ans_col = _detect_answer_column(conn)
+        safe_limit = int(limit) if isinstance(limit, int) and limit > 0 else 30
+        sql = (
+            f"""
+            SELECT id, question, options, {ans_col} AS correct_answer, explanation, hint, detailed_explanation
+            FROM tests
+            WHERE type=? AND COALESCE(has_issue, 0)=0
+            ORDER BY id
+            LIMIT {safe_limit}
+            """
         )
+        c.execute(sql, (test_type,))
         return [
             dict(
                 id=row[0],
@@ -38,17 +158,21 @@ def get_questions_by_type(test_type):
             for row in c.fetchall()
         ]
 
+
 def get_question_by_id(q_id):
     """
-    Получает один вопрос по его id, с detailed_explanation
+    Получает один вопрос ЕГЭ по его id, с detailed_explanation
     """
+    _ensure_issue_columns()
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        c.execute(
-            "SELECT id, type, question, options, correct_answer, explanation, hint, detailed_explanation "
-            "FROM tests WHERE id=?",
-            (q_id,)
+        ans_col = _detect_answer_column(conn)
+        sql = (
+            f"SELECT id, type, question, options, {ans_col} AS correct_answer, "
+            f"explanation, hint, detailed_explanation, COALESCE(has_issue,0), COALESCE(issue_reason,'') "
+            f"FROM tests WHERE id=?"
         )
+        c.execute(sql, (q_id,))
         row = c.fetchone()
         if row:
             return dict(
@@ -59,9 +183,180 @@ def get_question_by_id(q_id):
                 correct_answer=row[4] or "",
                 explanation=row[5] or "",
                 hint=row[6] or "",
-                detailed_explanation=row[7] or ""
+                detailed_explanation=row[7] or "",
+                has_issue=bool(row[8] or 0),
+                issue_reason=row[9] or ""
             )
         else:
             return None
+
+
+def mark_question_issue(q_id: int, reason: str | None = None) -> None:
+    """Помечает вопрос ЕГЭ как проблемный (глобально скрываем) с опциональной причиной."""
+    _ensure_issue_columns()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                UPDATE tests
+                SET has_issue=1,
+                    issue_reason=COALESCE(?, issue_reason),
+                    issue_reported_at=strftime('%Y-%m-%d %H:%M:%S','now')
+                WHERE id=?
+                """,
+                (reason or None, q_id),
+            )
+            conn.commit()
+    except Exception:
+        # Безопасно игнорируем, чтобы не ломать тестирование, даже если нет прав на запись
+        pass
+
+
+# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С ИЗОБРАЖЕНИЯМИ =====
+
+def get_image_by_id(image_id: int) -> dict | None:
+    """
+    Получает изображение по его ID из таблицы images.
+    Возвращает словарь с данными изображения или None, если не найдено.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT id, filename, mime_type, size_bytes, data, created_at FROM images WHERE id = ?",
+                (image_id,)
+            )
+            row = c.fetchone()
+            if row:
+                return {
+                    'id': row[0],
+                    'filename': row[1],
+                    'mime_type': row[2],
+                    'size_bytes': row[3],
+                    'data': row[4],  # BLOB данные
+                    'created_at': row[5]
+                }
+            return None
+    except Exception:
+        return None
+
+
+def get_question_with_image(q_id: int) -> dict | None:
+    """
+    Получает вопрос с изображением (если есть).
+    Возвращает словарь с данными вопроса и изображения.
+    """
+    _ensure_issue_columns()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            ans_col = _detect_answer_column(conn)
+            sql = (
+                f"SELECT id, type, question, options, {ans_col} AS correct_answer, "
+                f"explanation, hint, detailed_explanation, COALESCE(has_issue,0), COALESCE(issue_reason,'') "
+                f"FROM tests WHERE id=?"
+            )
+            c.execute(sql, (q_id,))
+            row = c.fetchone()
+            
+            if not row:
+                return None
+            
+            question_data = {
+                'id': row[0],
+                'type': row[1],
+                'question': row[2],
+                'options': row[3] or "",
+                'correct_answer': row[4] or "",
+                'explanation': row[5] or "",
+                'hint': row[6] or "",
+                'detailed_explanation': row[7] or "",
+                'has_issue': bool(row[8] or 0),
+                'issue_reason': row[9] or "",
+                'image': None
+            }
+            
+            # Если в options есть ID изображения(ий), получаем изображения
+            if question_data['options']:
+                # Проверяем, содержит ли options только числа и запятые
+                options_clean = question_data['options'].replace(' ', '').replace(',', '')
+                if options_clean.isdigit():
+                    # Парсим ID изображений (могут быть через запятую)
+                    image_ids = [int(x.strip()) for x in question_data['options'].split(',') if x.strip().isdigit()]
+                    if image_ids:
+                        images = []
+                        for image_id in image_ids:
+                            image_data = get_image_by_id(image_id)
+                            if image_data:
+                                images.append(image_data)
+                        
+                        if images:
+                            # Если одно изображение - сохраняем как раньше для совместимости
+                            if len(images) == 1:
+                                question_data['image'] = images[0]
+                            else:
+                                # Если несколько изображений - сохраняем как список
+                                question_data['images'] = images
+                            # Очищаем options, так как теперь это ID изображений
+                            question_data['options'] = ""
+            
+            return question_data
+            
+    except Exception:
+        return None
+
+
+def get_questions_by_type_with_images(test_type, limit: int = 30) -> list[dict]:
+    """
+    Получает вопросы с изображениями для заданного типа теста.
+    Возвращает список словарей с данными вопросов и изображений.
+    """
+    _ensure_issue_columns()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            ans_col = _detect_answer_column(conn)
+            safe_limit = int(limit) if isinstance(limit, int) and limit > 0 else 30
+            sql = (
+                f"""
+                SELECT id, question, options, {ans_col} AS correct_answer, 
+                explanation, hint, detailed_explanation
+                FROM tests
+                WHERE type=? AND COALESCE(has_issue, 0)=0
+                ORDER BY id
+                LIMIT {safe_limit}
+                """
+            )
+            c.execute(sql, (test_type,))
+            questions = []
+            
+            for row in c.fetchall():
+                question_data = {
+                    'id': row[0],
+                    'question': row[1],
+                    'options': row[2] or "",
+                    'correct_answer': row[3] or "",
+                    'explanation': row[4] or "",
+                    'hint': row[5] or "",
+                    'detailed_explanation': row[6] or "",
+                    'image': None
+                }
+                
+                # Если в options есть ID изображения, получаем изображение
+                if question_data['options'] and question_data['options'].isdigit():
+                    image_id = int(question_data['options'])
+                    image_data = get_image_by_id(image_id)
+                    if image_data:
+                        question_data['image'] = image_data
+                        # Очищаем options, так как теперь это ID изображения
+                        question_data['options'] = ""
+                
+                questions.append(question_data)
+            
+            return questions
+            
+    except Exception:
+        return []
 
 

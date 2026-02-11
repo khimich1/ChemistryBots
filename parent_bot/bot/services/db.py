@@ -20,14 +20,20 @@ def init_users_db(path: str = USERS_DB) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tg_id INTEGER UNIQUE,
                 parent_name TEXT,
-                child_nick TEXT
+                child_nick TEXT,
+                parent_username TEXT
             )
             """
         )
+        # Миграция: добавить колонку parent_username, если её нет
+        c.execute("PRAGMA table_info(users)")
+        cols = {row[1] for row in c.fetchall()}
+        if "parent_username" not in cols:
+            c.execute("ALTER TABLE users ADD COLUMN parent_username TEXT")
         conn.commit()
 
 
-def upsert_user(tg_id: int, parent_name: str | None = None, child_nick: str | None = None) -> None:
+def upsert_user(tg_id: int, parent_name: str | None = None, child_nick: str | None = None, parent_username: str | None = None) -> None:
     with sqlite3.connect(USERS_DB) as conn:
         c = conn.cursor()
         c.execute("SELECT tg_id FROM users WHERE tg_id=?", (tg_id,))
@@ -37,10 +43,12 @@ def upsert_user(tg_id: int, parent_name: str | None = None, child_nick: str | No
                 c.execute("UPDATE users SET parent_name=? WHERE tg_id=?", (parent_name, tg_id))
             if child_nick is not None:
                 c.execute("UPDATE users SET child_nick=? WHERE tg_id=?", (child_nick, tg_id))
+            if parent_username is not None:
+                c.execute("UPDATE users SET parent_username=? WHERE tg_id=?", (parent_username, tg_id))
         else:
             c.execute(
-                "INSERT INTO users (tg_id, parent_name, child_nick) VALUES (?, ?, ?)",
-                (tg_id, parent_name or "", child_nick or ""),
+                "INSERT INTO users (tg_id, parent_name, child_nick, parent_username) VALUES (?, ?, ?, ?)",
+                (tg_id, parent_name or "", child_nick or "", parent_username or ""),
             )
         conn.commit()
 
@@ -48,8 +56,8 @@ def upsert_user(tg_id: int, parent_name: str | None = None, child_nick: str | No
 def get_user(tg_id: int):
     with sqlite3.connect(USERS_DB) as conn:
         c = conn.cursor()
-        c.execute("SELECT parent_name, child_nick FROM users WHERE tg_id=?", (tg_id,))
+        c.execute("SELECT parent_name, child_nick, parent_username FROM users WHERE tg_id=?", (tg_id,))
         row = c.fetchone()
-        return (row[0], row[1]) if row else None
+        return (row[0], row[1], row[2]) if row else None
 
 

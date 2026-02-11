@@ -3,15 +3,21 @@ import logging
 import asyncio
 from typing import List
 
-import openai
+from openai import AsyncOpenAI
+from openai import PermissionDeniedError, APIConnectionError, RateLimitError, APIStatusError
+from bot.utils import (
+    TEXTBOOK_CONTENT,
+    get_prepared_chunks_count,
+    get_prepared_lecture,
+)
 import httpx
 from pydub import AudioSegment
 from dotenv import load_dotenv  # Для .env
 
 # 1. Загружаем переменные из .env
 load_dotenv()
-# 2. Передаём ключ OpenAI библиотеке
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# 2. Создаём асинхронный клиент OpenAI (новый SDK 1.x)
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Настройка ffmpeg для pydub (если нужно)
 FFMPEG_BIN = os.getenv("FFMPEG_BINARY", "")
@@ -20,24 +26,62 @@ if FFMPEG_BIN:
 
 # Логгер и ключ API
 logger = logging.getLogger(__name__)
-openai.api_key = os.getenv("OPENAI_API_KEY")
+
+
+def _llm_unavailable_message() -> str:
+    return (
+        "Сейчас ответ ИИ недоступен (ограничение сервиса). "
+        "Продолжай читать теорию и попробуй снова чуть позже."
+    )
+
+
+# Ранний вариант фолбэка на локальный конспект убран по просьбе пользователя.
+
+
+def _log_llm_issue(where: str, error: Exception) -> None:
+    """Лаконичное логирование с контекстом — видно в консоли.
+
+    where: короткая метка места вызова (например, 'answer_student_question').
+    error: исключение, полученное от SDK/сети.
+    """
+    logger.error("[LLM ERROR] %s: %s: %s", where, type(error).__name__, error, exc_info=True)
+
+
+# Порог принятия ответа по оценке модели (0..1). Можно переопределить через env LLM_GRADE_THRESHOLD
+GRADE_THRESHOLD: float = 0.85
+try:
+    GRADE_THRESHOLD = float(os.getenv("LLM_GRADE_THRESHOLD", "0.85"))
+except Exception:
+    GRADE_THRESHOLD = 0.85
 
 
 async def classify_topic(transcript: str) -> str:
     """
     Определить тему ответа ученика на основе его текста.
     """
+    # Проверяем входной параметр
+    if not transcript or not transcript.strip():
+        return ""
+    
     prompt = (
         "Определи тему по органической химии из этого ответа:\n\n"
         f"{transcript}"
     )
-    resp = await openai.ChatCompletion.acreate(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}],
-    )
-    topic = resp.choices[0].message.content.strip().capitalize()
-    logger.info(f"📚 Тема определена: {topic}")
-    return topic
+    try:
+        resp = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        topic = resp.choices[0].message.content.strip().capitalize()
+        logger.info(f"📚 Тема определена: {topic}")
+        return topic
+    except PermissionDeniedError as e:
+        _log_llm_issue("classify_topic", e)
+        return ""
+    except (APIConnectionError, RateLimitError, APIStatusError) as e:
+        _log_llm_issue("classify_topic", e)
+        return ""
 
 
 async def analyze_answer(
@@ -49,6 +93,16 @@ async def analyze_answer(
     Проанализировать ответ ученика, сверив его с текстом учебника:
     сильные стороны, ошибки, несоответствия.
     """
+    # Проверяем входные параметры
+    if not transcript or not transcript.strip():
+        return "Не удалось получить ответ ученика для анализа."
+    
+    if not topic or not topic.strip():
+        return "Не удалось определить тему для анализа."
+    
+    if not textbook_context or not textbook_context.strip():
+        return "Не удалось получить контекст учебника для анализа."
+    
     prompt = (
         f"У тебя есть текст учебника по теме «{topic}»:\n\n"
         f"{textbook_context}\n\n"
@@ -56,14 +110,21 @@ async def analyze_answer(
         "Сверь этот ответ с учебником: отметь, где он точно повторил текст, "
         "где допустил неточности или упустил важное. Ответь тёплым комментарием от учителя."
     )
-    resp = await openai.ChatCompletion.acreate(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-    )
-    feedback = resp.choices[0].message.content.strip()
-    logger.info("💬 Ответ ученику с учётом учебника сгенерирован")
-    return feedback
+    try:
+        resp = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+        feedback = resp.choices[0].message.content.strip()
+        logger.info("💬 Ответ ученику с учётом учебника сгенерирован")
+        return feedback
+    except PermissionDeniedError as e:
+        _log_llm_issue("analyze_answer", e)
+        return _llm_unavailable_message()
+    except (APIConnectionError, RateLimitError, APIStatusError) as e:
+        _log_llm_issue("analyze_answer", e)
+        return _llm_unavailable_message()
 
 
 async def _transcribe_chunk(file_bytes: bytes) -> str:
@@ -76,6 +137,7 @@ async def _transcribe_chunk(file_bytes: bytes) -> str:
     files = {
         "file": ("chunk.ogg", file_bytes, "audio/ogg"),
         "model": (None, "whisper-1"),
+        "language": (None, "ru"),
         "response_format": (None, "text"),
     }
 
@@ -89,36 +151,88 @@ async def _transcribe_chunk(file_bytes: bytes) -> str:
         return resp.text.strip()
 
 
+async def _transcribe_chunk_with_retry(file_bytes: bytes) -> str:
+    """
+    Транскрибирует чанк с retry логикой (до 3 попыток с backoff).
+    """
+    delays = [0.5, 1.0, 2.0]  # Задержки в секундах
+    
+    for attempt in range(3):
+        try:
+            return await _transcribe_chunk(file_bytes)
+        except Exception as e:
+            if attempt == 2:  # Последняя попытка
+                logger.error(f"Транскрипция чанка не удалась после 3 попыток: {e}")
+                raise
+            
+            delay = delays[attempt]
+            logger.warning(f"Попытка {attempt + 1} не удалась, повтор через {delay}s: {e}")
+            await asyncio.sleep(delay)
+    
+    # Не должно дойти до сюда, но на всякий случай
+    raise Exception("Транскрипция не удалась после всех попыток")
+
+
 async def transcribe_audio(file_path: str) -> str:
     """
-    Разбивает аудио на 60-секундные сегменты, транскрибирует каждый
-    и возвращает объединённый текст.
+    Транскрибирует аудио файл с оптимизацией:
+    - Короткие файлы (≤90s) отправляются одним чанком
+    - Длинные файлы разбиваются на 60-секундные сегменты
+    - Блокирующие операции выполняются в отдельных потоках
+    - Добавлен retry с backoff для надежности
     """
-    logger.info(f"🔍 Начало транскрипции (с резкой на сегменты): {file_path}")
+    logger.info(f"🔍 Начало транскрипции: {file_path}")
 
-    audio = AudioSegment.from_file(file_path, format="ogg")
+    # Загружаем аудио в отдельном потоке (блокирующая операция)
+    audio = await asyncio.to_thread(AudioSegment.from_file, file_path, format="ogg")
     duration_ms = len(audio)
+    duration_seconds = duration_ms / 1000
+    
+    # Если файл короткий (≤90 секунд) - отправляем одним чанком
+    if duration_seconds <= 90:
+        logger.info(f"📁 Короткий файл ({duration_seconds:.1f}s), отправляем одним чанком")
+        
+        # Экспортируем в отдельном потоке
+        buf = await asyncio.to_thread(audio.export, format="ogg")
+        data = await asyncio.to_thread(buf.read)
+        await asyncio.to_thread(buf.close)
+        
+        try:
+            txt = await _transcribe_chunk_with_retry(data)
+            logger.info("✅ Транскрипция короткого файла завершена")
+            return txt
+        except Exception as e:
+            logger.error(f"Ошибка при транскрипции короткого файла: {e}")
+            return ""
+    
+    # Для длинных файлов - разбиваем на чанки
+    logger.info(f"📁 Длинный файл ({duration_seconds:.1f}s), разбиваем на чанки")
     chunk_length_ms = 60 * 1000  # 60 секунд
-
     transcripts: List[str] = []
+    
     for start in range(0, duration_ms, chunk_length_ms):
         end = min(start + chunk_length_ms, duration_ms)
         chunk = audio[start:end]
-        buf = chunk.export(format="ogg")
-        data = buf.read()
-        buf.close()
+        
+        # Экспортируем чанк в отдельном потоке
+        buf = await asyncio.to_thread(chunk.export, format="ogg")
+        data = await asyncio.to_thread(buf.read)
+        await asyncio.to_thread(buf.close)
 
         logger.info(f"  → Чанк {start//1000}-{end//1000}s, байт {len(data)}")
         try:
-            txt = await _transcribe_chunk(data)
+            txt = await _transcribe_chunk_with_retry(data)
             transcripts.append(txt)
         except Exception as e:
             logger.warning(f"Ошибка при транскрипции чанка {start//1000}-{end//1000}: {e}")
             transcripts.append("")
-        await asyncio.sleep(0.5)
+        
+        # Пауза только для длинных файлов, уменьшена до 0.2s
+        if duration_seconds > 90:
+            await asyncio.sleep(0.2)
 
     full = "\n".join(filter(None, transcripts))
-    logger.info("✅ Полная транскрипция завершена")
+    logger.info("✅ Полная транскрипция длинного файла завершена")
     return full
 
 
@@ -126,6 +240,10 @@ async def teach_material(chunk: str) -> str:
     """
     Преобразует фрагмент учебника в компактную, связанную лекцию для Telegram, с красивым форматированием.
     """
+    # Проверяем входной параметр
+    if not chunk or not chunk.strip():
+        return "Не удалось получить материал для объяснения."
+    
     system = (
         "Ты — опытный преподаватель по органической химии."
         "Твоя задача — объяснять теорию простыми словами,,без приветствий, без сложных терминов, с примерами из жизни, как если бы рассказывал ученику на уроке."
@@ -143,32 +261,218 @@ async def teach_material(chunk: str) -> str:
         "В конце спроси: Всё ли понятно? Если остались вопросы — обязательно спрашивай!"
     )
 
-    resp = await openai.ChatCompletion.acreate(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": chunk},
-        ],
-        temperature=0.7,
-    )
-    lecture = resp.choices[0].message.content.strip()
-    logger.info("🎓 Лекция от преподавателя сгенерирована")
-    return lecture
+    try:
+        resp = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": chunk},
+            ],
+            temperature=0.7,
+        )
+        lecture = resp.choices[0].message.content.strip()
+        logger.info("🎓 Лекция от преподавателя сгенерирована")
+        return lecture
+    except PermissionDeniedError as e:
+        _log_llm_issue("teach_material", e)
+        return _llm_unavailable_message()
+    except (APIConnectionError, RateLimitError, APIStatusError) as e:
+        _log_llm_issue("teach_material", e)
+        return _llm_unavailable_message()
 
 
 async def answer_student_question(topic: str, question: str) -> str:
     """
     Роль: преподаватель по теме. Дать понятный, краткий ответ на вопрос ученика.
     """
+    # Проверяем входные параметры
+    if not question or not question.strip():
+        return "Пожалуйста, задайте конкретный вопрос."
+    
+    if not topic or not topic.strip():
+        return "Не удалось определить тему для ответа."
+    
     system = f"Ты — преподаватель по теме «{topic}». Отвечай очень понятно и коротко."
-    resp = await openai.ChatCompletion.acreate(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": question},
-        ],
-        temperature=0.7,
+    try:
+        resp = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": question.strip()},
+            ],
+            temperature=0.7,
+        )
+        ans = resp.choices[0].message.content.strip()
+        logger.info("❓ Вопрос ученика обработан и ответ сгенерирован")
+        return ans
+    except PermissionDeniedError as e:
+        _log_llm_issue("answer_student_question", e)
+        return _llm_unavailable_message()
+    except (APIConnectionError, RateLimitError, APIStatusError) as e:
+        _log_llm_issue("answer_student_question", e)
+        return _llm_unavailable_message()
+
+
+async def grade_theory_answer(topic: str, question_text: str, student_answer: str, expected_answer: str) -> tuple[bool, str]:
+    """
+    Оценивает короткий ответ ученика по смыслу, сравнивая с образцом.
+    Возвращает (is_correct, feedback). Использует компактную JSON-ответную схему.
+
+    Политика проверки:
+      - Учитываем синонимы и перефразирование.
+      - Если ответ по смыслу верен, но короче или частично совпадает — считаем верным.
+      - Если ответ противоречит образцу — неверно.
+      - Пиши краткий фидбек (1–2 предложения), по-русски.
+    """
+    # Проверяем входные параметры
+    if not student_answer or not student_answer.strip():
+        return False, "Ответ не получен."
+    
+    if not question_text or not question_text.strip():
+        return False, "Вопрос не определен."
+    
+    if not topic or not topic.strip():
+        return False, "Тема не определена."
+    
+    # Если нет ожидаемого ответа — считаем всё корректным по умолчанию
+    if not expected_answer or not expected_answer.strip():
+        return True, "Ответ принят."
+
+    system = (
+        "Ты эксперт‑проверяющий. Задача — оценить КРАТКИЙ ответ ученика по смыслу, допускай синонимы и формулы. "
+        "Нормализуй обозначения: знаки минуса (−/–/-) к '-', римские числа I/II/III/IV/V/VI к 1..6, подстрочные индексы ₀..₉ к обычным, формулы и названия веществ как эквиваленты (например: SF6 ↔ шестифторид серы ↔ серный гексафторид). "
+        "Сравнивай ключевые термины: если по сути совпадает — зачесть как верно. Старайся НЕ заваливать из‑за формулировки."
     )
-    ans = resp.choices[0].message.content.strip()
-    logger.info("❓ Вопрос ученика обработан и ответ сгенерирован")
-    return ans
+    user = (
+        f"Тема: {topic}\n"
+        f"Вопрос: {question_text}\n"
+        f"Ответ ученика: {student_answer}\n"
+        f"Образец ответа: {expected_answer}\n\n"
+        "Верни строго JSON с полями: {"
+        "\"is_correct\": true|false, "
+        "\"score\": number (0..1), "
+        "\"reasoning\": string (кратко, почему так), "
+        "\"normalized_user\": string, "
+        "\"normalized_expected\": string, "
+        "\"matched_terms\": string"
+        "}"
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        content = resp.choices[0].message.content
+        import json
+        obj = json.loads(content)
+        # Безопасные извлечения
+        is_correct = bool(obj.get("is_correct", False))
+        score = float(obj.get("score", 1.0 if is_correct else 0.0))
+        reasoning = str(obj.get("reasoning", "Ответ обработан."))
+        # Применяем наш локальный порог
+        if not is_correct and score >= GRADE_THRESHOLD:
+            is_correct = True
+        return is_correct, reasoning
+    except PermissionDeniedError as e:
+        _log_llm_issue("grade_theory_answer", e)
+        # Падать нельзя — используем простой фоллбэк
+        pass
+    except (APIConnectionError, RateLimitError, APIStatusError) as e:
+        _log_llm_issue("grade_theory_answer", e)
+        pass
+    except Exception as e:
+        _log_llm_issue("grade_theory_answer", e)
+        # Фоллбэк — простая проверка подстроки/похожести
+        import difflib
+        def _norm(s: str) -> str:
+            return " ".join((s or "").lower().strip().split())
+        norm_user = _norm(student_answer)
+        norm_exp = _norm(expected_answer)
+        ratio = difflib.SequenceMatcher(None, norm_user, norm_exp).ratio() if norm_exp else 0.0
+        ok = bool(norm_exp and (ratio >= 0.8 or norm_exp in norm_user))
+        fb = "Ответ принят." if ok else f"Проверь ещё раз. Образец: {expected_answer}"
+        return ok, fb
+
+
+async def check_trivial_name_by_formula(formula: str, student_answer: str) -> tuple[bool, str]:
+    """
+    Фолбэк‑проверка ответа в режиме практики карточек через LLM.
+    Вопрос: может ли такой текст быть корректным названием вещества с формулой formula?
+
+    Возвращает (is_correct, reasoning).
+    """
+    try:
+        prompt = (
+            "Проверь, может ли данный текст быть корректным русским названием вещества "
+            "по указанной химической формуле. Допускай различия в дефисах и пробелах, "
+            "варианты числительных (четырёх/4‑х/тетра) и орфографию (ё/е). Отвечай строго JSON.\n\n"
+            f"Формула: {formula}\n"
+            f"Ответ: {student_answer}\n\n"
+            "Верни JSON со структурой: {\"is_correct\": true|false, \"reason\": string}."
+        )
+        resp = await client.chat.completions.create(
+            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        import json as _json
+        obj = _json.loads(resp.choices[0].message.content or "{}")
+        ok = bool(obj.get("is_correct", False))
+        reason = str(obj.get("reason", ""))
+        return ok, reason
+    except PermissionDeniedError:
+        _log_llm_issue("check_trivial_name_by_formula", PermissionDeniedError("permission denied (region)"))
+        return False, ""
+    except (APIConnectionError, RateLimitError, APIStatusError) as e:
+        _log_llm_issue("check_trivial_name_by_formula", e)
+        return False, ""
+
+
+async def generate_chunk_title(topic: str, chunk_text: str) -> str:
+    """Генерирует очень короткое название для фрагмента теории.
+
+    Требования к заголовку:
+      - до 40 символов
+      - по-русски
+      - без кавычек и точки в конце
+      - по смыслу отражает ключевую мысль фрагмента
+    """
+    system = (
+        "Ты помощник-редактор учебника. Сформулируй очень короткий заголовок (до 40 символов) "
+        "для части лекции по химии. Без кавычек и точки в конце."
+    )
+    user = (
+        f"Тема главы: {topic}\n\n"
+        "Текст части:\n" + (chunk_text or "") + "\n\n"
+        "Верни только короткий заголовок, ничего больше."
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+        )
+        title = (resp.choices[0].message.content or "").strip()
+        # Пост-обработка: уберём кавычки и конечную точку, урежем длину
+        title = title.strip('"\'\u00ab\u00bb ').rstrip('.')
+        if len(title) > 40:
+            title = title[:40].rstrip()
+        return title
+    except PermissionDeniedError as e:
+        _log_llm_issue("generate_chunk_title", e)
+        return ""
+    except (APIConnectionError, RateLimitError, APIStatusError) as e:
+        _log_llm_issue("generate_chunk_title", e)
+        return ""
+    except Exception as e:
+        _log_llm_issue("generate_chunk_title", e)
+        return ""
